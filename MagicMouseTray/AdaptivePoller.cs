@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT
 namespace MagicMouseTray;
 
 // Polls MouseBatteryReader at adaptive intervals based on battery level.

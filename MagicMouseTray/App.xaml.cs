@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT
 using System.Windows;
 
 namespace MagicMouseTray;
