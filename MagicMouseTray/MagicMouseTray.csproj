@@ -1,0 +1,27 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net8.0-windows10.0.17763.0</TargetFramework>
+    <UseWPF>true</UseWPF>
+    <UseWindowsForms>true</UseWindowsForms>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <AssemblyName>MagicMouseTray</AssemblyName>
+    <RootNamespace>MagicMouseTray</RootNamespace>
+    <!-- PublishSingleFile: dotnet publish -c Release produces a single .exe (M7) -->
+    <PublishSingleFile>true</PublishSingleFile>
+    <SelfContained>true</SelfContained>
+    <RuntimeIdentifier>win-x64</RuntimeIdentifier>
+    <IncludeNativeLibrariesForSelfExtract>true</IncludeNativeLibrariesForSelfExtract>
+    <!-- Allows building on non-Windows (e.g. restoring packages) -->
+    <EnableWindowsTargeting>true</EnableWindowsTargeting>
+  </PropertyGroup>
+  <ItemGroup>
+    <!-- HID device enumeration and handle management -->
+    <PackageReference Include="HidLibrary" Version="3.3.40" />
+  </ItemGroup>
+  <ItemGroup>
+    <EmbeddedResource Include="magic-mouse.png" />
+    <EmbeddedResource Include="magic-mouse-black.png" />
+  </ItemGroup>
+</Project>
