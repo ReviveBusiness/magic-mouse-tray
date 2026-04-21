@@ -28,7 +28,7 @@ internal sealed class TrayApp : IDisposable
     // Persistent critical alert shown at 1%; auto-closed when mouse plugs in (pct=-1).
     CriticalAlert? _criticalAlert;
 
-    readonly bool _driverOk;
+    readonly DriverStatus _driverStatus;
 
     Icon? _currentIcon;
 
@@ -41,10 +41,10 @@ internal sealed class TrayApp : IDisposable
         _config = config;
         (_thresholdItems, _startupItem) = (null!, null!); // assigned by BuildMenu
 
-        _driverOk = DriverHealthChecker.IsDriverInstalled();
+        _driverStatus = DriverHealthChecker.GetStatus();
         var menu = BuildMenu(out _thresholdItems, out _startupItem);
 
-        _currentIcon = MakeIcon(-1, false, !_driverOk);
+        _currentIcon = MakeIcon(-1, false, _driverStatus != DriverStatus.Ok);
         _tray = new NotifyIcon
         {
             Icon = _currentIcon,
@@ -93,19 +93,25 @@ internal sealed class TrayApp : IDisposable
 
         menu.Items.Add(new ToolStripSeparator());
 
-        // --- Driver warning (only when AppleWirelessMouse64 not installed) ---
-        if (!_driverOk)
+        // --- Driver warning (shown when scroll driver is missing, unbound, or unknown model) ---
+        if (_driverStatus != DriverStatus.Ok)
         {
-            var driverItem = new ToolStripMenuItem("⚠ Install Apple Driver (scroll fix)")
+            var (label, url) = _driverStatus switch
             {
-                ForeColor = System.Drawing.Color.OrangeRed
+                DriverStatus.UnknownAppleMouse =>
+                    ("⚠ Unknown mouse model — check for app update",
+                     "https://github.com/ReviveBusiness/magic-mouse-tray/releases"),
+                DriverStatus.NotBound =>
+                    ("⚠ Driver not bound — scroll fix needed",
+                     "https://github.com/ReviveBusiness/magic-mouse-tray#scroll-not-working"),
+                _ =>
+                    ("⚠ Install Apple Driver (scroll fix)",
+                     "https://github.com/tealtadpole/MagicMouse2DriversWin11x64"),
             };
+            var driverItem = new ToolStripMenuItem(label) { ForeColor = System.Drawing.Color.OrangeRed };
             driverItem.Click += (_, _) =>
-            {
-                System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo(
-                    "https://github.com/tealtadpole/MagicMouse2DriversWin11x64")
+                System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo(url)
                     { UseShellExecute = true });
-            };
             menu.Items.Add(driverItem);
             menu.Items.Add(new ToolStripSeparator());
         }
@@ -192,8 +198,8 @@ internal sealed class TrayApp : IDisposable
                 Logger.Log("CRITICAL_ALERT_CLOSED reason=charging");
             }
 
-            // Update icon (badge dot in corner when driver missing)
-            var newIcon = MakeIcon(pct, isLow, !_driverOk);
+            // Update icon (badge dot in corner when driver not OK)
+            var newIcon = MakeIcon(pct, isLow, _driverStatus != DriverStatus.Ok);
             var oldIcon = _currentIcon;
             _tray.Icon = newIcon;
             _currentIcon = newIcon;
@@ -203,7 +209,7 @@ internal sealed class TrayApp : IDisposable
             var interval = AdaptivePoller.GetInterval(pct);
             var pctStr = pct >= 0 ? $"{pct}%" : "disconnected";
             var baseTip = $"{device} — {pctStr} · Next: {FormatInterval(interval)}";
-            var tip = !_driverOk ? $"⚠ Driver | {baseTip}" : baseTip;
+            var tip = _driverStatus != DriverStatus.Ok ? $"⚠ Driver | {baseTip}" : baseTip;
             _tray.Text = tip.Length > 63 ? tip[..63] : tip;
 
             Logger.Log($"TRAY_UPDATE pct={pct} isLow={isLow} tooltip=\"{_tray.Text}\"");

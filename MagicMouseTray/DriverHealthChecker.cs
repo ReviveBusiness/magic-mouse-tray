@@ -3,25 +3,133 @@ using Microsoft.Win32;
 
 namespace MagicMouseTray;
 
-// Checks whether the AppleWirelessMouse64 driver service is registered.
-// Without it, the mouse connects but scroll doesn't work.
+internal enum DriverStatus
+{
+    Ok,               // service present + LowerFilters bound (or no Apple BT device paired)
+    NotInstalled,     // AppleWirelessMouse service key absent
+    NotBound,         // service present, known Apple PID paired, but LowerFilters not applied
+    UnknownAppleMouse // Apple-vendor HID device with a PID not in our INF — likely a new model
+}
+
+// Checks whether the AppleWirelessMouse filter driver is installed and bound to the device.
+//
+// The service can be registered but not bound if:
+//   (a) the INF predates the connected model (e.g. PID 0323 absent from the 2019 tealtadpole INF)
+//   (b) the device was never re-paired after driver installation
+//
+// UnknownAppleMouse is returned when we find a paired Apple-vendor BT HID device whose PID
+// is not in our known list — this tells the user a future model needs an app/driver update.
 internal static class DriverHealthChecker
 {
     const string ServiceKey = @"SYSTEM\CurrentControlSet\Services\AppleWirelessMouse";
+    const string BtHidEnumBase = @"SYSTEM\CurrentControlSet\Enum\BTHENUM";
 
-    internal static bool IsDriverInstalled()
+    // Bluetooth HID UUID (classic BT HID profile)
+    const string HidUuidPrefix = "{00001124-0000-1000-8000-00805f9b34fb}";
+
+    // Apple Bluetooth VID segments as they appear in BTHENUM subkey names.
+    // VID&000205ac = Apple USB-IF VID (0x05AC), VID&0001004c = Apple BLE company ID (0x004C).
+    static readonly string[] AppleVidSegments = ["_VID&000205ac_", "_VID&0001004c_"];
+
+    // PIDs covered by the patched AppleWirelessMouse.inf (lower-case, 4 hex digits).
+    // If Apple ships a new model, its PID won't be here — we surface that as UnknownAppleMouse.
+    static readonly string[] KnownPids = ["030d", "0310", "0269", "0323"];
+
+    internal static DriverStatus GetStatus()
     {
         try
         {
-            using var key = Registry.LocalMachine.OpenSubKey(ServiceKey, writable: false);
-            var ok = key != null;
-            Logger.Log($"DRIVER_CHECK installed={ok}");
-            return ok;
+            using var svcKey = Registry.LocalMachine.OpenSubKey(ServiceKey, writable: false);
+            if (svcKey == null)
+            {
+                Logger.Log("DRIVER_CHECK status=NotInstalled (service key missing)");
+                return DriverStatus.NotInstalled;
+            }
+
+            using var btEnumKey = Registry.LocalMachine.OpenSubKey(BtHidEnumBase, writable: false);
+            if (btEnumKey == null)
+            {
+                Logger.Log("DRIVER_CHECK status=Ok (service present, BTHENUM absent)");
+                return DriverStatus.Ok;
+            }
+
+            bool anyAppleMouse = false;
+            bool anyBound = false;
+            bool anyUnknownPid = false;
+
+            foreach (var subkeyName in btEnumKey.GetSubKeyNames())
+            {
+                if (!subkeyName.StartsWith(HidUuidPrefix, StringComparison.OrdinalIgnoreCase))
+                    continue;
+
+                bool isApple = false;
+                foreach (var seg in AppleVidSegments)
+                    if (subkeyName.Contains(seg, StringComparison.OrdinalIgnoreCase))
+                    { isApple = true; break; }
+                if (!isApple) continue;
+
+                // Extract 4-hex-digit PID from "_PID&XXXX" at end of key name
+                int pidIdx = subkeyName.LastIndexOf("_PID&", StringComparison.OrdinalIgnoreCase);
+                if (pidIdx < 0 || pidIdx + 9 > subkeyName.Length) continue;
+                var pid = subkeyName.Substring(pidIdx + 5, 4).ToLowerInvariant();
+
+                using var deviceKey = btEnumKey.OpenSubKey(subkeyName, writable: false);
+                if (deviceKey == null) continue;
+                var instances = deviceKey.GetSubKeyNames();
+                if (instances.Length == 0) continue; // key exists but no device paired
+
+                anyAppleMouse = true;
+                bool pidKnown = Array.Exists(KnownPids, p => p == pid);
+
+                foreach (var instanceName in instances)
+                {
+                    using var instance = deviceKey.OpenSubKey(instanceName, writable: false);
+                    var filters = instance?.GetValue("LowerFilters") as string[];
+                    bool isBound = filters != null && Array.Exists(filters,
+                        f => f.Equals("applewirelessmouse", StringComparison.OrdinalIgnoreCase));
+
+                    if (!pidKnown)
+                    {
+                        Logger.Log($"DRIVER_CHECK unknown_apple_pid=0x{pid.ToUpper()} bound={isBound}");
+                        anyUnknownPid = true;
+                    }
+                    else if (isBound)
+                    {
+                        Logger.Log($"DRIVER_CHECK pid=0x{pid.ToUpper()} LowerFilters=bound");
+                        anyBound = true;
+                    }
+                    else
+                    {
+                        Logger.Log($"DRIVER_CHECK pid=0x{pid.ToUpper()} LowerFilters=missing");
+                    }
+                }
+            }
+
+            if (!anyAppleMouse)
+            {
+                Logger.Log("DRIVER_CHECK status=Ok (service present, no Apple BT HID device paired)");
+                return DriverStatus.Ok;
+            }
+
+            if (anyBound)
+            {
+                Logger.Log("DRIVER_CHECK status=Ok (service + LowerFilters bound)");
+                return DriverStatus.Ok;
+            }
+
+            if (anyUnknownPid)
+            {
+                Logger.Log("DRIVER_CHECK status=UnknownAppleMouse (PID not in INF)");
+                return DriverStatus.UnknownAppleMouse;
+            }
+
+            Logger.Log("DRIVER_CHECK status=NotBound (service present, known PID, LowerFilters missing)");
+            return DriverStatus.NotBound;
         }
         catch (Exception ex)
         {
             Logger.Log($"DRIVER_CHECK_FAILED err={ex.Message}");
-            return false;
+            return DriverStatus.Ok; // fail open — don't nag user on transient registry errors
         }
     }
 }
