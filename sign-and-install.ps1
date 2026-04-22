@@ -1,10 +1,20 @@
 # Sign and install the patched AppleWirelessMouse driver for PID 0323
 # Run as Administrator in PowerShell
 # Requires: DSE-disabled boot (already done) OR test signing mode (this script enables it)
+#
+# Driver files must be in a 'driver' subfolder next to this script:
+#   driver\AppleWirelessMouse.inf
+#   driver\applewirelessmouse.cat
+#   driver\AppleWirelessMouse.sys
 
-$INF = "D:\Users\Lesley\Downloads\MagicMouse2DriversWin11x64-master\AppleWirelessMouse\AppleWirelessMouse.inf"
-$DRIVER_DIR = "D:\Users\Lesley\Downloads\MagicMouse2DriversWin11x64-master\AppleWirelessMouse"
-$CAT = "$DRIVER_DIR\applewirelessmouse.cat"
+$DRIVER_DIR = Join-Path $PSScriptRoot "driver"
+$INF = Join-Path $DRIVER_DIR "AppleWirelessMouse.inf"
+$CAT = Join-Path $DRIVER_DIR "applewirelessmouse.cat"
+
+if (-not (Test-Path $INF)) {
+    Write-Error "Driver files not found. Expected: $INF`nDownload from: https://github.com/tealtadpole/MagicMouse2DriversWin11x64"
+    exit 1
+}
 
 # Step 1 - Create a self-signed code signing cert
 Write-Host "Step 1: Creating self-signed certificate..."
@@ -47,9 +57,20 @@ Write-Host "Step 6: Enabling test signing mode..."
 bcdedit /set testsigning on | Out-Null
 Write-Host "  Test signing enabled (small watermark will appear after reboot - removable later)"
 
-# Step 7 - Remove old unsigned oem53
-Write-Host "Step 7: Removing old unsigned driver package..."
-pnputil /delete-driver oem53.inf /force 2>$null | Out-Null
+# Step 7 - Remove any existing AppleWirelessMouse driver packages (dynamic — not hardcoded slot)
+Write-Host "Step 7: Removing existing Apple driver packages..."
+$pnpRaw = (pnputil /enum-drivers 2>$null) | Out-String
+$existing = ($pnpRaw -split '(?=Published Name:)') |
+    Where-Object { $_ -match 'applewirelessmouse' } |
+    ForEach-Object { if ($_ -match 'Published Name:\s+(oem\d+\.inf)') { $Matches[1] } }
+if ($existing) {
+    $existing | ForEach-Object {
+        Write-Host "  Removing $_..."
+        pnputil /delete-driver $_ /force 2>$null | Out-Null
+    }
+} else {
+    Write-Host "  No existing AppleWirelessMouse driver found — skipping"
+}
 
 # Step 8 - Install the now-signed package
 Write-Host "Step 8: Installing signed driver package..."
