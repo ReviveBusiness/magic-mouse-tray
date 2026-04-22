@@ -56,6 +56,7 @@ internal static class DriverHealthChecker
             bool anyAppleMouse = false;
             bool anyBound = false;
             bool anyUnknownPid = false;
+            bool anyNotBound = false;
 
             foreach (var subkeyName in btEnumKey.GetSubKeyNames())
             {
@@ -101,6 +102,7 @@ internal static class DriverHealthChecker
                     else
                     {
                         Logger.Log($"DRIVER_CHECK pid=0x{pid.ToUpper()} LowerFilters=missing");
+                        anyNotBound = true;
                     }
                 }
             }
@@ -111,20 +113,22 @@ internal static class DriverHealthChecker
                 return DriverStatus.Ok;
             }
 
-            if (anyBound)
-            {
-                Logger.Log("DRIVER_CHECK status=Ok (service + LowerFilters bound)");
-                return DriverStatus.Ok;
-            }
-
+            // Worst-state wins across all paired devices:
+            // UnknownAppleMouse > NotBound > Ok
             if (anyUnknownPid)
             {
                 Logger.Log("DRIVER_CHECK status=UnknownAppleMouse (PID not in INF)");
                 return DriverStatus.UnknownAppleMouse;
             }
 
-            Logger.Log("DRIVER_CHECK status=NotBound (service present, known PID, LowerFilters missing)");
-            return DriverStatus.NotBound;
+            if (anyNotBound)
+            {
+                Logger.Log("DRIVER_CHECK status=NotBound (service present, known PID, LowerFilters missing)");
+                return DriverStatus.NotBound;
+            }
+
+            Logger.Log("DRIVER_CHECK status=Ok (service + LowerFilters bound)");
+            return DriverStatus.Ok;
         }
         catch (Exception ex)
         {
