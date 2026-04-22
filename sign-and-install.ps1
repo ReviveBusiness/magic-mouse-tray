@@ -77,27 +77,48 @@ Write-Host "Step 8: Installing signed driver package..."
 pnputil /add-driver $INF /install /force
 
 # Step 9 - Register startup repair task (runs startup-repair.ps1 at every boot)
+# Script is copied to a fixed protected path so the scheduled task cannot be hijacked
+# by overwriting a world-writable source directory (LPE mitigation — see TEST-PLAN BLK-03).
 Write-Host "Step 9: Registering startup repair task..."
 $repairScript = Join-Path $PSScriptRoot "startup-repair.ps1"
+$installDir   = "C:\Program Files\MagicMouseTray"
+$installedScript = Join-Path $installDir "startup-repair.ps1"
+
 if (Test-Path $repairScript) {
     $taskName = "MagicMouseTray-StartupRepair"
+
+    # Copy script to protected install directory (Administrators-only write, not world-writable)
+    New-Item -ItemType Directory -Path $installDir -Force | Out-Null
+    Copy-Item $repairScript $installedScript -Force
+    # Lock ACL: SYSTEM + Administrators full, Users read-only, no user write
+    icacls $installDir /inheritance:r /grant "SYSTEM:(OI)(CI)F" /grant "Administrators:(OI)(CI)F" /grant "Users:(OI)(CI)RX" | Out-Null
+    Write-Host "  Script installed to: $installedScript"
+
+    # Create and lock the log directory (prevents TOCTOU symlink attack via SYSTEM log rotation — BLK-04)
+    $logDir = "C:\ProgramData\MagicMouseTray"
+    New-Item -ItemType Directory -Path $logDir -Force | Out-Null
+    icacls $logDir /inheritance:r /grant "SYSTEM:(OI)(CI)F" /grant "Administrators:(OI)(CI)F" /grant "Users:(OI)(CI)R" | Out-Null
+    Write-Host "  Log directory locked: $logDir"
+
     $taskExists = Get-ScheduledTask -TaskName $taskName -ErrorAction SilentlyContinue
     if ($taskExists) {
-        Write-Host "  Task '$taskName' already registered — skipping"
-    } else {
-        $action  = New-ScheduledTaskAction -Execute "powershell.exe" `
-            -Argument "-NonInteractive -WindowStyle Hidden -ExecutionPolicy Bypass -File `"$repairScript`""
-        $trigger = New-ScheduledTaskTrigger -AtStartup
-        $trigger.Delay = "PT30S"   # 30-second delay to let BT stack initialise
-        $settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries
-        $principal = New-ScheduledTaskPrincipal -UserId "SYSTEM" -RunLevel Highest
-
-        Register-ScheduledTask -TaskName $taskName -Action $action `
-            -Trigger $trigger -Settings $settings -Principal $principal `
-            -Description "Repairs Magic Mouse COL02 battery HID collection at startup" `
-            -Force | Out-Null
-        Write-Host "  Task '$taskName' registered (runs at startup with 30s delay, as SYSTEM)"
+        # Update task to point to new install path in case it previously pointed to PSScriptRoot
+        Unregister-ScheduledTask -TaskName $taskName -Confirm:$false
+        Write-Host "  Existing task removed — re-registering with protected path"
     }
+
+    $action  = New-ScheduledTaskAction -Execute "powershell.exe" `
+        -Argument "-NonInteractive -WindowStyle Hidden -ExecutionPolicy Bypass -File `"$installedScript`""
+    $trigger = New-ScheduledTaskTrigger -AtStartup
+    $trigger.Delay = "PT30S"   # 30-second delay to let BT stack initialise
+    $settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries
+    $principal = New-ScheduledTaskPrincipal -UserId "SYSTEM" -RunLevel Highest
+
+    Register-ScheduledTask -TaskName $taskName -Action $action `
+        -Trigger $trigger -Settings $settings -Principal $principal `
+        -Description "Repairs Magic Mouse COL02 battery HID collection at startup" `
+        -Force | Out-Null
+    Write-Host "  Task '$taskName' registered (runs '$installedScript' at startup with 30s delay, as SYSTEM)"
 } else {
     Write-Host "  WARNING: startup-repair.ps1 not found at $repairScript — skipping task registration"
     Write-Host "  For persistent battery reading across reboots, run Register-ScheduledTask manually."

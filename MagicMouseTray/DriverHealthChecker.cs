@@ -54,7 +54,6 @@ internal static class DriverHealthChecker
             }
 
             bool anyAppleMouse = false;
-            bool anyBound = false;
             bool anyUnknownPid = false;
             bool anyNotBound = false;
 
@@ -97,7 +96,6 @@ internal static class DriverHealthChecker
                     else if (isBound)
                     {
                         Logger.Log($"DRIVER_CHECK pid=0x{pid.ToUpper()} LowerFilters=bound");
-                        anyBound = true;
                     }
                     else
                     {
