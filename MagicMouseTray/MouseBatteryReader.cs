@@ -1,16 +1,20 @@
 // SPDX-License-Identifier: MIT
+// Reads battery % from Apple Magic Mouse via HID Input Report 0x90 on COL02.
+//
+// COL02 (battery collection) is a separate child PDO under BTHENUM. It exists only when
+// BTHENUM enumerates the device WITHOUT applewirelessmouse in LowerFilters — the filter
+// strips the battery collection from the HID descriptor during enumeration (pair-first
+// install sequence required; see M10 in PRD-184).
+//
+// COL01 (pointer) is exclusively held by mouhid. Zero-access handle (dwDesiredAccess=0)
+// opens both COL01 and COL02 without err=5 conflict. HidP_GetCaps pre-check skips devices
+// without a meaningful input report. HidD_GetInputReport is retried 3×50ms for BT timing.
 using System.Runtime.InteropServices;
+using System.Threading;
 using Microsoft.Win32.SafeHandles;
 
 namespace MagicMouseTray;
 
-// Reads battery % from Apple Magic Mouse via HID Input Report 0x90.
-// Uses SetupDi enumeration + HidD_GetInputReport P/Invoke — same approach
-// confirmed in M1 feasibility test (84% returned on MM2024-BT-COL02).
-//
-// COL02 is the battery collection; COL01 (pointer) is Windows-owned (err=5).
-// We enumerate all HID interfaces and try each — COL02 succeeds, COL01 fails,
-// so the first successful read is the battery read.
 public static class MouseBatteryReader
 {
     // Known Magic Mouse device definitions (VID/PID as they appear in device paths).
@@ -91,7 +95,7 @@ public static class MouseBatteryReader
     {
         using var handle = CreateFile(
             devicePath,
-            GENERIC_READ | GENERIC_WRITE,
+            0,                              // zero access — opens mouhid-owned COL01 without err=5
             FILE_SHARE_READ | FILE_SHARE_WRITE,
             IntPtr.Zero,
             OPEN_EXISTING,
@@ -104,41 +108,54 @@ public static class MouseBatteryReader
             return -1;
         }
 
+        // Skip devices without a 3-byte input report — COL02 needs report ID + 2 data bytes
+        if (!HidD_GetPreparsedData(handle, out var preparsed)) return -1;
+        try
+        {
+            var caps = new HIDP_CAPS();
+            if (HidP_GetCaps(preparsed, ref caps) != HIDP_STATUS_SUCCESS) return -1;
+            if (caps.InputReportByteLength < 3) return -1;
+        }
+        finally
+        {
+            HidD_FreePreparsedData(preparsed);
+        }
+
         var buf = new byte[3];
-        buf[0] = BatteryReportId;
-
-        if (!HidD_GetInputReport(handle, buf, buf.Length))
+        for (int attempt = 0; attempt < 3; attempt++)
         {
-            Logger.Log($"READ_FAILED path={devicePath} err={Marshal.GetLastWin32Error()}");
-            return -1;
+            buf[0] = BatteryReportId;
+            if (HidD_GetInputReport(handle, buf, buf.Length))
+            {
+                if (buf[0] != BatteryReportId)
+                {
+                    Logger.Log($"WRONG_REPORT path={devicePath} got=0x{buf[0]:X2}");
+                    return -1;
+                }
+                int pct = buf[2];
+                if (pct is < 0 or > 100)
+                {
+                    Logger.Log($"INVALID_PCT path={devicePath} val={pct}");
+                    return -1;
+                }
+                Logger.Log($"OK path={devicePath} battery={pct}%");
+                return pct;
+            }
+            if (attempt < 2) Thread.Sleep(50);
         }
 
-        if (buf[0] != BatteryReportId)
-        {
-            Logger.Log($"WRONG_REPORT path={devicePath} got=0x{buf[0]:X2}");
-            return -1;
-        }
-
-        int pct = buf[2];
-        if (pct is < 0 or > 100)
-        {
-            Logger.Log($"INVALID_PCT path={devicePath} val={pct}");
-            return -1;
-        }
-
-        Logger.Log($"OK path={devicePath} battery={pct}%");
-        return pct;
+        Logger.Log($"READ_FAILED path={devicePath} err={Marshal.GetLastWin32Error()}");
+        return -1;
     }
 
     // --- P/Invoke ---
 
-    const uint GENERIC_READ = 0x80000000;
-    const uint GENERIC_WRITE = 0x40000000;
     const uint FILE_SHARE_READ = 0x00000001;
     const uint FILE_SHARE_WRITE = 0x00000002;
     const uint OPEN_EXISTING = 3;
     const uint DIGCF_PRESENT = 0x02;
     const uint DIGCF_DEVICEINTERFACE = 0x10;
+    const int HIDP_STATUS_SUCCESS = 0x00110000;
     static readonly IntPtr INVALID_HANDLE_VALUE = new(-1);
 
     [DllImport("kernel32.dll", CharSet = CharSet.Auto, SetLastError = true)]
@@ -149,6 +166,16 @@ public static class MouseBatteryReader
     [DllImport("hid.dll", SetLastError = true)]
     static extern bool HidD_GetInputReport(SafeFileHandle HidDeviceObject,
         byte[] ReportBuffer, int ReportBufferLength);
+
+    [DllImport("hid.dll")]
+    static extern bool HidD_GetPreparsedData(SafeFileHandle HidDeviceObject,
+        out IntPtr PreparsedData);
+
+    [DllImport("hid.dll")]
+    static extern bool HidD_FreePreparsedData(IntPtr PreparsedData);
+
+    [DllImport("hid.dll")]
+    static extern int HidP_GetCaps(IntPtr PreparsedData, ref HIDP_CAPS Capabilities);
 
     [DllImport("setupapi.dll", SetLastError = true)]
     static extern IntPtr SetupDiGetClassDevs(ref Guid ClassGuid, string? Enumerator,
@@ -184,5 +211,27 @@ public static class MouseBatteryReader
         public uint cbSize;
         [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 512)]
         public string DevicePath;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    struct HIDP_CAPS
+    {
+        public ushort Usage;
+        public ushort UsagePage;
+        public ushort InputReportByteLength;
+        public ushort OutputReportByteLength;
+        public ushort FeatureReportByteLength;
+        [MarshalAs(UnmanagedType.ByValArray, SizeConst = 17)]
+        public ushort[] Reserved;
+        public ushort NumberLinkCollectionNodes;
+        public ushort NumberInputButtonCaps;
+        public ushort NumberInputValueCaps;
+        public ushort NumberInputDataIndices;
+        public ushort NumberOutputButtonCaps;
+        public ushort NumberOutputValueCaps;
+        public ushort NumberOutputDataIndices;
+        public ushort NumberFeatureButtonCaps;
+        public ushort NumberFeatureValueCaps;
+        public ushort NumberFeatureDataIndices;
     }
 }
