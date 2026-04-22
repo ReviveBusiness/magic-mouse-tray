@@ -55,12 +55,40 @@ pnputil /delete-driver oem53.inf /force 2>$null | Out-Null
 Write-Host "Step 8: Installing signed driver package..."
 pnputil /add-driver $INF /install /force
 
+# Step 9 - Register startup repair task (runs startup-repair.ps1 at every boot)
+Write-Host "Step 9: Registering startup repair task..."
+$repairScript = Join-Path $PSScriptRoot "startup-repair.ps1"
+if (Test-Path $repairScript) {
+    $taskName = "MagicMouseTray-StartupRepair"
+    $taskExists = Get-ScheduledTask -TaskName $taskName -ErrorAction SilentlyContinue
+    if ($taskExists) {
+        Write-Host "  Task '$taskName' already registered — skipping"
+    } else {
+        $action  = New-ScheduledTaskAction -Execute "powershell.exe" `
+            -Argument "-NonInteractive -WindowStyle Hidden -ExecutionPolicy Bypass -File `"$repairScript`""
+        $trigger = New-ScheduledTaskTrigger -AtStartup
+        $trigger.Delay = "PT30S"   # 30-second delay to let BT stack initialise
+        $settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries
+        $principal = New-ScheduledTaskPrincipal -UserId "SYSTEM" -RunLevel Highest
+
+        Register-ScheduledTask -TaskName $taskName -Action $action `
+            -Trigger $trigger -Settings $settings -Principal $principal `
+            -Description "Repairs Magic Mouse COL02 battery HID collection at startup" `
+            -Force | Out-Null
+        Write-Host "  Task '$taskName' registered (runs at startup with 30s delay, as SYSTEM)"
+    }
+} else {
+    Write-Host "  WARNING: startup-repair.ps1 not found at $repairScript — skipping task registration"
+    Write-Host "  For persistent battery reading across reboots, run Register-ScheduledTask manually."
+}
+
 Write-Host ""
 Write-Host "Done. Now:"
 Write-Host "  1. Remove the Magic Mouse from Bluetooth Settings"
 Write-Host "  2. Re-pair it"
 Write-Host "  3. Test scroll"
 Write-Host "  4. Reboot normally (test signing takes effect at next boot)"
+Write-Host "     Battery reading will be auto-repaired by the startup task."
 Write-Host ""
 Write-Host "After scroll is confirmed working post-reboot:"
 Write-Host "  bcdedit /set testsigning off  (then reboot — watermark gone, driver stays)"
