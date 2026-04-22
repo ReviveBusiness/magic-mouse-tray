@@ -38,9 +38,36 @@ Apple Magic Mouse on Windows 11 has no native battery indicator. Magic Mouse Uti
 
 ## Scroll Not Working?
 
-If your Magic Mouse connects but scroll doesn't work, you need the Apple wireless mouse driver. Right-click the tray icon and choose **⚠ Install Apple Driver** — it will open the correct driver page.
+Scroll requires the Apple wireless mouse filter driver (`applewirelessmouse.sys`) to be installed **and bound** to your specific mouse model. The fix differs by model.
 
-The driver you need is from [tealtadpole/MagicMouse2DriversWin11x64](https://github.com/tealtadpole/MagicMouse2DriversWin11x64).
+### Magic Mouse v1 / v2 (PID 030D, 0269)
+
+Install the driver from [tealtadpole/MagicMouse2DriversWin11x64](https://github.com/tealtadpole/MagicMouse2DriversWin11x64). The tray app will show **⚠ Install Apple Driver** in the right-click menu if the driver is missing.
+
+### Magic Mouse 2024 (USB-C, PID 0323)
+
+The tealtadpole driver does not cover PID 0323 — the INF was written in 2019 and the 2024 model was never added. Even with the driver installed, scroll will not work until the patched INF is applied.
+
+**Fix** (one-time, requires admin):
+
+1. **Boot with Driver Signature Enforcement disabled** — Start → Power → hold Shift → Restart → Troubleshoot → Advanced Options → Startup Settings → Restart → press **F7**
+
+2. **Run the fix script** in an elevated PowerShell:
+   ```powershell
+   .\sign-and-install.ps1
+   ```
+   The script: creates a self-signed code cert, generates and signs a catalog for the patched INF (adds PID 0323), enables test signing mode, and installs the driver package.
+
+3. **Remove and re-pair the mouse** in Bluetooth Settings.
+
+4. **Reboot normally** — test signing activates, driver persists.
+
+**After confirming scroll works**, you can remove the test-signing watermark:
+```powershell
+bcdedit /set testsigning off
+# then reboot
+```
+> Note: re-enabling test signing is required if you ever need to reinstall the driver.
 
 ## Right-Click Menu
 
@@ -50,7 +77,9 @@ The driver you need is from [tealtadpole/MagicMouse2DriversWin11x64](https://git
 | Start with Windows | Toggle auto-start on login |
 | Refresh Now | Force an immediate battery read |
 | Test Notification | Send a test toast (debug) |
-| ⚠ Install Apple Driver | Opens driver download (shown only if driver missing) |
+| ⚠ Install Apple Driver | Opens driver download (shown if driver missing) |
+| ⚠ Driver not bound — scroll fix needed | Opens this README's scroll fix section (driver installed but not bound) |
+| ⚠ Unknown mouse model — check for app update | Opens Releases page (future Apple mouse with unknown PID) |
 | Quit | Exit the app |
 
 ## How Battery Reading Works
@@ -66,6 +95,14 @@ dotnet publish -c Release
 # Output: bin\Release\net8.0-windows10.0.17763.0\win-x64\publish\MagicMouseTray.exe
 ```
 
+## SmartScreen Warning
+
+When you first run `MagicMouseTray.exe`, Windows may show "We can't verify who created this file." This is normal for unsigned open-source software — click **Run**.
+
+If you downloaded the file and it shows the full SmartScreen block ("Windows protected your PC"), click **More info → Run anyway**. Alternatively, right-click the file → Properties → check **Unblock** → OK.
+
+**For developers building from source on WSL**: Windows treats the WSL filesystem as a network path, which always triggers this dialog. Copy the built exe to a local Windows path (e.g. `C:\Temp\`) before running to avoid it.
+
 ## Diagnostics
 
 Log file: `%APPDATA%\MagicMouseTray\debug.log`
@@ -73,7 +110,8 @@ Log file: `%APPDATA%\MagicMouseTray\debug.log`
 Key log lines:
 - `OK battery=83%` — successful read
 - `OPEN_FAILED err=5` — COL01 skipped (normal — Windows holds this handle)
-- `DRIVER_CHECK installed=True/False` — driver detection result
+- `DRIVER_CHECK status=Ok/NotInstalled/NotBound/UnknownAppleMouse` — driver detection result
+- `DRIVER_CHECK unknown_apple_pid=0xXXXX` — future/unknown Apple mouse PID detected
 - `TOAST_SENT` — notification fired
 - `CRITICAL_ALERT_SHOWN` — 1% persistent window shown
 
