@@ -130,16 +130,11 @@ foreach ($mmPid in $knownPids) {
 
         Write-Log "Step 4: restoring LowerFilters..."
         Set-ItemProperty -Path $btRegPath -Name LowerFilters -Value $lowerFilters -Type MultiString -ErrorAction Stop
+        Write-Log "  filter registered - loads into stack on next BTHENUM start (next reboot)"
 
-        # Step 5: soft-restart the BTHENUM HID device so the filter loads into the running
-        # driver stack immediately. pnputil /restart-device reloads the stack without
-        # re-enumerating from scratch, so COL02 (already in the device tree) is preserved.
-        Write-Log "Step 5: restarting BTHENUM device to load filter into running stack..."
-        $out = pnputil /restart-device "$($btDevice.InstanceId)" 2>&1
-        Write-Log "  $(Get-PnpOutput $out)"
-
-        # Verify
-        Start-Sleep -Seconds 3
+        # Verify immediately - COL02 was created in Step 3 without filter and is now stable.
+        # Note: /restart-device is intentionally absent. Restarting BTHENUM with LowerFilters
+        # present causes the filter to re-enumerate HID children and strip COL02 again.
         $hidAfter = Get-PnpDevice -ErrorAction SilentlyContinue |
             Where-Object { $_.Class -eq 'HIDClass' -and
                            $_.InstanceId -match $mmPid -and
@@ -147,7 +142,7 @@ foreach ($mmPid in $knownPids) {
         $hidAfterCount = @($hidAfter).Count
 
         if ($hidAfterCount -ge 2) {
-            Write-Log "REPAIRED: COL02 present ($hidAfterCount HID device(s)) - battery + scroll restored"
+            Write-Log "REPAIRED: COL02 present ($hidAfterCount HID device(s)) - battery restored, scroll loads on next reboot"
             $anyRepaired = $true
         } else {
             Write-Log "WARNING: repair attempted - COL02 still not visible ($hidAfterCount HID device(s))"
