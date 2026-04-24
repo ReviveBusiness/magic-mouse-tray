@@ -1,0 +1,66 @@
+---
+title: PSN-0001 — Magic Mouse HID Battery Reader Driver Binding
+type: problem-session-note
+psn_id: PSN-0001
+version: 1.0.0
+status: active
+linked_prd: PRD-184
+linked_repo: ReviveBusiness/magic-mouse-tray
+linked_issues: [2, 3, 4]
+opened: 2026-04-17
+last_updated: 2026-04-24
+sessions_logged: 4
+---
+
+# PSN-0001: Magic Mouse HID Battery Reader — Windows 11 Driver Binding
+
+## Problem Statement
+
+Apple Magic Mouse v2/2024 on Windows 11 requires the `AppleWirelessMouse64` HID driver to be bound to read battery via HID Input Report `0x90` (byte[2] = battery %). The driver doesn't reliably bind after suspend-resume or after Windows updates. PRD-184 delivers the core battery reader, but GitHub Issues #2, #3, #4 track ongoing driver binding reliability problems.
+
+## Current Working Theory
+
+`pnputil /restart-device` is unsafe to call unconditionally after driver install because it can be called during `BTHENUM` (Bluetooth Enumerator) re-enumeration, causing the HID device to disappear from Windows device manager mid-restart. Need to check enumeration state before calling restart.
+
+## Hypotheses
+
+| ID | Hypothesis | Status | Date Tested | Evidence |
+|----|-----------|--------|-------------|---------|
+| H-001 | ReportDescriptor access indicates driver bound | **REJECTED** | 2026-04-21 | False negative — descriptor can be null even when bound due to timing. See peer-review 20260421 finding #2 |
+| H-002 | worst-state-wins semantics for DriverHealthChecker returns correct binding state | **CONFIRMED** | 2026-04-22 | PR fix/issue-4-driver-priority-v2, commit cb49ece. Multiple HID devices share same VID — any unbound device = broken state. |
+| H-003 | pnputil /restart-device safe to call unconditionally after driver install | **UNDER TEST** | Opened 2026-04-24 | Investigating BTHENUM re-enumeration timing |
+
+## Decisions Made
+
+| ID | Date | Decision | Rationale | Status |
+|----|------|---------|-----------|--------|
+| D-001 | 2026-04-17 | Use HidLibrary + HID Report 0x90, not WinRT GATT | Apple devices use proprietary HID battery reporting confirmed by WinMagicBattery reverse engineering | active |
+| D-002 | 2026-04-22 | worst-state-wins semantics for DriverHealthChecker | Multiple Magic Mouse HID devices share same Vendor ID — if any one is unbound, the whole device is in broken state | active |
+| D-003 | 2026-04-21 | Do NOT use ReportDescriptor as binding signal (H-001) | Too many false negatives — descriptor can be null even when driver is bound | active |
+
+## Next Session Brief
+
+**Current blocker**: `pnputil /restart-device` safety under `BTHENUM` re-enumeration timing. Calling it during re-enumeration causes device to vanish from device manager.
+
+**Files to read first**:
+- `MagicMouseTray/src/DriverHealthChecker.cs` — worst-state-wins logic
+- `MagicMouseTray/src/StartupRepair.cs` — where pnputil /restart-device is called
+
+**Do NOT retry**:
+- Using `ReportDescriptor` access to detect driver binding state (H-001, rejected 2026-04-21)
+
+**Open questions**:
+1. Does `BTHENUM` always re-enumerate after `pnputil /restart-device` on all Windows 11 versions?
+2. Can we check if enumeration is in progress before calling restart? (WMI query?)
+3. Is there a safer alternative to `/restart-device` that achieves the same result?
+
+**GitHub Issues to check**: #2 (driver not binding after suspend), #3 (BTHENUM timing), #4 (driver priority logic)
+
+## Session History
+
+| Date | Session | What Happened |
+|------|---------|--------------|
+| 2026-04-17 | Session 1 | Initial feasibility + HID 0x90 discovery. All 7 milestones completed. |
+| 2026-04-21 | Session 2 | Peer review via NotebookLM. 3 blocking bugs filed as Issues #2, #3, #4. H-001 rejected. |
+| 2026-04-22 | Session 3 | H-002 confirmed (worst-state-wins). PR merged. |
+| 2026-04-24 | Session 4 | H-003 opened (pnputil restart safety). PSN created. |
