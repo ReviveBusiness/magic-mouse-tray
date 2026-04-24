@@ -91,7 +91,10 @@ internal static class DriverHealthChecker
                     if (!pidKnown)
                     {
                         Logger.Log($"DRIVER_CHECK unknown_apple_pid=0x{pid.ToUpper()} bound={isBound}");
-                        anyUnknownPid = true;
+                        // Only flag if our driver is already bound to the unknown device.
+                        // Keyboards and other Apple BT HID devices have unknown PIDs but no
+                        // applewirelessmouse binding — they are not our concern.
+                        if (isBound) anyUnknownPid = true;
                     }
                     else if (isBound)
                     {
