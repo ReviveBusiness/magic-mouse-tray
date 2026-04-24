@@ -115,7 +115,18 @@ foreach ($mmPid in $knownPids) {
         $out = pnputil /enable-device "$($btDevice.InstanceId)" 2>&1
         Write-Log "  $(Get-PnpOutput $out)"
 
-        Start-Sleep -Seconds $SettleSeconds
+        # Poll for COL02 to appear after enable (up to 10s) - enumeration timing varies
+        $pollAttempts = 0
+        $hidPoll = $null
+        do {
+            Start-Sleep -Milliseconds 500
+            $pollAttempts++
+            $hidPoll = Get-PnpDevice -ErrorAction SilentlyContinue |
+                Where-Object { $_.Class -eq 'HIDClass' -and
+                               $_.InstanceId -match $mmPid -and
+                               $_.Status -eq 'OK' }
+        } while (@($hidPoll).Count -lt 2 -and $pollAttempts -lt 20)
+        Write-Log "  post-enable HID count: $(@($hidPoll).Count) (waited $($pollAttempts * 500)ms)"
 
         Write-Log "Step 4: restoring LowerFilters..."
         Set-ItemProperty -Path $btRegPath -Name LowerFilters -Value $lowerFilters -Type MultiString -ErrorAction Stop
@@ -128,7 +139,7 @@ foreach ($mmPid in $knownPids) {
         Write-Log "  $(Get-PnpOutput $out)"
 
         # Verify
-        Start-Sleep -Seconds 1
+        Start-Sleep -Seconds 3
         $hidAfter = Get-PnpDevice -ErrorAction SilentlyContinue |
             Where-Object { $_.Class -eq 'HIDClass' -and
                            $_.InstanceId -match $mmPid -and
