@@ -114,6 +114,7 @@ public static class MouseBatteryReader
         {
             var caps = new HIDP_CAPS();
             if (HidP_GetCaps(preparsed, ref caps) != HIDP_STATUS_SUCCESS) return -1;
+            Logger.Log($"HIDP_CAPS path={devicePath} InputReportByteLength={caps.InputReportByteLength}");
             if (caps.InputReportByteLength < 3) return -1;
         }
         finally
