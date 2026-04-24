@@ -44,11 +44,13 @@ $knownPids = @("0323", "030d", "0269", "0310")
 
 $anyRepaired = $false
 
-foreach ($pid in $knownPids) {
-    # Find BTHENUM parent device for this Magic Mouse pairing
+foreach ($mmPid in $knownPids) {
+    # Find BTHENUM parent device for this Magic Mouse pairing.
+    # Must match HID service UUID {00001124} — not PnP Info {00001200} or other profiles.
     $btDevice = Get-PnpDevice -ErrorAction SilentlyContinue |
         Where-Object { $_.InstanceId -match "BTHENUM" -and
-                       $_.InstanceId -match "_PID&$pid" -and
+                       $_.InstanceId -match "00001124" -and
+                       $_.InstanceId -match "_PID&$mmPid" -and
                        $_.Status -eq 'OK' } |
         Select-Object -First 1
 
@@ -56,21 +58,21 @@ foreach ($pid in $knownPids) {
         continue  # PID not paired — normal, skip silently
     }
 
-    Write-Log "PID 0x$($pid.ToUpper()): BTHENUM = $($btDevice.InstanceId)"
+    Write-Log "PID 0x$($mmPid.ToUpper()): BTHENUM = $($btDevice.InstanceId)"
 
     # COL02 exists when there are 2+ HID-class child devices with this PID and Status OK.
     # One collapsed device (filter stripped COL02) = Count 1. Healthy = Count 2+.
     $hidDevices = Get-PnpDevice -ErrorAction SilentlyContinue |
         Where-Object { $_.Class -eq 'HIDClass' -and
-                       $_.InstanceId -match $pid -and
+                       $_.InstanceId -match $mmPid -and
                        $_.Status -eq 'OK' }
 
     if ($hidDevices.Count -ge 2) {
-        Write-Log "PID 0x$($pid.ToUpper()): COL02 present ($($hidDevices.Count) HID device(s)) — no repair needed"
+        Write-Log "PID 0x$($mmPid.ToUpper()): COL02 present ($($hidDevices.Count) HID device(s)) — no repair needed"
         continue
     }
 
-    Write-Log "PID 0x$($pid.ToUpper()): COL02 missing ($($hidDevices.Count) HID device(s)) — starting repair"
+    Write-Log "PID 0x$($mmPid.ToUpper()): COL02 missing ($($hidDevices.Count) HID device(s)) — starting repair"
 
     $btRegPath = "HKLM:\SYSTEM\CurrentControlSet\Enum\" + $btDevice.InstanceId
 
@@ -82,7 +84,7 @@ foreach ($pid in $knownPids) {
     # Read current LowerFilters (need to restore after cycling)
     $lowerFilters = (Get-ItemProperty -Path $btRegPath -Name LowerFilters -ErrorAction SilentlyContinue).LowerFilters
     if (-not ($lowerFilters -contains 'applewirelessmouse')) {
-        Write-Log "PID 0x$($pid.ToUpper()): applewirelessmouse not in LowerFilters — no filter conflict, skipping"
+        Write-Log "PID 0x$($mmPid.ToUpper()): applewirelessmouse not in LowerFilters — no filter conflict, skipping"
         continue
     }
 
@@ -115,7 +117,7 @@ foreach ($pid in $knownPids) {
         Start-Sleep -Seconds 1
         $hidAfter = Get-PnpDevice -ErrorAction SilentlyContinue |
             Where-Object { $_.Class -eq 'HIDClass' -and
-                           $_.InstanceId -match $pid -and
+                           $_.InstanceId -match $mmPid -and
                            $_.Status -eq 'OK' }
 
         if ($hidAfter.Count -ge 2) {
