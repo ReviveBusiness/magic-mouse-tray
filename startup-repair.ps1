@@ -1,14 +1,14 @@
-# startup-repair.ps1 — MagicMouseTray COL02 Battery Collection Repair
+# startup-repair.ps1 - MagicMouseTray COL02 Battery Collection Repair
 # SPDX-License-Identifier: MIT
 #
 # Runs at startup via Windows Scheduled Task (SYSTEM account, 30s delay).
-# Detects whether COL02 (battery HID collection) is missing — this happens every
+# Detects whether COL02 (battery HID collection) is missing - this happens every
 # reboot when applewirelessmouse is in LowerFilters, because the filter modifies
 # the HID descriptor during fresh BTHENUM enumeration and strips the battery
 # collection. If missing, cycles the BTHENUM parent to restore COL01+COL02.
 #
 # Usage (manual): powershell -ExecutionPolicy Bypass -File startup-repair.ps1
-# Usage (scheduled task): registered by install-driver.ps1 — runs automatically.
+# Usage (scheduled task): registered by install-driver.ps1 - runs automatically.
 
 param(
     [string]$LogFile = "C:\ProgramData\MagicMouseTray\startup-repair.log",
@@ -46,7 +46,7 @@ $anyRepaired = $false
 
 foreach ($mmPid in $knownPids) {
     # Find BTHENUM parent device for this Magic Mouse pairing.
-    # Must match HID service UUID {00001124} — not PnP Info {00001200} or other profiles.
+    # Must match HID service UUID {00001124} - not PnP Info {00001200} or other profiles.
     $btDevice = Get-PnpDevice -ErrorAction SilentlyContinue |
         Where-Object { $_.InstanceId -match "BTHENUM" -and
                        $_.InstanceId -match "00001124" -and
@@ -55,7 +55,7 @@ foreach ($mmPid in $knownPids) {
         Select-Object -First 1
 
     if (-not $btDevice) {
-        continue  # PID not paired — normal, skip silently
+        continue  # PID not paired - normal, skip silently
     }
 
     Write-Log "PID 0x$($mmPid.ToUpper()): BTHENUM = $($btDevice.InstanceId)"
@@ -68,11 +68,11 @@ foreach ($mmPid in $knownPids) {
                        $_.Status -eq 'OK' }
 
     if ($hidDevices.Count -ge 2) {
-        Write-Log "PID 0x$($mmPid.ToUpper()): COL02 present ($($hidDevices.Count) HID device(s)) — no repair needed"
+        Write-Log "PID 0x$($mmPid.ToUpper()): COL02 present ($($hidDevices.Count) HID device(s)) - no repair needed"
         continue
     }
 
-    Write-Log "PID 0x$($mmPid.ToUpper()): COL02 missing ($($hidDevices.Count) HID device(s)) — starting repair"
+    Write-Log "PID 0x$($mmPid.ToUpper()): COL02 missing ($($hidDevices.Count) HID device(s)) - starting repair"
 
     $btRegPath = "HKLM:\SYSTEM\CurrentControlSet\Enum\" + $btDevice.InstanceId
 
@@ -84,13 +84,13 @@ foreach ($mmPid in $knownPids) {
     # Read current LowerFilters (need to restore after cycling)
     $lowerFilters = (Get-ItemProperty -Path $btRegPath -Name LowerFilters -ErrorAction SilentlyContinue).LowerFilters
     if (-not ($lowerFilters -contains 'applewirelessmouse')) {
-        Write-Log "PID 0x$($mmPid.ToUpper()): applewirelessmouse not in LowerFilters — no filter conflict, skipping"
+        Write-Log "PID 0x$($mmPid.ToUpper()): applewirelessmouse not in LowerFilters - no filter conflict, skipping"
         continue
     }
 
     Write-Log "LowerFilters = $($lowerFilters -join ', ')"
 
-    # Repair: remove filter → cycle BTHENUM → restore filter
+    # Repair: remove filter -> cycle BTHENUM -> restore filter
     # Cycling BTHENUM forces a fresh HID descriptor negotiation without the filter,
     # creating COL01 (scroll) and COL02 (battery) as separate child devices.
     # Re-adding the filter afterward adds scroll support to COL01 without collapsing COL02.
@@ -128,10 +128,10 @@ foreach ($mmPid in $knownPids) {
                            $_.Status -eq 'OK' }
 
         if ($hidAfter.Count -ge 2) {
-            Write-Log "REPAIRED: COL02 present ($($hidAfter.Count) HID device(s)) — battery + scroll restored"
+            Write-Log "REPAIRED: COL02 present ($($hidAfter.Count) HID device(s)) - battery + scroll restored"
             $anyRepaired = $true
         } else {
-            Write-Log "WARNING: repair attempted — COL02 still not visible ($($hidAfter.Count) HID device(s))"
+            Write-Log "WARNING: repair attempted - COL02 still not visible ($($hidAfter.Count) HID device(s))"
         }
 
     } catch {
