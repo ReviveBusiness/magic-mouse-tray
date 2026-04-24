@@ -24,6 +24,12 @@ function Write-Log {
     Add-Content -Path $LogFile -Value $line -Encoding UTF8
 }
 
+# PS5-compatible pnputil output helper - Out-String -NoNewline is PS6+ only
+function Get-PnpOutput {
+    param([string[]]$Lines)
+    return ($Lines | Select-Object -Last 2 | Out-String).TrimEnd()
+}
+
 # ---- bootstrap ----
 $logDir = Split-Path $LogFile -Parent
 if (-not (Test-Path $logDir)) {
@@ -67,12 +73,13 @@ foreach ($mmPid in $knownPids) {
                        $_.InstanceId -match $mmPid -and
                        $_.Status -eq 'OK' }
 
-    if ($hidDevices.Count -ge 2) {
-        Write-Log "PID 0x$($mmPid.ToUpper()): COL02 present ($($hidDevices.Count) HID device(s)) - no repair needed"
+    $hidCount = @($hidDevices).Count   # @() wraps $null -> 0 in PS5
+    if ($hidCount -ge 2) {
+        Write-Log "PID 0x$($mmPid.ToUpper()): COL02 present ($hidCount HID device(s)) - no repair needed"
         continue
     }
 
-    Write-Log "PID 0x$($mmPid.ToUpper()): COL02 missing ($($hidDevices.Count) HID device(s)) - starting repair"
+    Write-Log "PID 0x$($mmPid.ToUpper()): COL02 missing ($hidCount HID device(s)) - starting repair"
 
     $btRegPath = "HKLM:\SYSTEM\CurrentControlSet\Enum\" + $btDevice.InstanceId
 
@@ -100,13 +107,13 @@ foreach ($mmPid in $knownPids) {
 
         Write-Log "Step 2: disabling BTHENUM device..."
         $out = pnputil /disable-device "$($btDevice.InstanceId)" 2>&1
-        Write-Log "  $($out | Select-Object -Last 2 | Out-String -NoNewline)"
+        Write-Log "  $(Get-PnpOutput $out)"
 
         Start-Sleep -Milliseconds 500
 
         Write-Log "Step 3: enabling BTHENUM device..."
         $out = pnputil /enable-device "$($btDevice.InstanceId)" 2>&1
-        Write-Log "  $($out | Select-Object -Last 2 | Out-String -NoNewline)"
+        Write-Log "  $(Get-PnpOutput $out)"
 
         Start-Sleep -Seconds $SettleSeconds
 
@@ -118,7 +125,7 @@ foreach ($mmPid in $knownPids) {
         # re-enumerating from scratch, so COL02 (already in the device tree) is preserved.
         Write-Log "Step 5: restarting BTHENUM device to load filter into running stack..."
         $out = pnputil /restart-device "$($btDevice.InstanceId)" 2>&1
-        Write-Log "  $($out | Select-Object -Last 2 | Out-String -NoNewline)"
+        Write-Log "  $(Get-PnpOutput $out)"
 
         # Verify
         Start-Sleep -Seconds 1
@@ -126,17 +133,21 @@ foreach ($mmPid in $knownPids) {
             Where-Object { $_.Class -eq 'HIDClass' -and
                            $_.InstanceId -match $mmPid -and
                            $_.Status -eq 'OK' }
+        $hidAfterCount = @($hidAfter).Count
 
-        if ($hidAfter.Count -ge 2) {
-            Write-Log "REPAIRED: COL02 present ($($hidAfter.Count) HID device(s)) - battery + scroll restored"
+        if ($hidAfterCount -ge 2) {
+            Write-Log "REPAIRED: COL02 present ($hidAfterCount HID device(s)) - battery + scroll restored"
             $anyRepaired = $true
         } else {
-            Write-Log "WARNING: repair attempted - COL02 still not visible ($($hidAfter.Count) HID device(s))"
+            Write-Log "WARNING: repair attempted - COL02 still not visible ($hidAfterCount HID device(s))"
         }
 
     } catch {
         Write-Log "ERROR during repair: $($_.Exception.Message)"
-        # Attempt to restore LowerFilters on error
+        # Re-enable device in case we failed after Step 2 (disable) but before Step 3 (enable)
+        $reEnableOut = pnputil /enable-device "$($btDevice.InstanceId)" 2>&1
+        Write-Log "  recovery re-enable: $(Get-PnpOutput $reEnableOut)"
+        # Restore LowerFilters
         try {
             Set-ItemProperty -Path $btRegPath -Name LowerFilters -Value $lowerFilters -Type MultiString
             Write-Log "LowerFilters restored after error"
