@@ -105,110 +105,13 @@ ClearChannelHandle(
     }
 }
 
-// ---------------------------------------------------------------------------
-// Report 0x12 translation helpers
-// ---------------------------------------------------------------------------
-
-// Report 0x12 (MOUSE2_REPORT_ID) layout per Linux hid-magicmouse.c.
-// PID 0323 assumed identical to MagicMouse2 format — verify on first test run.
-//
-//   data[0]          = 0x12  (Report ID)
-//   data[1]          = button state (bit 0 = left, bit 1 = right)
-//   data[2]          = touch count + click force
-//   data[3..13]      = header (11 bytes)
-//   data[14 + i*8 .. 14 + i*8 + 7] = touch block i (8 bytes):
-//     tdata[0..1]: X encoding — (tdata[1]<<28 | tdata[0]<<20)>>20 (signed 12-bit)
-//     tdata[2..3]: Y encoding — -((tdata[2]<<24 | tdata[1]<<16)>>20) (signed 12-bit)
-//     tdata[5]:    size (bits 0-5), touch state high (bits 6-7)
-//     tdata[6]:    tracking id (bits 0-3), orientation (bits 2-7)
-//     tdata[7]:    touch state flags — high nibble: 0x30=START, 0x40=DRAG, 0x00=NONE
-// Header byte count between Report ID and first touch block.
-//   PID 0x0265 (Magic Mouse 2): 14 bytes
-//   PID 0x0323 (Magic Mouse 2024): 7 bytes
-// Empirically derived from packet sizes observed via DebugView:
-//   sz=9  total = 0xA1 + Report 0x12 + 7 header bytes + 0 touch blocks (idle/release)
-//   sz=17 total = above + 1 touch block (single finger)
-//   sz=25 total = above + 2 touch blocks (two finger gesture)
-#define TOUCH2_HEADER     7
-#define TOUCH2_BLOCK      8
-#define TOUCH_START    0x30
-#define TOUCH_DRAG     0x40
-#define SCALE_POINTER     4   // divisor: 100ths-of-mm → approximate screen delta
-#define SCALE_SCROLL      8   // divisor: 100ths-of-mm → scroll step
-
-static FORCEINLINE INT8
-ClampInt8(INT32 v)
-{
-    if (v >  127) return  127;
-    if (v < -127) return -127;
-    return (INT8)v;
-}
-
-// Decode signed 12-bit X from two touch bytes (Linux formula)
-static FORCEINLINE INT32
-TouchX(PUCHAR t)
-{
-    return (INT32)((((UINT32)t[1] << 28) | ((UINT32)t[0] << 20))) >> 20;
-}
-
-// Decode signed 12-bit Y from two touch bytes (Linux formula, negated for Windows coords)
-static FORCEINLINE INT32
-TouchY(PUCHAR t)
-{
-    return -((INT32)((((UINT32)t[2] << 24) | ((UINT32)t[1] << 16))) >> 20);
-}
-
-// Translate Report 0x12 into Report 0x01 in-place.
-// Also extracts horizontal scroll value (for future Report 0x02 emission).
-// Returns FALSE if the buffer is too short to parse.
-static BOOLEAN
-TranslateReport12(
-    _Inout_updates_bytes_(bufSize) PUCHAR  buf,
-    _In_                           ULONG   bufSize,
-    _Out_opt_                      PINT8   outWheelH,
-    _Out_                          PULONG  outReportLen)
-{
-    *outReportLen = 0;
-    if (outWheelH) *outWheelH = 0;
-
-    if (bufSize < (ULONG)(TOUCH2_HEADER + 1)) {
-        return FALSE;
-    }
-
-    UCHAR  buttons = buf[1] & 0x03;
-    ULONG  nBlocks = (bufSize - TOUCH2_HEADER) / TOUCH2_BLOCK;
-    INT8   x = 0, y = 0, wheelV = 0, wheelH = 0;
-
-    if (nBlocks >= 1) {
-        PUCHAR t = &buf[TOUCH2_HEADER];
-        INT32  rawX = TouchX(t);
-        INT32  rawY = TouchY(t);
-        UCHAR  state = t[7] & 0xF0;
-
-        if (nBlocks == 1) {
-            // Single finger — pointer movement
-            x = ClampInt8(rawX / SCALE_POINTER);
-            y = ClampInt8(rawY / SCALE_POINTER);
-        } else {
-            // Two or more fingers — scroll gesture
-            if (state == TOUCH_START || state == TOUCH_DRAG) {
-                wheelV = ClampInt8(rawY / SCALE_SCROLL);
-                wheelH = ClampInt8(rawX / SCALE_SCROLL);
-            }
-        }
-    }
-
-    // Write Report 0x01 into the same buffer (5 bytes, in-place)
-    buf[0] = MM_REPORT_ID_MOUSE;
-    buf[1] = buttons;
-    buf[2] = (UCHAR)x;
-    buf[3] = (UCHAR)y;
-    buf[4] = (UCHAR)wheelV;
-
-    if (outWheelH) *outWheelH = wheelH;
-    *outReportLen = MM_MOUSE_REPORT_LEN;
-    return TRUE;
-}
+// Note: a previous Report 0x12 -> Report 0x01 in-place translator
+// (TranslateReport12, TouchX, TouchY, ClampInt8 + TOUCH2_*/SCALE_* macros) was
+// removed in favour of the SDP descriptor-injection approach below. It was
+// unreachable from the new AclCompletion path and cannot become reachable
+// without re-architecting around report rewriting. If multi-touch parsing is
+// ever needed again (e.g. for inertial-scroll synthesis), recover the function
+// from git history (commit 5ff866a^ -- pre-port state).
 
 // ---------------------------------------------------------------------------
 // SDP HIDDescriptorList scanner + patcher
