@@ -59,28 +59,48 @@ try {
     $nonce = if ($parts.Count -gt 1) { $parts[1].Trim() } else { 'no-nonce' }
     Log "Request parsed: phase='$phase' nonce='$nonce'"
 
-    # Locate mm-dev.ps1 (synced by WSL into D:\mm3-driver\scripts)
-    $candidates = @(
-        'D:\mm3-driver\scripts\mm-dev.ps1',
-        'C:\mm3-pkg\scripts\mm-dev.ps1'
-    )
-    $devScript = $candidates | Where-Object { Test-Path $_ } | Select-Object -First 1
-    if (-not $devScript) {
-        Log "ERROR: mm-dev.ps1 not found in candidates"
-        "127|$nonce" | Set-Content $ResFile -Encoding ASCII
-        exit 127
-    }
-    Log "Using $devScript"
-
-    # Already SYSTEM (highest privilege) — pass -NoElevate so mm-dev.ps1 skips UAC re-launch
     $rc = 0
-    try {
-        & $devScript -Phase $phase -NoElevate
-        $rc = $LASTEXITCODE
-        if ($null -eq $rc) { $rc = 0 }
-    } catch {
-        Log "Exception running mm-dev.ps1: $_"
-        $rc = 99
+
+    # Special phase prefix "FLIP:Mode" routes to mm-state-flip.ps1 (LowerFilters mutation)
+    if ($phase -like 'FLIP:*') {
+        $mode = ($phase -split ':', 2)[1]
+        $flipScript = 'D:\mm3-driver\scripts\mm-state-flip.ps1'
+        if (-not (Test-Path $flipScript)) {
+            Log "ERROR: mm-state-flip.ps1 not found at $flipScript"
+            "127|$nonce" | Set-Content $ResFile -Encoding ASCII
+            exit 127
+        }
+        Log "Using $flipScript Mode=$mode"
+        try {
+            & $flipScript -Mode $mode
+            $rc = $LASTEXITCODE
+            if ($null -eq $rc) { $rc = 0 }
+        } catch {
+            Log "Exception running mm-state-flip.ps1: $_"
+            $rc = 99
+        }
+    } else {
+        # Default: route to mm-dev.ps1 -Phase $phase
+        $candidates = @(
+            'D:\mm3-driver\scripts\mm-dev.ps1',
+            'C:\mm3-pkg\scripts\mm-dev.ps1'
+        )
+        $devScript = $candidates | Where-Object { Test-Path $_ } | Select-Object -First 1
+        if (-not $devScript) {
+            Log "ERROR: mm-dev.ps1 not found in candidates"
+            "127|$nonce" | Set-Content $ResFile -Encoding ASCII
+            exit 127
+        }
+        Log "Using $devScript"
+
+        try {
+            & $devScript -Phase $phase -NoElevate
+            $rc = $LASTEXITCODE
+            if ($null -eq $rc) { $rc = 0 }
+        } catch {
+            Log "Exception running mm-dev.ps1: $_"
+            $rc = 99
+        }
     }
 
     Log "Phase '$phase' exited $rc"
