@@ -341,11 +341,7 @@ InputHandler_OpenChannelCompletion(
         PVOID brb = stack->Parameters.Others.Argument1;
 
         if (brb != NULL) {
-            // ChannelHandle is the output field of BRB_L2CA_OPEN_CHANNEL,
-            // populated by BthEnum after the L2CAP connection is established.
-            // Offset 0x20 = immediately after the 0x20-byte BRB_HEADER.
-            // TODO: verify offset against bthddi.h BRB_L2CA_OPEN_CHANNEL.ChannelHandle
-            ULONG_PTR handle = BrbReadHandle(brb, MM_BRB_CHANNEL_HANDLE_OFFSET);
+            ULONG_PTR handle = BrbReadHandle(brb, MM_BRB_OPEN_CHANNEL_HANDLE_OFFSET);
             StoreChannelHandle(devCtx, handle);
         }
     }
@@ -390,7 +386,7 @@ InputHandler_HandleBrbSubmit(
 
     // Read the ChannelHandle input before forwarding (it's the channel to close).
     case BRB_L2CA_CLOSE_CHANNEL: {
-        ULONG_PTR handle = BrbReadHandle(brb, MM_BRB_CHANNEL_HANDLE_OFFSET);
+        ULONG_PTR handle = BrbReadHandle(brb, MM_BRB_CLOSE_CHANNEL_HANDLE_OFFSET);
         ClearChannelHandle(devCtx, handle);
         goto passthrough;
     }
