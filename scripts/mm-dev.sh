@@ -41,7 +41,23 @@ QUEUE_DIR="/mnt/c/mm-dev-queue"
 TASK_TIMEOUT="${MM_TASK_TIMEOUT:-600}"   # 10 min default
 
 task_exists() {
-    schtasks.exe /query /tn "$TASK_NAME" >/dev/null 2>&1
+    # Tasks set with RunLevel=Highest require admin to query. From a non-admin
+    # WSL shell, schtasks /query returns "Access is denied" even when the task
+    # IS registered. Distinguish "doesn't exist" from "exists but can't read":
+    #   - "ERROR: The system cannot find ..." -> truly missing -> return 1
+    #   - "ERROR: Access is denied" -> exists, treat as found -> return 0
+    #   - success -> exists -> return 0
+    local out
+    out=$(schtasks.exe /query /tn "$TASK_NAME" 2>&1)
+    local rc=$?
+    if [[ $rc -eq 0 ]]; then
+        return 0
+    fi
+    if echo "$out" | grep -qiE "cannot find|does not exist|not found"; then
+        return 1
+    fi
+    # Any other error (Access denied etc.) -> assume task exists
+    return 0
 }
 
 # Sync WSL repo driver/ + scripts/ into Windows build dir.
