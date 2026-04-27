@@ -122,7 +122,14 @@ ClearChannelHandle(
 //     tdata[5]:    size (bits 0-5), touch state high (bits 6-7)
 //     tdata[6]:    tracking id (bits 0-3), orientation (bits 2-7)
 //     tdata[7]:    touch state flags — high nibble: 0x30=START, 0x40=DRAG, 0x00=NONE
-#define TOUCH2_HEADER    14
+// Header byte count between Report ID and first touch block.
+//   PID 0x0265 (Magic Mouse 2): 14 bytes
+//   PID 0x0323 (Magic Mouse 2024): 7 bytes
+// Empirically derived from packet sizes observed via DebugView:
+//   sz=9  total = 0xA1 + Report 0x12 + 7 header bytes + 0 touch blocks (idle/release)
+//   sz=17 total = above + 1 touch block (single finger)
+//   sz=25 total = above + 2 touch blocks (two finger gesture)
+#define TOUCH2_HEADER     7
 #define TOUCH2_BLOCK      8
 #define TOUCH_START    0x30
 #define TOUCH_DRAG     0x40
