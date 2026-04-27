@@ -205,10 +205,17 @@ internal sealed class TrayApp : IDisposable
             _currentIcon = newIcon;
             oldIcon?.Dispose();
 
-            // Update tooltip (max 63 chars — Windows limit)
+            // Update tooltip (max 63 chars — Windows limit).
+            // pct=-1 means disconnected (no Apple Magic Mouse path responded).
+            // pct=-2 means inaccessible (path found, Apple driver in unified-mode trapping
+            // Feature Report 0x47 behind mouhid exclusivity — see PRD-184 / MouseBatteryReader).
             var interval = AdaptivePoller.GetInterval(pct);
-            var pctStr = pct >= 0 ? $"{pct}%" : "disconnected";
-            var baseTip = $"{device} — {pctStr} · Next: {FormatInterval(interval)}";
+            var pctStr = pct switch {
+                >= 0 => $"{pct}%",
+                -2   => "battery N/A",
+                _    => "disconnected",
+            };
+            var baseTip = $"{device} - {pctStr} · Next: {FormatInterval(interval)}";
             var tip = _driverStatus != DriverStatus.Ok ? $"⚠ Driver | {baseTip}" : baseTip;
             _tray.Text = tip.Length > 63 ? tip[..63] : tip;
 
