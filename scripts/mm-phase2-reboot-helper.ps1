@@ -82,6 +82,16 @@ $pmlPath = Join-Path $runDirWin "procmon.PML"
 $etlPath = Join-Path $runDirWin "etw-trace.etl"
 $ProcmonExe = "C:\Users\Lesley\AppData\Local\Microsoft\WindowsApps\Procmon.exe"
 
+# Procmon refuses (or silently rolls over) when /BackingFile points at the
+# WSL UNC path -- empirically observed dropping captures to D:\Users\Lesley\
+# Desktop\Bootlog-N.pml instead. We use a local-disk staging path for
+# Procmon, then Move-Item the result into the (UNC) cell run dir at end.
+$ProcmonStagingDir = "D:\m13-procmon"
+if (-not (Test-Path $ProcmonStagingDir)) {
+    New-Item -Path $ProcmonStagingDir -ItemType Directory -Force | Out-Null
+}
+$pmlStagingPath = Join-Path $ProcmonStagingDir "procmon-post-reboot-$CellId.PML"
+
 Write-Host ""
 Write-Host "===== Phase 2 reboot helper ($Phase, $CellId) =====" -ForegroundColor Cyan
 Write-Host "  run dir: $runDirWin"
@@ -197,10 +207,15 @@ Cell run dir: $runDirWin
 # POSTREBOOT MODE
 # ---------------------------------------------------------------------------
 if ($Phase -eq 'postreboot') {
-    # 1. Start fresh Procmon
-    Write-Host "[1/4] Starting Procmon -> $pmlPath" -ForegroundColor Cyan
+    # 1. Start fresh Procmon. Backing file goes to local D: staging
+    #    (Procmon ignores /BackingFile UNC paths empirically). We Move-Item
+    #    into the cell run dir at the end.
+    Write-Host "[1/4] Starting Procmon -> $pmlStagingPath" -ForegroundColor Cyan
+    if (Test-Path $pmlStagingPath) {
+        Remove-Item $pmlStagingPath -Force
+    }
     Start-Process -FilePath $ProcmonExe `
-        -ArgumentList @('/BackingFile', $pmlPath, '/Quiet', '/Minimized', '/AcceptEula') `
+        -ArgumentList @('/BackingFile', $pmlStagingPath, '/Quiet', '/Minimized', '/AcceptEula') `
         -WindowStyle Minimized
     Start-Sleep -Seconds 3
     if (-not (Get-Process Procmon* -ErrorAction SilentlyContinue)) {
@@ -235,11 +250,27 @@ if ($Phase -eq 'postreboot') {
         & $ProcmonExe /Terminate 2>&1 | ForEach-Object { Write-Host "  $_" }
         Start-Sleep -Seconds 3
     }
-    if (Test-Path $pmlPath) {
+    # Move Procmon staging output into the cell run dir
+    if (Test-Path $pmlStagingPath) {
         $newPml = Join-Path $runDirWin "procmon-post-reboot.PML"
-        Move-Item $pmlPath $newPml -Force
+        Move-Item $pmlStagingPath $newPml -Force
         $sz = [math]::Round((Get-Item $newPml).Length / 1MB, 1)
         Write-Host "  -> $newPml ($sz MB)"
+    } else {
+        Write-Host "  WARN: no Procmon staging output at $pmlStagingPath -- check D:\Users\Lesley\Desktop\ for Bootlog-N.pml fallback files" -ForegroundColor Yellow
+    }
+    # Also collect any rollover Bootlog files Procmon may have spawned to its
+    # default location (we have observed up to 9 rollover files per cell)
+    $bootlogPattern = "D:\Users\Lesley\Desktop\Bootlog*.pml"
+    $bootlogs = Get-ChildItem $bootlogPattern -ErrorAction SilentlyContinue | Where-Object { $_.LastWriteTime -gt (Get-Date).AddMinutes(-30) }
+    if ($bootlogs) {
+        Write-Host "  Moving $($bootlogs.Count) Bootlog rollover file(s) into cell run dir..." -ForegroundColor Cyan
+        foreach ($bl in $bootlogs) {
+            $dest = Join-Path $runDirWin "procmon-post-reboot-rollover-$($bl.Name)"
+            Move-Item $bl.FullName $dest -Force
+            $sz = [math]::Round((Get-Item $dest).Length / 1MB, 1)
+            Write-Host "    -> $dest ($sz MB)"
+        }
     }
     if (Test-Path $etlPath) {
         $newEtl = Join-Path $runDirWin "etw-trace-post-reboot.etl"
