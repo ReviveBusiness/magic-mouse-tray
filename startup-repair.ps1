@@ -1,14 +1,20 @@
-# startup-repair.ps1 — MagicMouseTray COL02 Battery Collection Repair
+# startup-repair.ps1 - MagicMouseTray COL02 Battery Collection Repair
 # SPDX-License-Identifier: MIT
 #
 # Runs at startup via Windows Scheduled Task (SYSTEM account, 30s delay).
-# Detects whether COL02 (battery HID collection) is missing — this happens every
-# reboot when applewirelessmouse is in LowerFilters, because the filter modifies
-# the HID descriptor during fresh BTHENUM enumeration and strips the battery
-# collection. If missing, cycles the BTHENUM parent to restore COL01+COL02.
+# Detects whether COL02 (battery HID collection) is missing. COL02 persists
+# through normal reboots; it only goes missing after a fresh device re-enumeration
+# (unpair/re-pair, or a previous buggy startup-repair run that called /restart-device).
+# If missing, cycles BTHENUM without the filter to create COL01+COL02, then restores
+# the filter to both registry locations (Enum key + driver instance key).
+#
+# CRITICAL: Do NOT call pnputil /restart-device after restoring LowerFilters.
+# /restart-device triggers descriptor re-processing with the filter active, which
+# strips COL02 again. The filter loads correctly at the next reboot via the driver
+# instance key — no forced restart is needed.
 #
 # Usage (manual): powershell -ExecutionPolicy Bypass -File startup-repair.ps1
-# Usage (scheduled task): registered by install-driver.ps1 — runs automatically.
+# Usage (scheduled task): registered by install-driver.ps1 - runs automatically.
 
 param(
     [string]$LogFile = "C:\ProgramData\MagicMouseTray\startup-repair.log",
@@ -22,6 +28,12 @@ function Write-Log {
     param([string]$Msg)
     $line = "[$(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')] $Msg"
     Add-Content -Path $LogFile -Value $line -Encoding UTF8
+}
+
+# PS5-compatible pnputil output helper - Out-String -NoNewline is PS6+ only
+function Get-PnpOutput {
+    param([string[]]$Lines)
+    return ($Lines | Select-Object -Last 2 | Out-String).TrimEnd()
 }
 
 # ---- bootstrap ----
@@ -44,33 +56,36 @@ $knownPids = @("0323", "030d", "0269", "0310")
 
 $anyRepaired = $false
 
-foreach ($pid in $knownPids) {
-    # Find BTHENUM parent device for this Magic Mouse pairing
+foreach ($mmPid in $knownPids) {
+    # Find BTHENUM parent device for this Magic Mouse pairing.
+    # Must match HID service UUID {00001124} - not PnP Info {00001200} or other profiles.
     $btDevice = Get-PnpDevice -ErrorAction SilentlyContinue |
         Where-Object { $_.InstanceId -match "BTHENUM" -and
-                       $_.InstanceId -match "_PID&$pid" -and
+                       $_.InstanceId -match "00001124" -and
+                       $_.InstanceId -match "_PID&$mmPid" -and
                        $_.Status -eq 'OK' } |
         Select-Object -First 1
 
     if (-not $btDevice) {
-        continue  # PID not paired — normal, skip silently
+        continue  # PID not paired - normal, skip silently
     }
 
-    Write-Log "PID 0x$($pid.ToUpper()): BTHENUM = $($btDevice.InstanceId)"
+    Write-Log "PID 0x$($mmPid.ToUpper()): BTHENUM = $($btDevice.InstanceId)"
 
     # COL02 exists when there are 2+ HID-class child devices with this PID and Status OK.
     # One collapsed device (filter stripped COL02) = Count 1. Healthy = Count 2+.
     $hidDevices = Get-PnpDevice -ErrorAction SilentlyContinue |
         Where-Object { $_.Class -eq 'HIDClass' -and
-                       $_.InstanceId -match $pid -and
+                       $_.InstanceId -match $mmPid -and
                        $_.Status -eq 'OK' }
 
-    if ($hidDevices.Count -ge 2) {
-        Write-Log "PID 0x$($pid.ToUpper()): COL02 present ($($hidDevices.Count) HID device(s)) — no repair needed"
+    $hidCount = @($hidDevices).Count   # @() wraps $null -> 0 in PS5
+    if ($hidCount -ge 2) {
+        Write-Log "PID 0x$($mmPid.ToUpper()): COL02 present ($hidCount HID device(s)) - no repair needed"
         continue
     }
 
-    Write-Log "PID 0x$($pid.ToUpper()): COL02 missing ($($hidDevices.Count) HID device(s)) — starting repair"
+    Write-Log "PID 0x$($mmPid.ToUpper()): COL02 missing ($hidCount HID device(s)) - starting repair"
 
     $btRegPath = "HKLM:\SYSTEM\CurrentControlSet\Enum\" + $btDevice.InstanceId
 
@@ -82,13 +97,13 @@ foreach ($pid in $knownPids) {
     # Read current LowerFilters (need to restore after cycling)
     $lowerFilters = (Get-ItemProperty -Path $btRegPath -Name LowerFilters -ErrorAction SilentlyContinue).LowerFilters
     if (-not ($lowerFilters -contains 'applewirelessmouse')) {
-        Write-Log "PID 0x$($pid.ToUpper()): applewirelessmouse not in LowerFilters — no filter conflict, skipping"
+        Write-Log "PID 0x$($mmPid.ToUpper()): applewirelessmouse not in LowerFilters - no filter conflict, skipping"
         continue
     }
 
     Write-Log "LowerFilters = $($lowerFilters -join ', ')"
 
-    # Repair: remove filter → cycle BTHENUM → restore filter
+    # Repair: remove filter -> cycle BTHENUM -> restore filter
     # Cycling BTHENUM forces a fresh HID descriptor negotiation without the filter,
     # creating COL01 (scroll) and COL02 (battery) as separate child devices.
     # Re-adding the filter afterward adds scroll support to COL01 without collapsing COL02.
@@ -98,36 +113,61 @@ foreach ($pid in $knownPids) {
 
         Write-Log "Step 2: disabling BTHENUM device..."
         $out = pnputil /disable-device "$($btDevice.InstanceId)" 2>&1
-        Write-Log "  $($out | Select-Object -Last 2 | Out-String -NoNewline)"
+        Write-Log "  $(Get-PnpOutput $out)"
 
         Start-Sleep -Milliseconds 500
 
         Write-Log "Step 3: enabling BTHENUM device..."
         $out = pnputil /enable-device "$($btDevice.InstanceId)" 2>&1
-        Write-Log "  $($out | Select-Object -Last 2 | Out-String -NoNewline)"
+        Write-Log "  $(Get-PnpOutput $out)"
 
         Start-Sleep -Seconds $SettleSeconds
 
-        Write-Log "Step 4: restoring LowerFilters..."
+        # Step 4a: restore LowerFilters to the Enum key (instance-level)
+        Write-Log "Step 4a: restoring LowerFilters to Enum key (no device restart)..."
         Set-ItemProperty -Path $btRegPath -Name LowerFilters -Value $lowerFilters -Type MultiString -ErrorAction Stop
 
-        # Verify
+        # Step 4b: also write to the driver instance key — PnP reads from here during
+        # device stack construction at boot. Without this, the filter gets error 1077
+        # (SERVICE_NEVER_STARTED) because PnP never finds LowerFilters in the canonical location.
+        $driverKey = (Get-ItemProperty -Path $btRegPath -Name Driver -ErrorAction SilentlyContinue).Driver
+        if ($driverKey) {
+            $driverInstPath = "HKLM:\SYSTEM\CurrentControlSet\Control\Class\$driverKey"
+            if (Test-Path $driverInstPath) {
+                Set-ItemProperty -Path $driverInstPath -Name LowerFilters -Value $lowerFilters -Type MultiString -ErrorAction SilentlyContinue
+                Write-Log "Step 4b: driver instance key updated ($driverInstPath)"
+            } else {
+                Write-Log "Step 4b: WARNING - driver instance key not found: $driverInstPath"
+            }
+        } else {
+            Write-Log "Step 4b: WARNING - Driver value not found in $btRegPath"
+        }
+
+        # No Step 5. Do NOT call pnputil /restart-device here — it triggers HID descriptor
+        # re-processing with the filter active, which strips COL02 again. The filter will
+        # load into the stack at the next reboot via the driver instance key set above.
+
+        # Verify COL02 is present (should be — we just cycled without filter)
         Start-Sleep -Seconds 1
         $hidAfter = Get-PnpDevice -ErrorAction SilentlyContinue |
             Where-Object { $_.Class -eq 'HIDClass' -and
-                           $_.InstanceId -match $pid -and
+                           $_.InstanceId -match $mmPid -and
                            $_.Status -eq 'OK' }
+        $hidAfterCount = @($hidAfter).Count
 
-        if ($hidAfter.Count -ge 2) {
-            Write-Log "REPAIRED: COL02 present ($($hidAfter.Count) HID device(s)) — battery reading restored"
+        if ($hidAfterCount -ge 2) {
+            Write-Log "REPAIRED: COL02 present ($hidAfterCount HID device(s)). Battery restored. Scroll loads at next reboot."
             $anyRepaired = $true
         } else {
-            Write-Log "WARNING: repair attempted — COL02 still not visible ($($hidAfter.Count) HID device(s))"
+            Write-Log "WARNING: repair attempted - COL02 still not visible ($hidAfterCount HID device(s))"
         }
 
     } catch {
         Write-Log "ERROR during repair: $($_.Exception.Message)"
-        # Attempt to restore LowerFilters on error
+        # Re-enable device in case we failed after Step 2 (disable) but before Step 3 (enable)
+        $reEnableOut = pnputil /enable-device "$($btDevice.InstanceId)" 2>&1
+        Write-Log "  recovery re-enable: $(Get-PnpOutput $reEnableOut)"
+        # Restore LowerFilters
         try {
             Set-ItemProperty -Path $btRegPath -Name LowerFilters -Value $lowerFilters -Type MultiString
             Write-Log "LowerFilters restored after error"

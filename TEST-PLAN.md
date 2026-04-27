@@ -11,10 +11,95 @@ owner: Lesley Murfin
 
 # MagicMouseTray — Test Plan
 
-**BLUF**: Seven-tier test plan (BCP-STD-015) for MagicMouseTray v1.0 release. Covers unit logic,
-driver installation, HID stack integration, full E2E user journey (clean-slate and incremental),
-reboot resilience, upgrade path, and security controls. Two device targets: Magic Mouse v3 (PID
-0323) and Magic Mouse v1 (PID 030d). All tiers must pass before v1.1.0 release tag.
+## What You Need to Do (Read This First)
+
+Three test sessions required before v1.1.0 release. Do them in order.
+
+---
+
+### Session 1 — Does it work on your existing setup? (30 min, Windows, Admin)
+
+Your machine already has the driver partially configured. This session confirms the code works
+before you wipe anything.
+
+1. **Fix one code issue first** (agent does this, not you): Add a log line to `MouseBatteryReader.cs`
+   that prints the `InputReportByteLength` value. Without this, we can't confirm the battery reader
+   will work on a clean install. This is the single highest-risk unknown right now.
+2. Rebuild the binary after the fix.
+3. **You run**: Copy `\\wsl.localhost\Ubuntu\tmp\mmtray-build\MagicMouseTray.exe` to `C:\Temp\`
+4. **You run**: Start the app. Wait 10 seconds.
+5. **You check**: Does the tray icon show a battery percentage? (not "disconnected")
+6. **You check**: Open `C:\Users\<you>\AppData\Local\MagicMouseTray\debug.log` — look for:
+   - `InputReportByteLength=X` — X must be **3 or higher** (if it's 2, stop and report it)
+   - `OK path=...col02... battery=NN%`
+   - No `READ_FAILED` lines after the first 30 seconds
+7. **You test**: Does the mouse still scroll normally while the app runs?
+8. **You reboot**: Normal reboot.
+9. **You check after reboot**: Battery % still shows in tray without doing anything?
+10. **You check**: `C:\ProgramData\MagicMouseTray\startup-repair.log` — last line should say
+    `REPAIRED: COL02 present` or `COL02 present — no repair needed`
+
+**Session 1 passes when**: Battery reads in tray + `InputReportByteLength >= 3` in log + scroll works + battery persists after reboot.
+
+---
+
+### Session 2 — Clean-slate install (1 hour, Windows, Admin) — Magic Mouse v3
+
+This simulates a brand new user who just downloaded the software. Everything gets wiped first.
+
+1. **You run the teardown script** (at the bottom of this file, PowerShell as Admin)
+2. **You reboot**
+3. **You confirm clean**: No `applewirelessmouse` in `pnputil /enum-drivers`. No scheduled task. Mouse scrolls (BT still connected) but no battery.
+4. **You run**: `sign-and-install.ps1` as Administrator from the repo folder
+5. **You check**: Script completes all 9 steps with no errors
+6. **You re-pair**: Remove mouse from Bluetooth Settings → re-add it. Wait for it to reconnect.
+7. **You run**: Start the app
+8. **You check**: Battery % in tray within 10 seconds
+9. **You reboot**
+10. **You check**: Battery % shows automatically after reboot, no manual steps
+
+**Session 2 passes when**: Full cycle works from nothing → battery in tray → survives reboot, zero manual steps beyond sign-and-install + re-pair.
+
+---
+
+### Session 3 — Clean-slate install — Magic Mouse v1 (30 min, Windows, Admin)
+
+Same as Session 2 but with your v1 Magic Mouse (PID 030d). Confirms the software works for
+older hardware that many users will have.
+
+1. Repeat teardown
+2. Pair the v1 mouse
+3. Run `sign-and-install.ps1`
+4. Re-pair v1 mouse
+5. Start app
+6. Confirm battery reads (PID 030d device)
+7. Reboot → confirm battery persists
+
+**Session 3 passes when**: Same result as Session 2 but on v1 hardware.
+
+---
+
+### Before Sessions 2 and 3 — Code Fixes Required
+
+These issues were found in adversarial peer review and will cause test failures if not fixed first:
+
+| # | What's broken | Who fixes it | Blocks |
+|---|--------------|-------------|--------|
+| BLK-01 | Battery reader may silently skip COL02 if report is 2 bytes (needs log verification in Session 1) | Agent | Session 1 diagnosis |
+| BLK-02 | DriverHealthChecker returns `Ok` when zero devices found (false healthy signal) | Agent | T1 unit tests |
+| BLK-03 | Scheduled task points to wherever you ran the script from — if that's Downloads, any user can overwrite it | Agent | Session 2 security |
+| BLK-04 | Log directory not locked — privilege escalation possible via symlink | Agent | Session 3 security |
+
+BLK-03 and BLK-04 don't affect whether battery reads work — they affect whether it's safe to ship publicly. Session 1 and 2 can proceed without fixing BLK-03/04, but they must be fixed before the public v1.1.0 release.
+
+---
+
+## BLUF
+
+Seven-tier test plan (BCP-STD-015) for MagicMouseTray v1.1.0 public release. Three test sessions
+(incremental, clean v3, clean v1) must pass before release tag. Four code blockers must be resolved
+before Sessions 2–3. Goal: a new user runs `sign-and-install.ps1`, re-pairs their mouse, and gets
+battery in the tray — no manual registry edits, no debugging, no what I went through.
 
 ---
 
