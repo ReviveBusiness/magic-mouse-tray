@@ -112,14 +112,20 @@ try {
     }
 
     Write-Host ""
-    Write-Host "===== Phase 0+1 complete =====" -ForegroundColor Green
-    Write-Host "Next steps (run from WSL, no admin needed):"
-    Write-Host "  cd $repo"
-    Write-Host "  ./scripts/mm-reg-export.sh post-cleanup    # export post-state"
-    Write-Host "  ./scripts/mm-reg-diff.sh --auto            # MOP gate: confirm mutations match plan"
-    Write-Host "  ./scripts/mm-snapshot-state.sh             # PnP/HID/driver topology"
+    Write-Host "===== Phase 0+1 admin-PS portion complete =====" -ForegroundColor Green
     Write-Host ""
-    Write-Host "  (or run the bundle: ./scripts/mm-phase1-closeout.sh — does all three.)"
+    Write-Host "NEXT — close out the 5-block per-phase gate from WSL:" -ForegroundColor Yellow
+    Write-Host "  cd $repo"
+    Write-Host "  ./scripts/mm-phase1-closeout.sh  # Block 1 (artefacts) + prints Blocks 2-5 checklist"
+    Write-Host ""
+    Write-Host "Then complete Blocks 2-5 manually:"
+    Write-Host "  Block 2  Update PSN-0001 + plan + playbook"
+    Write-Host "  Block 3  Cross-ref GitHub issues #2/#3/#4 with phase findings"
+    Write-Host "  Block 4  /prd update-progress against PRD-184"
+    Write-Host "  Block 5  Atomic commit covering Blocks 1-4"
+    Write-Host ""
+    Write-Host "Skipping any block means the next session pays a 30+ min context tax."
+    Write-Host "Full procedure: .ai/playbooks/autonomous-agent-team.md"
     Write-Host ""
     Write-Host "Transcript: $log"
     exit 0

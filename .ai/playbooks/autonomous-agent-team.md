@@ -1,6 +1,6 @@
 # Autonomous Agent Development Team — Playbook
 
-**Status:** v1.1 (2026-04-27, +AP-12/13/14/15 from M13 Phase 1 cleanup session)
+**Status:** v1.2 (2026-04-27, +AP-12/13/14/15 + Per-phase close-out gate)
 **Scope:** how to run a multi-agent autonomous workflow that produces correct results the first time, instead of the iterative-discovery cycles we hit overnight.
 
 This is intended to be lifted out of `magic-mouse-tray/.ai/playbooks/` into a global location (e.g. `~/.claude/playbooks/` or `RILEY/.ai/playbooks/`) once it stabilises across one more autonomous session.
@@ -285,6 +285,53 @@ Before invoking `/peer-review` on architecture work, run a corpus-refresh step:
 **Symptom:** `cmd | python3 - "$ARG" <<'PY' ... PY` runs without error but `sys.stdin.read()` returns empty.
 **Concrete instance (M13, mm-reg-diff.sh):** The decoder function read 0 bytes of diff output even though the pipeline produced ~1200 lines. Python's `-` argument tells it to read its source from stdin; the `<<'PY'` heredoc is the source. The pipeline's stdout never reaches `sys.stdin.read()` because the heredoc redirect overrides the pipe.
 **Fix:** Either write the python to a temp file (`mktemp --suffix=.py`) and call `cmd | python3 /tmp/decoder.py "$ARG"`, OR use `-c "..."` and pay the bash-quoting cost. Never combine `python3 -` with both `cmd | ...` and `<<HEREDOC`.
+
+---
+
+## Per-phase close-out gate (non-skippable)
+
+Every phase that mutates state OR produces empirical findings ends with this 5-block ritual. **A phase is not "done" until all five blocks are complete.** Skipping any block means the next agent/session loses context — that is the failure mode the gate prevents.
+
+### Block 1 — Verification artefacts (mechanical, scripted)
+- [ ] `mm-reg-diff.sh --auto` produces a markdown audit at `.ai/test-runs/<phase>/reg-diff-<ts>.md` IF registry mutations occurred (Phase 1 cleanup, Phase 4 cache patch, etc.). Unexpected drift = halt.
+- [ ] `mm-snapshot-state.sh` captures filesystem / PnP topology / driver packages.
+- [ ] All orchestrator transcripts archived under `.ai/test-runs/<phase>/`.
+
+### Block 2 — Continuity files (judgment-required, manual)
+- [ ] **PSN file** (e.g. `PSN-0001-hid-battery-driver.yaml`):
+    * `last_updated` bumped to today (Calgary timestamp)
+    * `sessions_logged` incremented
+    * New row in Session History table — what happened, what changed
+    * Hypotheses table — any `H-NNN` newly CONFIRMED or REJECTED
+    * Decisions Made — new `D-NNN` entries with rationale
+    * Next Session Brief refreshed (current state, do-not-retry, next step)
+- [ ] **Plan file** (e.g. `m13-baseline-and-cache-test.md`):
+    * Version bump if step list, success criteria, or halt conditions changed
+    * Changelog appended in the Status block
+- [ ] **Playbook** (this file):
+    * New `AP-NN` captured if a novel failure mode was hit
+    * Version bump
+
+### Block 3 — Related issue / project tracking
+- [ ] Cross-reference each GitHub issue listed in the PSN's `linked_issues` with the phase finding.
+- [ ] Close issues that the phase resolved.
+- [ ] Comment with status on issues still open (link to phase report + commit hash).
+- [ ] If a finding spawns a new bug/risk, file a fresh issue and add to `linked_issues`.
+
+### Block 4 — Higher-level state
+- [ ] `/prd update-progress` against the linked PRD (e.g. PRD-184) to capture phase results.
+- [ ] (Optional) Tag the phase boundary commit (`git tag m13-phase1-done`).
+
+### Block 5 — Atomic commit
+- [ ] All Block 1–4 artefacts + continuity updates land in **one** commit.
+- [ ] Commit message: `<scope>: <phase> — <one-line finding>`, body references PSN/PRD/issues.
+- [ ] If commits fragmented across multiple, that's a process bug — note it in playbook for next round.
+
+### Why this is non-skippable
+
+The empirical pattern across PRD-184 sessions: every time an agent finished a phase but skipped one of these blocks, the next session paid a 30+ minute "what state are we in?" tax to reconstruct context. Six sessions deep, the cost compounds to days. The blocks are cheap (~10 min) at the time but enormous later.
+
+If a block is genuinely impossible (e.g. no GitHub access from this session), explicitly note in the PSN's Next Session Brief: "Block N skipped because <reason> — pick up next session."
 
 ---
 

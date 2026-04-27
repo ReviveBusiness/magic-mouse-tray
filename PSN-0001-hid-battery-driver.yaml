@@ -2,7 +2,7 @@
 title: PSN-0001 — Magic Mouse HID Battery Reader Driver Binding
 type: problem-session-note
 psn_id: PSN-0001
-version: 1.1.0
+version: 1.2.0
 status: active
 linked_prd: PRD-184
 linked_repo: ReviveBusiness/magic-mouse-tray
@@ -10,6 +10,13 @@ linked_issues: [2, 3, 4]
 opened: 2026-04-17
 last_updated: 2026-04-27
 sessions_logged: 7
+close_out_gate: ".ai/playbooks/autonomous-agent-team.md#per-phase-close-out-gate-non-skippable"
+session_protocol: |
+  Every session that touches PRD-184 work MUST end by running through the
+  5-block per-phase close-out gate (Block 1 = verification artefacts,
+  Block 2 = update this PSN + plan + playbook, Block 3 = cross-reference
+  linked_issues, Block 4 = /prd update-progress, Block 5 = atomic commit).
+  This is non-skippable per the playbook. See close_out_gate field above.
 ---
 
 # PSN-0001: Magic Mouse HID Battery Reader — Windows 11 Driver Binding

@@ -203,6 +203,14 @@ Per Phase, the test orchestrator opens these channels at start and closes at end
 
 All artefacts archived under `.ai/test-runs/<ts>/<phase>/<cell>/`.
 
+## Per-phase close-out gate (applies to ALL phases)
+
+Every phase ends with the **5-block close-out ritual** defined in `.ai/playbooks/autonomous-agent-team.md` — Block 1 (verification artefacts) · Block 2 (continuity files: PSN-0001, this plan, playbook) · Block 3 (GitHub issues `#2`/`#3`/`#4` cross-referenced) · Block 4 (`/prd update-progress` against PRD-184) · Block 5 (atomic commit).
+
+`mm-phase1-closeout.sh` automates Block 1 and prints the Block 2-5 checklist as a non-skippable reminder. **A phase is not "done" until all five blocks are confirmed complete.**
+
+This gate is the empirical answer to "context loss across multi-session work" observed across the prior 6 sessions of PRD-184 — see PSN-0001 Session History.
+
 ## Pre-execution gates (G1)
 
 Before Phase 1 runs, all of these must complete:
