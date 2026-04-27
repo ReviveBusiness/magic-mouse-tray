@@ -37,10 +37,16 @@
 [CmdletBinding()]
 param(
     [Parameter(Mandatory=$true, Position=0)]
-    [ValidateSet('prereboot','postreboot')]
+    [ValidateSet('prereboot','bootlog-save','postreboot')]
     [string]$Phase,
     [Parameter(Mandatory=$true, Position=1)]
-    [string]$CellId
+    [string]$CellId,
+    # Cell 1 lesson: unfiltered Procmon emits ~3 GB per cell sub-step (rolled
+    # over to 9 files = 27 GB). Across 6 cells that scales to 240+ GB. Use
+    # -SkipProcmon to lean on ETW alone for cells where Procmon's signal-to-
+    # noise ratio is poor; revisit when we have a PMC filter file restricted
+    # to BTHPORT/HidBth/applewirelessmouse.
+    [switch]$SkipProcmon
 )
 
 $ErrorActionPreference = 'Stop'
@@ -207,21 +213,25 @@ Cell run dir: $runDirWin
 # POSTREBOOT MODE
 # ---------------------------------------------------------------------------
 if ($Phase -eq 'postreboot') {
-    # 1. Start fresh Procmon. Backing file goes to local D: staging
-    #    (Procmon ignores /BackingFile UNC paths empirically). We Move-Item
-    #    into the cell run dir at the end.
-    Write-Host "[1/4] Starting Procmon -> $pmlStagingPath" -ForegroundColor Cyan
-    if (Test-Path $pmlStagingPath) {
-        Remove-Item $pmlStagingPath -Force
-    }
-    Start-Process -FilePath $ProcmonExe `
-        -ArgumentList @('/BackingFile', $pmlStagingPath, '/Quiet', '/Minimized', '/AcceptEula') `
-        -WindowStyle Minimized
-    Start-Sleep -Seconds 3
-    if (-not (Get-Process Procmon* -ErrorAction SilentlyContinue)) {
-        Write-Host "  WARN: Procmon process not detected after launch" -ForegroundColor Yellow
+    # 1. Start fresh Procmon (or skip if -SkipProcmon set).
+    #    Backing file goes to local D: staging (Procmon ignores /BackingFile
+    #    UNC paths empirically). We Move-Item into the cell run dir at end.
+    if ($SkipProcmon) {
+        Write-Host "[1/4] Procmon SKIPPED (-SkipProcmon set; data-volume control)" -ForegroundColor Yellow
     } else {
-        Write-Host "  -> Procmon running"
+        Write-Host "[1/4] Starting Procmon -> $pmlStagingPath" -ForegroundColor Cyan
+        if (Test-Path $pmlStagingPath) {
+            Remove-Item $pmlStagingPath -Force
+        }
+        Start-Process -FilePath $ProcmonExe `
+            -ArgumentList @('/BackingFile', $pmlStagingPath, '/Quiet', '/Minimized', '/AcceptEula') `
+            -WindowStyle Minimized
+        Start-Sleep -Seconds 3
+        if (-not (Get-Process Procmon* -ErrorAction SilentlyContinue)) {
+            Write-Host "  WARN: Procmon process not detected after launch" -ForegroundColor Yellow
+        } else {
+            Write-Host "  -> Procmon running"
+        }
     }
 
     # 2. Start fresh wpr
@@ -246,12 +256,12 @@ if ($Phase -eq 'postreboot') {
     Write-Host "[4/4] Stopping captures + renaming as *-post-reboot.*" -ForegroundColor Cyan
     & wpr.exe -stop $etlPath 2>&1 | ForEach-Object { Write-Host "  $_" }
     Start-Sleep -Seconds 3
-    if (Get-Process Procmon* -ErrorAction SilentlyContinue) {
+    if (-not $SkipProcmon -and (Get-Process Procmon* -ErrorAction SilentlyContinue)) {
         & $ProcmonExe /Terminate 2>&1 | ForEach-Object { Write-Host "  $_" }
         Start-Sleep -Seconds 3
     }
     # Move Procmon staging output into the cell run dir
-    if (Test-Path $pmlStagingPath) {
+    if (-not $SkipProcmon -and (Test-Path $pmlStagingPath)) {
         $newPml = Join-Path $runDirWin "procmon-post-reboot.PML"
         Move-Item $pmlStagingPath $newPml -Force
         $sz = [math]::Round((Get-Item $newPml).Length / 1MB, 1)
