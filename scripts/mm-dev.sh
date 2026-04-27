@@ -26,10 +26,45 @@ set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 SCRIPTS_DIR="$REPO_ROOT/scripts"
-WIN_PS1="$(wslpath -w "$SCRIPTS_DIR/mm-dev.ps1")"
 GIT_PY="/home/lesley/projects/scripts/git.py"
 SESSION_LOG="/mnt/c/mm-dev-session.log"
 DEBUG_LOG="/mnt/c/mm3-debug.log"
+
+# Windows-side build directory. WSL repo is SSOT — we sync into here.
+# The .vcxproj lives at the root of WIN_DRIVER_DIR (NOT in a driver/ subfolder).
+WIN_DRIVER_DIR="${WIN_DRIVER_DIR:-/mnt/d/mm3-driver}"
+
+# Sync WSL repo driver/ + scripts/ into Windows build dir.
+# Idempotent; safe to call before every phase. Build artefacts (x64/, *.cer)
+# in WIN_DRIVER_DIR are preserved (we only overwrite source + scripts).
+sync_to_windows() {
+    if [[ ! -d "$WIN_DRIVER_DIR" ]]; then
+        echo "[mm-dev] ERROR: $WIN_DRIVER_DIR does not exist." >&2
+        echo "[mm-dev] Create it and copy the initial files (vcxproj, *.cer) — then re-run." >&2
+        return 1
+    fi
+    # Source files (driver/* → WIN_DRIVER_DIR/)
+    cp -f "$REPO_ROOT/driver/"*.c    "$WIN_DRIVER_DIR/" 2>/dev/null || true
+    cp -f "$REPO_ROOT/driver/"*.h    "$WIN_DRIVER_DIR/" 2>/dev/null || true
+    cp -f "$REPO_ROOT/driver/"*.inf  "$WIN_DRIVER_DIR/" 2>/dev/null || true
+    cp -f "$REPO_ROOT/driver/MagicMouseDriver.vcxproj" "$WIN_DRIVER_DIR/" 2>/dev/null || true
+    # Scripts (scripts/* → WIN_DRIVER_DIR/scripts/)
+    mkdir -p "$WIN_DRIVER_DIR/scripts"
+    cp -f "$REPO_ROOT/scripts/"*.ps1 "$WIN_DRIVER_DIR/scripts/" 2>/dev/null || true
+    return 0
+}
+
+# Resolve PS1 path: prefer Windows-synced copy (so $PSScriptRoot resolves to
+# WIN_DRIVER_DIR\scripts and $DriverRoot lands on the vcxproj location).
+# Fall back to WSL UNC path only if the sync target is unavailable.
+resolve_ps1_path() {
+    if [[ -f "$WIN_DRIVER_DIR/scripts/mm-dev.ps1" ]]; then
+        # Convert /mnt/d/mm3-driver/scripts/mm-dev.ps1 → D:\mm3-driver\scripts\mm-dev.ps1
+        wslpath -w "$WIN_DRIVER_DIR/scripts/mm-dev.ps1"
+    else
+        wslpath -w "$SCRIPTS_DIR/mm-dev.ps1"
+    fi
+}
 
 phase="${1:-help}"
 
@@ -47,11 +82,16 @@ run_ps1() {
         echo "[mm-dev] ERROR: unknown phase '$1'" >&2
         return 2
     fi
+    # Sync source/scripts into Windows build dir so $PSScriptRoot resolves correctly
+    if ! sync_to_windows; then
+        return 1
+    fi
+    local win_ps1; win_ps1="$(resolve_ps1_path)"
     # Mark log boundary so we can show only output from this phase
     local start_marker="==== mm-dev BEGIN $phase_arg $(date '+%Y-%m-%d %H:%M:%S') ===="
     echo "$start_marker" | tee -a "$SESSION_LOG" >/dev/null 2>&1 || true
     echo "[mm-dev] Running Phase=$phase_arg on Windows (UAC prompt may appear)..."
-    powershell.exe -ExecutionPolicy Bypass -File "$WIN_PS1" -Phase "$phase_arg"
+    powershell.exe -ExecutionPolicy Bypass -File "$win_ps1" -Phase "$phase_arg"
     local rc=$?
     # Show all session log lines written since the marker
     if [[ -f "$SESSION_LOG" ]]; then
