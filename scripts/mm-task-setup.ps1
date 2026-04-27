@@ -49,8 +49,17 @@ Write-Host "  Runner: $RunnerScript" -ForegroundColor Gray
 $action = New-ScheduledTaskAction -Execute 'powershell.exe' `
     -Argument "-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File `"$RunnerScript`""
 
-# SYSTEM principal, highest privilege — no UAC, no user session needed
-$principal = New-ScheduledTaskPrincipal -UserId 'S-1-5-18' -RunLevel Highest -LogonType ServiceAccount
+# Run as the CURRENT USER with elevated token (highest privilege).
+# Why not SYSTEM (S-1-5-18): SYSTEM lives in Session 0 and cannot see drives
+# mounted in the user's interactive session - including the EWDK ISO at F:\.
+# A SYSTEM task tried to run F:\LaunchBuildEnv.cmd and silently failed because
+# the path didn't exist from its perspective.
+#
+# InteractiveToken + Highest: runs in the user's session (Session 1), has access
+# to mounted drives, gets admin token automatically when user is logged in.
+# No UAC prompt. No password storage. Trade-off: user must be logged in.
+$currentUser = "$env:USERDOMAIN\$env:USERNAME"
+$principal   = New-ScheduledTaskPrincipal -UserId $currentUser -RunLevel Highest -LogonType InteractiveToken
 
 # Settings: on-demand only, no battery restriction, 30-min timeout, deny concurrent
 $settings = New-ScheduledTaskSettingsSet `
