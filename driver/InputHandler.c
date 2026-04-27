@@ -285,7 +285,7 @@ InputHandler_AclCompletion(
         // where the HID descriptor begins. If the device's raw descriptor does NOT
         // start with 0x05 0x01 (Generic Desktop), adjust the scan pattern.
         ULONG  scanLen = (bufSize < 256) ? bufSize : 256;
-        ULONG  injectAt = ULONG_MAX;
+        ULONG  injectAt = MAXULONG;
 
         for (ULONG i = 0; i + 1 < scanLen; i++) {
             if (data[i] == 0x05 && data[i + 1] == 0x01) {
@@ -294,7 +294,7 @@ InputHandler_AclCompletion(
             }
         }
 
-        if (injectAt != ULONG_MAX &&
+        if (injectAt != MAXULONG &&
             (injectAt + g_HidDescriptorSize) <= bufSize) {
             RtlCopyMemory(data + injectAt, g_HidDescriptor, g_HidDescriptorSize);
             devCtx->DescriptorInjected = TRUE;
