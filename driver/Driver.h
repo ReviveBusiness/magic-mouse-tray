@@ -48,7 +48,8 @@
 // BRB field offsets (64-bit Windows)
 // ---------------------------------------------------------------------------
 
-// BRB_HEADER layout (0x20 bytes, confirmed from static analysis):
+// BRB_HEADER layout — public fields 0x00-0x1F; internal fields 0x20-0x6F (private).
+// Total header size: 0x70 bytes (verified via static analysis of applewirelessmouse.sys).
 //   +0x00  LIST_ENTRY.Flink  (8 bytes)
 //   +0x08  LIST_ENTRY.Blink  (8 bytes)
 //   +0x10  Length            (ULONG)
@@ -56,26 +57,29 @@
 //   +0x16  Type              (USHORT) ← dispatch here
 //   +0x18  Status            (ULONG)
 //   +0x1C  Reserved          (ULONG)
+//   +0x20..0x6F  internal BthEnum state (not in public bthddi.h)
 #define MM_BRB_TYPE_OFFSET                  0x16
 
-// BRB_L2CA_OPEN_CHANNEL and BRB_L2CA_CLOSE_CHANNEL:
-//   ChannelHandle is the first field after the 0x20-byte header.
-//   For OPEN_CHANNEL:  output parameter (populated by BthEnum on success).
-//   For CLOSE_CHANNEL: input parameter (caller sets it to the channel to close).
-//   TODO: verify offset 0x20 against bthddi.h at EWDK build time.
-#define MM_BRB_CHANNEL_HANDLE_OFFSET        0x20
+// BRB_L2CA_OPEN_CHANNEL — ChannelHandle at first field after 0x70-byte header.
+//   Output parameter: BthEnum populates it when the L2CAP connection is established.
+#define MM_BRB_OPEN_CHANNEL_HANDLE_OFFSET   0x70
 
-// BRB_L2CA_ACL_TRANSFER field offsets (TODO: verify all except 0x78 against bthddi.h):
-//   +0x78  ChannelHandle — confirmed: cmp [stored_handle],[brb+0x78] in analysis
-//   +0x28  TransferFlags — tentative
-//   +0x2C  BufferSize    — tentative
-//   +0x30  Buffer        — tentative (PVOID; NULL when MDL is used)
-//   +0x38  BufferMDL     — tentative (PMDL; NULL when Buffer is used)
+// BRB_L2CA_CLOSE_CHANNEL — ChannelHandle after header + 8-byte BtAddress field.
+//   Input parameter: caller provides the handle of the channel to tear down.
+#define MM_BRB_CLOSE_CHANNEL_HANDLE_OFFSET  0x78
+
+// BRB_L2CA_ACL_TRANSFER field offsets (verified via static analysis of applewirelessmouse.sys):
+//   +0x70  BtAddress       (BTH_ADDR = ULONGLONG)
+//   +0x78  ChannelHandle   (L2CAP_CHANNEL_HANDLE = PVOID)
+//   +0x80  TransferFlags   (ULONG)
+//   +0x84  BufferSize      (ULONG)
+//   +0x88  Buffer          (PVOID; NULL when MDL path is used)
+//   +0x90  BufferMDL       (PMDL;  NULL when Buffer path is used)
 #define MM_BRB_ACL_CHANNEL_HANDLE_OFFSET    0x78
-#define MM_BRB_ACL_TRANSFER_FLAGS_OFFSET    0x28
-#define MM_BRB_ACL_BUFFER_SIZE_OFFSET       0x2C
-#define MM_BRB_ACL_BUFFER_OFFSET            0x30
-#define MM_BRB_ACL_BUFFER_MDL_OFFSET        0x38
+#define MM_BRB_ACL_TRANSFER_FLAGS_OFFSET    0x80
+#define MM_BRB_ACL_BUFFER_SIZE_OFFSET       0x84
+#define MM_BRB_ACL_BUFFER_OFFSET            0x88
+#define MM_BRB_ACL_BUFFER_MDL_OFFSET        0x90
 
 // TransferFlags bit: data flows device → host (incoming read).
 // From bthddi.h: ACL_TRANSFER_DIRECTION_IN = 0x00000001
