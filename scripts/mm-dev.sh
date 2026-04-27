@@ -142,9 +142,10 @@ run_ps1() {
     if ! sync_to_windows; then
         return 1
     fi
-    # Mark log boundary so we can show only output from this phase
-    local start_marker="==== mm-dev BEGIN $phase_arg $(date '+%Y-%m-%d %H:%M:%S') ===="
-    echo "$start_marker" | tee -a "$SESSION_LOG" >/dev/null 2>&1 || true
+    # Capture line count BEFORE the phase so we can print only this phase's output.
+    # (bash can't reliably write to /mnt/c/mm-dev-session.log - PS owns ACL on it.)
+    local before_lines=0
+    [[ -f "$SESSION_LOG" ]] && before_lines=$(wc -l < "$SESSION_LOG" 2>/dev/null || echo 0)
 
     local rc
     if task_exists; then
@@ -163,11 +164,16 @@ run_ps1() {
         rc=$?
     fi
 
-    # Show all session log lines written since the marker
+    # Show all session log lines written since this phase began
     if [[ -f "$SESSION_LOG" ]]; then
-        echo "----- session log (this phase) -----"
-        awk -v m="$start_marker" 'found{print} $0==m{found=1}' "$SESSION_LOG" 2>/dev/null || true
-        echo "------------------------------------"
+        local after_lines; after_lines=$(wc -l < "$SESSION_LOG" 2>/dev/null || echo 0)
+        if (( after_lines > before_lines )); then
+            echo "----- session log (Phase=$phase_arg, $((after_lines - before_lines)) new lines) -----"
+            sed -n "$((before_lines + 1)),${after_lines}p" "$SESSION_LOG"
+            echo "------------------------------------"
+        else
+            echo "[mm-dev] WARN: no new session log lines (phase may have crashed before logging)" >&2
+        fi
     fi
     if [[ $rc -ne 0 ]]; then
         echo "[mm-dev] Windows phase FAILED (exit=$rc) - full log: $SESSION_LOG" >&2
