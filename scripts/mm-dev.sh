@@ -30,9 +30,19 @@ GIT_PY="/home/lesley/projects/scripts/git.py"
 SESSION_LOG="/mnt/c/mm-dev-session.log"
 DEBUG_LOG="/mnt/c/mm3-debug.log"
 
-# Windows-side build directory. WSL repo is SSOT — we sync into here.
+# Windows-side build directory. WSL repo is SSOT - we sync into here.
 # The .vcxproj lives at the root of WIN_DRIVER_DIR (NOT in a driver/ subfolder).
 WIN_DRIVER_DIR="${WIN_DRIVER_DIR:-/mnt/d/mm3-driver}"
+
+# Scheduled task for headless (no-UAC) execution.
+# Registered once via mm-task-setup.ps1 — see TASK SETUP section in --help.
+TASK_NAME="${MM_TASK_NAME:-MM-Dev-Cycle}"
+QUEUE_DIR="/mnt/c/mm-dev-queue"
+TASK_TIMEOUT="${MM_TASK_TIMEOUT:-600}"   # 10 min default
+
+task_exists() {
+    schtasks.exe /query /tn "$TASK_NAME" >/dev/null 2>&1
+}
 
 # Sync WSL repo driver/ + scripts/ into Windows build dir.
 # Idempotent; safe to call before every phase. Build artefacts (x64/, *.cer)
@@ -75,6 +85,52 @@ declare -A PHASE_MAP=(
     [full]=Full   [log]=Log     [debug]=Debug
 )
 
+run_via_task() {
+    local phase_arg="$1"
+    local nonce; nonce="$(date +%s%N)"
+    mkdir -p "$QUEUE_DIR"
+    rm -f "$QUEUE_DIR/result.txt" 2>/dev/null
+
+    # Write request (CRLF for Windows tooling robustness)
+    printf '%s|%s\r\n' "$phase_arg" "$nonce" > "$QUEUE_DIR/request.txt"
+
+    echo "[mm-dev] Triggering scheduled task '$TASK_NAME' (no UAC, runs as SYSTEM)..."
+    if ! schtasks.exe /run /tn "$TASK_NAME" >/dev/null 2>&1; then
+        echo "[mm-dev] schtasks /run failed - falling back to direct PowerShell" >&2
+        return 200
+    fi
+
+    # Poll for result (up to TASK_TIMEOUT seconds)
+    local elapsed=0
+    while (( elapsed < TASK_TIMEOUT )); do
+        if [[ -f "$QUEUE_DIR/result.txt" ]]; then
+            local raw rc res_nonce
+            raw="$(tr -d '\r\n' < "$QUEUE_DIR/result.txt")"
+            rc="${raw%%|*}"
+            res_nonce="${raw#*|}"
+            if [[ "$res_nonce" == "$nonce" ]]; then
+                return "$rc"
+            fi
+        fi
+        sleep 2
+        elapsed=$((elapsed + 2))
+        # Show running indicator every 10 seconds
+        if (( elapsed % 10 == 0 )); then
+            echo "[mm-dev]   ... still running (${elapsed}s elapsed)"
+        fi
+    done
+    echo "[mm-dev] Task timeout after ${TASK_TIMEOUT}s - check C:\\mm-dev-task.log" >&2
+    return 124
+}
+
+run_via_uac() {
+    local phase_arg="$1"
+    local win_ps1; win_ps1="$(resolve_ps1_path)"
+    echo "[mm-dev] Running Phase=$phase_arg via direct PowerShell (UAC prompt expected)..."
+    powershell.exe -ExecutionPolicy Bypass -File "$win_ps1" -Phase "$phase_arg"
+    return $?
+}
+
 run_ps1() {
     local lookup="${1,,}"  # bash 4+ lowercase
     local phase_arg="${PHASE_MAP[$lookup]}"
@@ -86,17 +142,31 @@ run_ps1() {
     if ! sync_to_windows; then
         return 1
     fi
-    local win_ps1; win_ps1="$(resolve_ps1_path)"
     # Mark log boundary so we can show only output from this phase
     local start_marker="==== mm-dev BEGIN $phase_arg $(date '+%Y-%m-%d %H:%M:%S') ===="
     echo "$start_marker" | tee -a "$SESSION_LOG" >/dev/null 2>&1 || true
-    echo "[mm-dev] Running Phase=$phase_arg on Windows (UAC prompt may appear)..."
-    powershell.exe -ExecutionPolicy Bypass -File "$win_ps1" -Phase "$phase_arg"
-    local rc=$?
+
+    local rc
+    if task_exists; then
+        run_via_task "$phase_arg"
+        rc=$?
+        # 200 = task trigger failed; fall back to UAC path
+        if [[ $rc -eq 200 ]]; then
+            run_via_uac "$phase_arg"
+            rc=$?
+        fi
+    else
+        echo "[mm-dev] No scheduled task '$TASK_NAME' registered - using UAC path." >&2
+        echo "[mm-dev] To eliminate UAC prompts, run ONCE from admin PowerShell:" >&2
+        echo "[mm-dev]   $WIN_DRIVER_DIR/scripts/mm-task-setup.ps1" >&2
+        run_via_uac "$phase_arg"
+        rc=$?
+    fi
+
     # Show all session log lines written since the marker
     if [[ -f "$SESSION_LOG" ]]; then
         echo "----- session log (this phase) -----"
-        awk -v m="$start_marker" 'found{print} $0==m{found=1}' "$SESSION_LOG" || true
+        awk -v m="$start_marker" 'found{print} $0==m{found=1}' "$SESSION_LOG" 2>/dev/null || true
         echo "------------------------------------"
     fi
     if [[ $rc -ne 0 ]]; then
@@ -171,7 +241,20 @@ COMMANDS:
   read-log N  Read last N lines of session log (default 50)
   read-debug N Read last N MagicMouse debug lines (default 40)
 
-EXIT CODES: 0=ok, 1=phase failure (build/sign/install/verify failed), 2=usage
+EXIT CODES: 0=ok, 1=phase failure (build/sign/install/verify failed), 2=usage,
+            124=task timeout, 200=task trigger failed (fell back to UAC path)
+
+TASK SETUP (one-time, eliminates all future UAC prompts):
+  1. Open admin PowerShell (UAC prompt OK once)
+  2. cd D:\mm3-driver\scripts
+  3. .\mm-task-setup.ps1
+  After that, schtasks /run /tn MM-Dev-Cycle works from WSL with NO UAC.
+  This wrapper auto-detects the task and uses it instead of the UAC path.
+
+ENV OVERRIDES:
+  WIN_DRIVER_DIR    Windows build dir (default: /mnt/d/mm3-driver)
+  MM_TASK_NAME      Scheduled task name (default: MM-Dev-Cycle)
+  MM_TASK_TIMEOUT   Task wait timeout in seconds (default: 600)
 EOF
         ;;
 esac
