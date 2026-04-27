@@ -42,6 +42,7 @@ Don't use autonomous agents for:
 
 ### A. State capture
 - [ ] Snapshot current state (filesystem, registry, process list, logs) into a timestamped tarball
+- [ ] **Full Windows registry export if the work touches drivers, PnP, services, or kernel modules.** Use `reg export HKLM\SYSTEM C:\Users\<user>\Documents\<YYYY-MM-DD>-Windows11_registry-backup.reg /y`. The user dragged us out of more than one dead end overnight by having Nov 2025 + Apr 2026 backups; future work should never depend on luck. This is BCP-OPS-501 / `/change-management` territory and was not enforced overnight — adding here as a hard pre-flight gate.
 - [ ] Note current git HEAD on every relevant repo
 - [ ] Document any in-flight uncommitted changes
 
@@ -254,6 +255,11 @@ Before invoking `/peer-review` on architecture work, run a corpus-refresh step:
 **Symptom:** Diff shows huge deletions and you panic, thinking the agent destroyed your work.
 **Concrete instance:** When the agent's branchpoint is older than current main, `git diff main..HEAD` shows my recent commits as "deletions" relative to the agent's branch. I almost re-implemented work that was already committed.
 **Fix:** Use `git log <branchpoint>..HEAD` to see only the agent's actual changes. Or `git show <commit>` per-commit.
+
+### AP-11: No registry/state backup before driver experimentation
+**Symptom:** When mid-experiment state corruption happens (PnP confusion, orphan filters, broken enumeration), the only recovery path is full unpair/reinstall and we lose the empirical baseline data that would have explained the failure.
+**Concrete instance:** Tonight's repeated install/uninstall cycles caused PnP enumeration corruption on the Magic Mouse. We didn't have a registry backup from before we started. The user happened to have older backups from Apr 3 (MU working) and Nov 24 (clean baseline) — those gave us answers no live debugging could have. If those backups didn't exist, the entire MU footprint analysis would be impossible.
+**Fix:** Pre-flight checklist item A enforces a registry export before any driver/PnP work. The `/change-management` skill should reject the workflow if no backup younger than 24 hours exists for the relevant subtree.
 
 ### AP-10: Missing post-condition validation
 **Symptom:** Driver installs without error but doesn't actually work.
