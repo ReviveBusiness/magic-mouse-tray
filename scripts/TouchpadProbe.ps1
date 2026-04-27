@@ -116,11 +116,11 @@ if ($col01Path) {
     $h = [TouchProbe]::CreateFile($col01Path, $GENERIC_READ, $SHARE_RW, [IntPtr]::Zero, $OPEN_EX, 0, [IntPtr]::Zero)
     if ($h -ne $INVALID) {
         $hCol01 = $h; $col01Access = 'GENERIC_READ'
-        Write-Host "COL01 opened with GENERIC_READ — ReadFile loop starting"
+        Write-Host "COL01 opened with GENERIC_READ - ReadFile loop starting"
         Write-Host "Move your finger on the mouse surface. Ctrl+C to stop."
     } else {
         $err = [Runtime.InteropServices.Marshal]::GetLastWin32Error()
-        Write-Host "COL01 GENERIC_READ failed err=$err — trying zero-access + HidD_GetInputReport"
+        Write-Host "COL01 GENERIC_READ failed err=$err - trying zero-access + HidD_GetInputReport"
         $h = [TouchProbe]::CreateFile($col01Path, 0, $SHARE_RW, [IntPtr]::Zero, $OPEN_EX, 0, [IntPtr]::Zero)
         if ($h -ne $INVALID) {
             $hCol01 = $h; $col01Access = 'zero-access'
@@ -131,7 +131,7 @@ if ($col01Path) {
 }
 
 if ($hCol01 -eq $INVALID) {
-    Write-Host "COL01 not accessible — cannot read touch reports. Moving on."
+    Write-Host "COL01 not accessible - cannot read touch reports. Moving on."
 } else {
     $pp = [IntPtr]::Zero; $caps = New-Object TouchProbe+HIDP_CAPS
     [TouchProbe]::HidD_GetPreparsedData($hCol01, [ref]$pp) | Out-Null
@@ -145,7 +145,7 @@ if ($hCol01 -eq $INVALID) {
 
     try {
         if ($col01Access -eq 'GENERIC_READ') {
-            # Blocking ReadFile loop — each call returns one raw HID input report
+            # Blocking ReadFile loop - each call returns one raw HID input report
             $buf  = [byte[]]::new($reportLen)
             $read = [uint32]0
             while ($true) {

@@ -1,4 +1,4 @@
-# capture-state.ps1 — Snapshot Magic Mouse device state for reboot comparison
+# capture-state.ps1 - Snapshot Magic Mouse device state for reboot comparison
 # Run before a reboot, then again after, then compare.
 #
 # Usage:
@@ -12,8 +12,8 @@
 param(
     [string]$Label = "",
     [switch]$Compare,
-    [Parameter(Position=0)][string]$FileA = "",
-    [Parameter(Position=1)][string]$FileB = "",
+    [string]$FileA = "",
+    [string]$FileB = "",
     [string]$OutputDir = "."
 )
 
@@ -62,7 +62,7 @@ if ($Compare) {
     Diff-Field "hidDeviceCount"         $a.hidDeviceCount        $b.hidDeviceCount        -GoodIfTrue
 
     Write-Host ""
-    Write-Host "=== STARTUP-REPAIR LOG (B only — last 10 lines) ===" -ForegroundColor Cyan
+    Write-Host "=== STARTUP-REPAIR LOG (B only - last 10 lines) ===" -ForegroundColor Cyan
     if ($b.startupRepairLog) {
         $b.startupRepairLog | Select-Object -Last 10 | ForEach-Object { Write-Host "  $_" }
     } else {
@@ -115,14 +115,14 @@ if ($btDev) {
         }
     } catch {}
 
-    # LowerFilters — Enum key
+    # LowerFilters - Enum key
     $btRegPath = "HKLM:\SYSTEM\CurrentControlSet\Enum\" + $btDev.InstanceId
     try {
         $lf = (Get-ItemProperty -Path $btRegPath -Name LowerFilters -ErrorAction SilentlyContinue).LowerFilters
         if ($lf) { $state.lowerFiltersEnumKey = @($lf) }
     } catch {}
 
-    # LowerFilters — driver instance key
+    # LowerFilters - driver instance key
     try {
         $driverKey = (Get-ItemProperty -Path $btRegPath -Name Driver -ErrorAction SilentlyContinue).Driver
         if ($driverKey) {
@@ -139,8 +139,8 @@ $hidDevices = Get-PnpDevice -ErrorAction SilentlyContinue |
 $hidList = @($hidDevices)
 $state.hidDeviceCount = $hidList.Count
 $state.hidDevices     = $hidList | ForEach-Object { @{ instanceId = $_.InstanceId; status = $_.Status } }
-$state.col01Present   = ($hidList | Where-Object { $_.InstanceId -match 'COL01' }).Count -gt 0
-$state.col02Present   = ($hidList | Where-Object { $_.InstanceId -match 'COL02' }).Count -gt 0
+$state.col01Present   = @($hidList | Where-Object { $_.InstanceId -match 'COL01' }).Count -gt 0
+$state.col02Present   = @($hidList | Where-Object { $_.InstanceId -match 'COL02' }).Count -gt 0
 
 # Service state
 try {

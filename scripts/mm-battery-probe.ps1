@@ -1,4 +1,4 @@
-# mm-battery-probe.ps1 — confirm battery is at Feature Report 0x47 on unified interface.
+# mm-battery-probe.ps1 - confirm battery is at Feature Report 0x47 on unified interface.
 
 $ErrorActionPreference = 'Continue'
 $ProbeLog = Join-Path $env:LOCALAPPDATA 'mm-battery-probe.log'

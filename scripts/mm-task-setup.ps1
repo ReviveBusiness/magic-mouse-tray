@@ -1,4 +1,4 @@
-# mm-task-setup.ps1 — register the SYSTEM scheduled task 'MM-Dev-Cycle'
+# mm-task-setup.ps1 - register the SYSTEM scheduled task 'MM-Dev-Cycle'
 #
 # Run ONCE from an admin PowerShell window. After this:
 #   - WSL can trigger any phase via `schtasks /run /tn MM-Dev-Cycle` (NO UAC)
@@ -45,7 +45,7 @@ if (-not (Test-Path $RunnerScript)) {
 Write-Host "Registering scheduled task '$TaskName'..." -ForegroundColor Cyan
 Write-Host "  Runner: $RunnerScript" -ForegroundColor Gray
 
-# On-demand action — fires runner script as SYSTEM with no UI
+# On-demand action - fires runner script as SYSTEM with no UI
 $action = New-ScheduledTaskAction -Execute 'powershell.exe' `
     -Argument "-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File `"$RunnerScript`""
 

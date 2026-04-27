@@ -1,4 +1,4 @@
-# mm-task-runner.ps1 — invoked by the SYSTEM scheduled task 'MM-Dev-Cycle'.
+# mm-task-runner.ps1 - invoked by the SYSTEM scheduled task 'MM-Dev-Cycle'.
 #
 # Protocol (filesystem queue, ASCII text, pipe-delimited):
 #   Request:  C:\mm-dev-queue\request.txt   "PHASE|NONCE"

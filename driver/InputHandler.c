@@ -24,19 +24,25 @@
 //     First  → ControlChannelHandle  (descriptor injection target)
 //     Second → InterruptChannelHandle (input report translation target)
 //
-// BRB field offsets (64-bit Windows, confirmed from static analysis unless noted TODO):
-//   BRB_HEADER.Type:                       +0x16  confirmed
-//   BRB_L2CA_OPEN/CLOSE.ChannelHandle:     +0x20  TODO: verify vs bthddi.h
-//   BRB_L2CA_ACL_TRANSFER.ChannelHandle:   +0x78  confirmed
-//   BRB_L2CA_ACL_TRANSFER.TransferFlags:   +0x28  TODO: verify
-//   BRB_L2CA_ACL_TRANSFER.BufferSize:      +0x2C  TODO: verify
-//   BRB_L2CA_ACL_TRANSFER.Buffer:          +0x30  TODO: verify
-//   BRB_L2CA_ACL_TRANSFER.BufferMDL:       +0x38  TODO: verify
+// BRB field offsets (64-bit Windows). All defined in Driver.h as MM_BRB_*_OFFSET
+// constants. Do NOT hardcode hex values here — refer to the constants. Values
+// were empirically confirmed by static analysis of applewirelessmouse.sys
+// (.ai/rev-eng/08f33d7e3ece/findings.md):
+//   MM_BRB_TYPE_OFFSET                  = 0x16  (BRB_HEADER.Type)
+//   MM_BRB_OPEN_CHANNEL_HANDLE_OFFSET   = 0x70  (after 0x70-byte BRB_HEADER)
+//   MM_BRB_CLOSE_CHANNEL_HANDLE_OFFSET  = 0x78  (after BtAddress field)
+//   MM_BRB_ACL_CHANNEL_HANDLE_OFFSET    = 0x78
+//   MM_BRB_ACL_TRANSFER_FLAGS_OFFSET    = 0x80
+//   MM_BRB_ACL_BUFFER_SIZE_OFFSET       = 0x84
+//   MM_BRB_ACL_BUFFER_OFFSET            = 0x88
+//   MM_BRB_ACL_BUFFER_MDL_OFFSET        = 0x90
 //
-// Report translation output:
-//   Report 0x12 → Report 0x01 [reportId, buttons, X, Y, WheelV] (TLC1, 5 bytes)
-//   Report 0x90 → unchanged                                       (TLC3)
-//   Horizontal scroll (AC Pan) → Report 0x02 delivery TBD (Phase 3.5)
+// HID delivery model:
+//   We do NOT translate individual reports. We replace the HID descriptor at
+//   SDP-exchange time so HidClass enumerates COL01 (mouse + scroll) and
+//   COL02 (vendor battery 0xFF00/0x14) as separate child PDOs. Native Report
+//   0x12 multi-touch and Report 0x90 battery then flow through unchanged and
+//   HidClass interprets them via our injected descriptor.
 
 #include "InputHandler.h"
 #include "HidDescriptor.h"

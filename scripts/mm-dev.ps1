@@ -41,11 +41,11 @@ param(
     [string]$VendorPid  = 'VID&0001004c_PID&0323',  # Magic Mouse 2024 - used for device autodetect
     [string]$DbgViewExe = 'C:\SysinternalsSuite\Dbgview.exe',
     [string]$SignToolExe = 'C:\Program Files (x86)\Windows Kits\10\bin\10.0.26100.0\x64\signtool.exe',
-    [switch]$NoElevate    # internal flag — set when re-launched as admin to prevent infinite recursion
+    [switch]$NoElevate    # internal flag - set when re-launched as admin to prevent infinite recursion
 )
 
 # ---------------------------------------------------------------------------
-# Self-elevation — re-launch as admin if needed (UAC prompt once per call)
+# Self-elevation - re-launch as admin if needed (UAC prompt once per call)
 # ---------------------------------------------------------------------------
 function Test-IsAdmin {
     $id = [System.Security.Principal.WindowsIdentity]::GetCurrent()
@@ -56,7 +56,7 @@ function Test-IsAdmin {
 if (-not (Test-IsAdmin) -and -not $NoElevate) {
     Write-Host "[mm-dev] Not Administrator - elevating via UAC (accept the prompt)..." -ForegroundColor Yellow
 
-    # Build relaunch arg list — preserve all bound params + add -NoElevate sentinel
+    # Build relaunch arg list - preserve all bound params + add -NoElevate sentinel
     $relaunchArgs = @('-NoProfile','-ExecutionPolicy','Bypass','-File',"$PSCommandPath",'-NoElevate')
     foreach ($k in $PSBoundParameters.Keys) {
         $v = $PSBoundParameters[$k]

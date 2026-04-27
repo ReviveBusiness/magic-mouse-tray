@@ -13,7 +13,7 @@ param(
 )
 
 if ($DryRun) {
-    Write-Host "*** DRY RUN — no changes will be made ***" -ForegroundColor Magenta
+    Write-Host "*** DRY RUN - no changes will be made ***" -ForegroundColor Magenta
     Write-Host ""
 }
 
@@ -34,7 +34,7 @@ function Has-COL02 {
 }
 
 # ─────────────────────────────────────────────────────────────
-# PHASE 0 — Baseline
+# PHASE 0 - Baseline
 # ─────────────────────────────────────────────────────────────
 Write-Host ""
 Write-Host "=== PHASE 0: BASELINE ===" -ForegroundColor Cyan
@@ -50,8 +50,8 @@ if (-not $col02Before) {
 }
 
 # ─────────────────────────────────────────────────────────────
-# PHASE 1 — Cycle BTHENUM with filter in LowerFilters
-# Forces fresh device stack construction — PnP reads Enum key
+# PHASE 1 - Cycle BTHENUM with filter in LowerFilters
+# Forces fresh device stack construction - PnP reads Enum key
 # LowerFilters and loads applewirelessmouse during AddDevice.
 # ─────────────────────────────────────────────────────────────
 Write-Host "=== PHASE 1: CYCLE BTHENUM (filter active) ===" -ForegroundColor Cyan
@@ -63,7 +63,7 @@ if ($DryRun) { Write-Host "  [DRY RUN] pnputil /enable-device $bthenumId" -Foreg
 else { pnputil /enable-device "$bthenumId"; Start-Sleep -Seconds 10 }
 
 # ─────────────────────────────────────────────────────────────
-# PHASE 2 — Check results
+# PHASE 2 - Check results
 # ─────────────────────────────────────────────────────────────
 Write-Host ""
 Write-Host "=== PHASE 2: RESULTS ===" -ForegroundColor Cyan
@@ -94,7 +94,7 @@ Write-Host "COL02 present:   $col02After"
 Write-Host ""
 
 # ─────────────────────────────────────────────────────────────
-# PHASE 3 — Outcome
+# PHASE 3 - Outcome
 # ─────────────────────────────────────────────────────────────
 Write-Host "=== PHASE 3: OUTCOME ===" -ForegroundColor Cyan
 
@@ -119,15 +119,15 @@ if (-not $filterInStack) {
 }
 
 # ─────────────────────────────────────────────────────────────
-# PHASE 4 — &6& Recovery (only runs if COL02 was stripped)
+# PHASE 4 - &6& Recovery (only runs if COL02 was stripped)
 # ─────────────────────────────────────────────────────────────
 Write-Host "=== PHASE 4: &6& RECOVERY ===" -ForegroundColor Cyan
 
-Write-Host "Step 4.1 — Removing LowerFilters from Enum key (registry only)..."
+Write-Host "Step 4.1 - Removing LowerFilters from Enum key (registry only)..."
 if ($DryRun) { Write-Host "  [DRY RUN] Remove-ItemProperty $bthenumKey LowerFilters" -ForegroundColor Magenta }
 else { Remove-ItemProperty -Path $bthenumKey -Name LowerFilters -ErrorAction SilentlyContinue }
 
-Write-Host "Step 4.2 — Cycling BTHENUM without filter (creates COL01+COL02)..."
+Write-Host "Step 4.2 - Cycling BTHENUM without filter (creates COL01+COL02)..."
 if ($DryRun) {
     Write-Host "  [DRY RUN] pnputil /disable-device $bthenumId" -ForegroundColor Magenta
     Write-Host "  [DRY RUN] pnputil /enable-device $bthenumId" -ForegroundColor Magenta
@@ -137,7 +137,7 @@ if ($DryRun) {
     pnputil /enable-device "$bthenumId"
 }
 
-Write-Host "Step 4.3 — Waiting for COL02 to appear (up to 30s)..."
+Write-Host "Step 4.3 - Waiting for COL02 to appear (up to 30s)..."
 $waited = 0
 while (-not (Has-COL02) -and $waited -lt 30) {
     Start-Sleep -Seconds 3
@@ -151,11 +151,11 @@ if (Has-COL02) {
     exit 1
 }
 
-Write-Host "Step 4.4 — Restoring LowerFilters to Enum key (no device restart)..."
+Write-Host "Step 4.4 - Restoring LowerFilters to Enum key (no device restart)..."
 if ($DryRun) { Write-Host "  [DRY RUN] Set-ItemProperty $bthenumKey LowerFilters = applewirelessmouse" -ForegroundColor Magenta }
 else { Set-ItemProperty -Path $bthenumKey -Name LowerFilters -Value @('applewirelessmouse') -Type MultiString }
 
-Write-Host "Step 4.5 — Restoring LowerFilters to driver instance key..."
+Write-Host "Step 4.5 - Restoring LowerFilters to driver instance key..."
 $driverKey = (Get-ItemProperty $bthenumKey).Driver
 if ($DryRun) { Write-Host "  [DRY RUN] Set-ItemProperty HKLM:\...\Control\Class\$driverKey LowerFilters = applewirelessmouse" -ForegroundColor Magenta }
 else {
@@ -169,5 +169,5 @@ Write-Host "Final device state:"
 Get-MouseDevices | Format-Table -AutoSize
 Write-Host ""
 Write-Host "COL02 restored. Battery works. Scroll still broken (driver strips descriptor)." -ForegroundColor Yellow
-Write-Host "Do NOT reboot or run pnputil again — just close this window."
+Write-Host "Do NOT reboot or run pnputil again - just close this window."
 Write-Host "Next step: KMDF function driver."

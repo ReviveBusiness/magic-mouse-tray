@@ -72,7 +72,7 @@ public static class Hid {
         public ushort R1, R2, R3, R4, R5;
         public uint UnitsExp, Units;
         public int LogicalMin, LogicalMax, PhysicalMin, PhysicalMax;
-        // Range/NotRange union — use first 4 ushorts as Usage/UsageMin
+        // Range/NotRange union - use first 4 ushorts as Usage/UsageMin
         public ushort UsageOrUsageMin, UsageMax, StringIdxOrMin, StringIdxMax;
         public ushort DesigIdxOrMin, DesigIdxMax, DataIdxOrMin, DataIdxMax;
     }
