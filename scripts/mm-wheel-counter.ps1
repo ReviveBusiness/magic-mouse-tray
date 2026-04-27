@@ -125,20 +125,29 @@ namespace WheelCapture {
             HookInstalled = true;
             _msgThreadId = GetCurrentThreadId();
 
-            // Timer to post WM_QUIT after duration
-            System.Threading.Timer timer = new System.Threading.Timer(
-                _ => PostThreadMessage(_msgThreadId, WM_QUIT, IntPtr.Zero, IntPtr.Zero),
-                null, durationMs, System.Threading.Timeout.Infinite
-            );
+            // Hook lifecycle is wrapped in try/finally so the unhook happens even if
+            // GetMessage / DispatchMessage throws or the runtime tears down. A leaked
+            // WH_MOUSE_LL hook adds latency to every system mouse event until process
+            // exit reaps it, so guaranteed unhook is required for kernel-adjacent code.
+            System.Threading.Timer timer = null;
+            try {
+                timer = new System.Threading.Timer(
+                    _ => PostThreadMessage(_msgThreadId, WM_QUIT, IntPtr.Zero, IntPtr.Zero),
+                    null, durationMs, System.Threading.Timeout.Infinite
+                );
 
-            MSG msg;
-            while (GetMessage(out msg, IntPtr.Zero, 0, 0)) {
-                TranslateMessage(ref msg);
-                DispatchMessage(ref msg);
+                MSG msg;
+                while (GetMessage(out msg, IntPtr.Zero, 0, 0)) {
+                    TranslateMessage(ref msg);
+                    DispatchMessage(ref msg);
+                }
+            } finally {
+                if (timer != null) { timer.Dispose(); }
+                if (_hookId != IntPtr.Zero) {
+                    UnhookWindowsHookEx(_hookId);
+                    _hookId = IntPtr.Zero;
+                }
             }
-
-            timer.Dispose();
-            UnhookWindowsHookEx(_hookId);
         }
 
         private IntPtr HookCallback(int nCode, IntPtr wParam, IntPtr lParam) {

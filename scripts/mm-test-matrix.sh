@@ -140,23 +140,40 @@ capture_log_tails() {
 # Procmon path (confirmed available on host)
 PROCMON_EXE="C:\\Users\\Lesley\\AppData\\Local\\Microsoft\\WindowsApps\\Procmon.exe"
 
+# Procmon needs admin to capture kernel drivers (bthport.sys, HidBth.sys,
+# applewirelessmouse.sys). The orchestrator runs from non-admin WSL, so we
+# prompt the user to invoke from their admin PS -- same pattern as start_wpr.
+# A non-admin Start-Process would launch Procmon but capture only user-mode
+# events, missing the kernel driver activity Phase 2 is designed to trace.
 start_procmon() {
     local run_dir_win
     run_dir_win=$(wslpath -w "$run_dir")
     local pml_path="${run_dir_win}\\procmon.PML"
-    echo "[capture] Starting Procmon -> ${pml_path}..."
-    # Launch unfiltered; filter post-hoc (simpler, adequate for data sizes we expect)
-    powershell.exe -NoProfile -ExecutionPolicy Bypass -Command \
-        "Start-Process -FilePath '${PROCMON_EXE}' -ArgumentList '/BackingFile','${pml_path}','/Quiet','/Minimized','/AcceptEula' -WindowStyle Minimized" \
-        2>/dev/null || true
-    echo "[capture]   -> Procmon running, output: ${pml_path}"
+    cat <<EOF
+
+==== Procmon capture ====
+Procmon requires an ADMIN PowerShell session to capture kernel drivers
+(bthport.sys, HidBth.sys, applewirelessmouse.sys). From your admin PS, run:
+
+    Start-Process -FilePath '${PROCMON_EXE}' -ArgumentList '/BackingFile','${pml_path}','/Quiet','/Minimized','/AcceptEula' -WindowStyle Minimized
+
+Press ENTER once Procmon is running (you will see its tray icon or minimized window).
+EOF
+    read -r -p "" _
+    echo "[capture]   -> Procmon recording started, output: ${pml_path}"
 }
 
 stop_procmon() {
-    echo "[capture] Stopping Procmon..."
-    powershell.exe -NoProfile -ExecutionPolicy Bypass -Command \
-        "Start-Process -FilePath '${PROCMON_EXE}' -ArgumentList '/Terminate'" \
-        2>/dev/null || true
+    cat <<EOF
+
+==== Stop Procmon capture ====
+From your admin PowerShell, run:
+
+    & '${PROCMON_EXE}' /Terminate
+
+Press ENTER once Procmon has terminated (its tray icon disappears).
+EOF
+    read -r -p "" _
     echo "[capture]   -> Procmon terminated, .PML saved to run dir"
 }
 
