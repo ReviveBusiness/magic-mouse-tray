@@ -174,6 +174,20 @@ any manual recovery steps. This is the definitive pass criterion.
 
 ---
 
+## Apple INF Analysis (2026-04-27)
+
+Full `AppleWirelessMouse.inf` (DriverVer 04/21/2026, 6.2.0.0) reviewed. Key findings that shape our function driver INF:
+
+| Finding | Detail |
+|---------|--------|
+| `HKR` in `.HW.AddReg` | Writes `LowerFilters` to Enum key only — structurally confirms error 1077. PnP calls AddDevice (reads LowerFilters) only on fresh device construction; reboots reuse existing BTHENUM object, AddDevice never called, filter permanently skipped. |
+| `SPSVCINST_ASSOCSERVICE` absent | INF comment: "Do not specify SPSVCINST_ASSOCSERVICE on filter drivers." Our function driver INF does the opposite — uses `0x00000002` to claim device ownership. |
+| `Include=hidbth.inf` / `Needs=HIDBTH_Inst.NT` | Pulls HidBth in as function driver. Our INF omits this entirely — we become the function driver, HidBth is gone. |
+| Same four hardware IDs | VID&000205ac PID&030d/0310, VID&0001004c PID&0269/0323. Our INF matches all four; function driver takes precedence over filter INF. |
+| `.sys` modification ruled out | Windows 11 HVCI/Secure Boot validates Authenticode signature at load time. Modifying the binary invalidates Apple's signature — kernel refuses to load. Not viable. |
+
+---
+
 ## Open Questions After Reboot Test — RESOLVED
 
 All three questions answered by testing (sessions prior to 2026-04-27):

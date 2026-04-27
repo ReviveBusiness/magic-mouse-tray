@@ -8,8 +8,8 @@ linked_prd: PRD-184
 linked_repo: ReviveBusiness/magic-mouse-tray
 linked_issues: [2, 3, 4]
 opened: 2026-04-17
-last_updated: 2026-04-26
-sessions_logged: 5
+last_updated: 2026-04-27
+sessions_logged: 6
 ---
 
 # PSN-0001: Magic Mouse HID Battery Reader — Windows 11 Driver Binding
@@ -56,9 +56,8 @@ Apple Magic Mouse v2/2024 on Windows 11 requires the `AppleWirelessMouse64` HID 
 - `pnputil /restart-device` anywhere near an active applewirelessmouse filter (H-003, rejected 2026-04-26)
 - Writing LowerFilters to any registry location and expecting it to fix error 1077 (H-004, rejected prior sessions)
 
-**Next step**: KMDF function driver (`KMDF-PLAN.md`). The applewirelessmouse approach is exhausted.
-Capture raw HID descriptor (before filter) + patched descriptor (after filter), then implement
-PatchScrollItems() + TranslateTouchToScroll() in the skeleton.
+**Next step**: KMDF function driver — pre-build validation complete. Begin driver development:
+EWDK setup → Driver.c → HidDescriptor.c → InputHandler.c (port Linux hid-magicmouse.c) → BatteryHandler.c → INF with SPSVCINST_ASSOCSERVICE. See PRD #184 M12 for full task list.
 
 **GitHub Issues to check**: #2 (driver not binding after suspend), #3 (BTHENUM timing), #4 (driver priority logic)
 
@@ -71,3 +70,4 @@ PatchScrollItems() + TranslateTouchToScroll() in the skeleton.
 | 2026-04-22 | Session 3 | H-002 confirmed (worst-state-wins). PR merged. |
 | 2026-04-24 | Session 4 | H-003 opened (pnputil restart safety). PSN created. |
 | 2026-04-26 | Session 5 | test-filter-stack.ps1 run. H-003 rejected (/restart-device strips COL02). H-004 rejected (driver instance key write doesn't fix 1077 — tested in prior sessions). startup-repair.ps1 fixed (Bugs 1+2). KMDF driver confirmed as only path for scroll. |
+| 2026-04-27 | Session 6 | Full AppleWirelessMouse.inf (DriverVer 04/21/2026 6.2.0.0) reviewed. INF confirms error 1077 root cause: HKR in .HW.AddReg = Enum key only; PnP skips AddDevice on BTHENUM reuse at boot. Function driver INF design confirmed: SPSVCINST_ASSOCSERVICE, no Include=hidbth.inf, same four hardware IDs. Pre-build validation complete (TouchpadProbe, descriptor, stack baseline, .sys hash). KMDF-PLAN.md updated with INF analysis. |
