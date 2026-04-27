@@ -59,7 +59,11 @@ $action = New-ScheduledTaskAction -Execute 'powershell.exe' `
 # to mounted drives, gets admin token automatically when user is logged in.
 # No UAC prompt. No password storage. Trade-off: user must be logged in.
 $currentUser = "$env:USERDOMAIN\$env:USERNAME"
-$principal   = New-ScheduledTaskPrincipal -UserId $currentUser -RunLevel Highest -LogonType InteractiveToken
+# LogonType enum values vary by PS version: PS 5.1 uses 'InteractiveToken',
+# PS 7+ uses 'Interactive'. We use the PS 7 name and accept that PS 5.1
+# users would need 'InteractiveToken' instead. Detect at runtime.
+$logonType = if ($PSVersionTable.PSVersion.Major -ge 7) { 'Interactive' } else { 'InteractiveToken' }
+$principal = New-ScheduledTaskPrincipal -UserId $currentUser -RunLevel Highest -LogonType $logonType -ErrorAction Stop
 
 # Settings: on-demand only, no battery restriction, 30-min timeout, deny concurrent
 $settings = New-ScheduledTaskSettingsSet `
@@ -71,19 +75,33 @@ $settings = New-ScheduledTaskSettingsSet `
     -DisallowDemandStart:$false `
     -Hidden
 
-Register-ScheduledTask -TaskName $TaskName `
-    -Action $action `
-    -Principal $principal `
-    -Settings $settings `
-    -Description 'Magic Mouse driver dev cycle - triggered on demand from WSL via schtasks /run' `
-    -Force | Out-Null
+try {
+    Register-ScheduledTask -TaskName $TaskName `
+        -Action $action `
+        -Principal $principal `
+        -Settings $settings `
+        -Description 'Magic Mouse driver dev cycle - triggered on demand from WSL via schtasks /run' `
+        -Force -ErrorAction Stop | Out-Null
+} catch {
+    Write-Host "ERROR: Register-ScheduledTask failed: $_" -ForegroundColor Red
+    exit 1
+}
 
-# Also create the queue dir + grant SYSTEM write access (it already has it as
-# admin, but be explicit so we don't surprise ourselves later)
+# Verify the principal was actually applied (not silently fallen back to SYSTEM)
+$registered = Get-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue
+if (-not $registered) {
+    Write-Host "ERROR: Task verify failed - cannot read back $TaskName" -ForegroundColor Red
+    exit 1
+}
+$actualUser = $registered.Principal.UserId
+$actualLogon = $registered.Principal.LogonType
+
+# Create queue dir
 $queueDir = 'C:\mm-dev-queue'
 if (-not (Test-Path $queueDir)) { New-Item -ItemType Directory $queueDir -Force | Out-Null }
 
-Write-Host "Task '$TaskName' registered as SYSTEM." -ForegroundColor Green
+Write-Host "Task '$TaskName' registered." -ForegroundColor Green
+Write-Host "  Principal: $actualUser  LogonType: $actualLogon  RunLevel: $($registered.Principal.RunLevel)" -ForegroundColor Gray
 Write-Host ""
 Write-Host "Verify with:" -ForegroundColor Cyan
 Write-Host "  schtasks /query /tn $TaskName" -ForegroundColor White
