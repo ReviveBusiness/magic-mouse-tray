@@ -206,14 +206,19 @@ function Build-Driver {
         return $false
     }
 
-    $ewdkBatchEnv = Join-Path $EwdkRoot 'LaunchBuildEnv.cmd'
-    if (-not (Test-Path $ewdkBatchEnv)) {
-        Write-Log "EWDK not found at $EwdkRoot - check -EwdkRoot parameter" 'ERROR'
+    # Use SetupBuildEnv.cmd directly (sets env vars and returns).
+    # NOT LaunchBuildEnv.cmd: that wraps SetupBuildEnv in `cmd /k` which spawns
+    # an interactive shell that never exits, hanging the entire pipeline.
+    $ewdkSetup = Join-Path $EwdkRoot 'BuildEnv\SetupBuildEnv.cmd'
+    if (-not (Test-Path $ewdkSetup)) {
+        Write-Log "EWDK SetupBuildEnv.cmd not found at $ewdkSetup" 'ERROR'
         return $false
     }
 
-    Write-Log "Running EWDK msbuild (Rebuild)..."
-    $buildCmd = "`"$ewdkBatchEnv`" && msbuild `"$VcxProj`" /p:Configuration=Debug /p:Platform=x64 /t:Rebuild /nologo /v:minimal"
+    Write-Log "Running EWDK msbuild (Rebuild) via SetupBuildEnv..."
+    # 'call' is critical: ensures cmd.exe returns from SetupBuildEnv.cmd before
+    # executing msbuild. Without 'call', batch chaining behaves unpredictably.
+    $buildCmd = "call `"$ewdkSetup`" >NUL && msbuild `"$VcxProj`" /p:Configuration=Debug /p:Platform=x64 /t:Rebuild /nologo /v:minimal"
     $output = cmd /c $buildCmd 2>&1
     $output | ForEach-Object { Add-Content -Path $SessionLog -Value $_ -Encoding UTF8 }
 
