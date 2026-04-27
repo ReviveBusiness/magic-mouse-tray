@@ -1,6 +1,6 @@
 # Autonomous Agent Development Team — Playbook
 
-**Status:** v1.2 (2026-04-27, +AP-12/13/14/15 + Per-phase close-out gate)
+**Status:** v1.3 (2026-04-27, +Conditional peer-review trigger in Block 1)
 **Scope:** how to run a multi-agent autonomous workflow that produces correct results the first time, instead of the iterative-discovery cycles we hit overnight.
 
 This is intended to be lifted out of `magic-mouse-tray/.ai/playbooks/` into a global location (e.g. `~/.claude/playbooks/` or `RILEY/.ai/playbooks/`) once it stabilises across one more autonomous session.
@@ -296,6 +296,29 @@ Every phase that mutates state OR produces empirical findings ends with this 5-b
 - [ ] `mm-reg-diff.sh --auto` produces a markdown audit at `.ai/test-runs/<phase>/reg-diff-<ts>.md` IF registry mutations occurred (Phase 1 cleanup, Phase 4 cache patch, etc.). Unexpected drift = halt.
 - [ ] `mm-snapshot-state.sh` captures filesystem / PnP topology / driver packages.
 - [ ] All orchestrator transcripts archived under `.ai/test-runs/<phase>/`.
+- [ ] **Peer-review (conditional)** — if the phase committed code that lands in any kernel-touching, PnP-touching, security-sensitive, or input-system-touching path, run `/peer-review` against the diff BEFORE declaring the phase done.
+
+#### Peer-review trigger checklist (Block 1.4)
+
+The phase **needs** peer-review if any committed file touches:
+- Registry mutations (PowerShell `Set-ItemProperty`/`Remove-ItemProperty` on `HKLM\SYSTEM`, raw `.reg` imports)
+- PnP topology mutations (`pnputil /add-driver`, `/remove-device`, `/install-driver`)
+- Kernel-mode driver code (`.c`/`.h` for `.sys` files, `.inf` files)
+- Win32 hooks (`SetWindowsHookEx`, `WH_*` constants, `MSLLHOOKSTRUCT`)
+- Service installation/modification (`sc.exe create/delete/config`, service registry keys)
+- Crypto / signing / authentication paths
+- Filter drivers (`LowerFilters`, `UpperFilters`, `class filter` registry)
+
+The phase **does NOT need** peer-review if commits only touch:
+- Markdown / YAML / TOML docs
+- Test orchestrators that only *read* state (HID probe, snapshot tool, log tails)
+- Post-hoc analysis tools (reg-diff, accept-test runners)
+- Comments, version bumps, changelog entries
+- PRD progress / decisions tables
+
+When in doubt, run it — `/peer-review` cost (~2-5 min + tokens) is dwarfed by the cost of a kernel BSOD, system input hang, or registry corruption that ships unreviewed.
+
+The peer-review verdict (APPROVE / CHANGES-NEEDED / REJECT) goes into the phase's status report. CHANGES-NEEDED at minimum requires the changes to land before Block 5's atomic commit; REJECT halts the phase.
 
 ### Block 2 — Continuity files (judgment-required, manual)
 - [ ] **PSN file** (e.g. `PSN-0001-hid-battery-driver.yaml`):
