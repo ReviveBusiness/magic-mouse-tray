@@ -14,15 +14,14 @@
 #
 # Output dir: .ai/test-runs/<YYYY-MM-DD-HHMMSS>-<cell-id>/<step>/
 #
-# This is a v1 orchestrator. ETW + Procmon captures are NOT yet wired in -
-# follow-up after reviewer feedback (see .ai/test-plans/m13-baseline-and-cache-test.md).
-# What it does today:
-#   - HID probe per step
-#   - mm-accept-test JSON per step
-#   - State snapshot per step
-#   - User-observation prompts (text notes saved per step)
-#   - DebugView log slice per step
-#   - Tray debug.log tail per step
+# v1.2 captures per step:
+#   - HID probe (mm-hid-probe.ps1)
+#   - mm-accept-test JSON
+#   - State snapshot (mm-snapshot-state.sh)
+#   - Tray debug.log + kernel debug log tails
+#   - Procmon .PML (cell-level: start at cell begin, stop at cell end)
+#   - ETW .etl via wpr.exe (cell-level; requires admin PS -- user is prompted)
+#   - WM_MOUSEWHEEL event count + per-event timestamps (test steps only, 3s window)
 
 set -euo pipefail
 
@@ -138,6 +137,92 @@ capture_log_tails() {
     echo "[capture]   tray + kernel log tails"
 }
 
+# Procmon path (confirmed available on host)
+PROCMON_EXE="C:\\Users\\Lesley\\AppData\\Local\\Microsoft\\WindowsApps\\Procmon.exe"
+
+start_procmon() {
+    local run_dir_win
+    run_dir_win=$(wslpath -w "$run_dir")
+    local pml_path="${run_dir_win}\\procmon.PML"
+    echo "[capture] Starting Procmon -> ${pml_path}..."
+    # Launch unfiltered; filter post-hoc (simpler, adequate for data sizes we expect)
+    powershell.exe -NoProfile -ExecutionPolicy Bypass -Command \
+        "Start-Process -FilePath '${PROCMON_EXE}' -ArgumentList '/BackingFile','${pml_path}','/Quiet','/Minimized','/AcceptEula' -WindowStyle Minimized" \
+        2>/dev/null || true
+    echo "[capture]   -> Procmon running, output: ${pml_path}"
+}
+
+stop_procmon() {
+    echo "[capture] Stopping Procmon..."
+    powershell.exe -NoProfile -ExecutionPolicy Bypass -Command \
+        "Start-Process -FilePath '${PROCMON_EXE}' -ArgumentList '/Terminate'" \
+        2>/dev/null || true
+    echo "[capture]   -> Procmon terminated, .PML saved to run dir"
+}
+
+# wpr.exe path (in-box Windows tool)
+WPR_EXE="C:\\Windows\\System32\\wpr.exe"
+
+start_wpr() {
+    local run_dir_win
+    run_dir_win=$(wslpath -w "$run_dir")
+    cat <<EOF
+
+==== ETW capture ====
+wpr.exe requires an ADMIN PowerShell session. From your admin PowerShell, run:
+    wpr -start GeneralProfile -filemode
+
+Press ENTER once wpr has started (you will see "Recording is now on." or similar).
+EOF
+    read -r -p "" _
+    echo "[capture]   -> ETW recording started"
+}
+
+stop_wpr() {
+    local run_dir_win
+    run_dir_win=$(wslpath -w "$run_dir")
+    local etl_path="${run_dir_win}\\etw-trace.etl"
+    cat <<EOF
+
+==== Stop ETW capture ====
+From your admin PowerShell, run:
+    wpr -stop ${etl_path}
+
+This will take ~30 seconds to finalize the trace. Press ENTER once wpr has finished
+(you will see "Recording has been saved." or the PS prompt returns).
+EOF
+    read -r -p "" _
+    echo "[capture]   -> ETW trace saved to ${etl_path}"
+}
+
+capture_wheel_events() {
+    local step_dir="$1"
+    local step_name="$2"
+    # Only run for test steps (step name contains "test")
+    if [[ "$step_name" != *"test"* ]]; then
+        return
+    fi
+    local wheel_json_win
+    wheel_json_win="$(wslpath -w "${step_dir}/wheel-events.json")"
+    local ps_script_win
+    ps_script_win="$(wslpath -w "${REPO_ROOT}/scripts/mm-wheel-counter.ps1")"
+    cat <<EOF
+
+==== Wheel-event capture ====
+Start your 3-second 2-finger scroll gesture NOW. Capturing for 3s.
+EOF
+    powershell.exe -NoProfile -ExecutionPolicy Bypass \
+        -File "$ps_script_win" -DurationSec 3 -OutputJson "$wheel_json_win" || true
+    if [[ -f "${step_dir}/wheel-events.json" ]]; then
+        python3 -c "
+import sys, json
+d = json.load(open('${step_dir}/wheel-events.json'))
+print('  -> ' + str(d['event_count']) + ' wheel events captured')
+" 2>/dev/null || true
+    fi
+    echo "[capture]   -> ${step_dir}/wheel-events.json"
+}
+
 prompt_user_observations() {
     local step_dir="$1"
     local step_name="$2"
@@ -189,6 +274,7 @@ run_test_step() {
     capture_accept_test      "$step_dir"
     capture_state_snapshot   "$step_dir"
     capture_log_tails        "$step_dir"
+    capture_wheel_events     "$step_dir" "$step_name"
     prompt_user_observations "$step_dir" "$step_name"
     echo "==== Step complete: $step_name ===="
 }
@@ -233,6 +319,11 @@ run_sleep_wake_step() {
 }
 
 run_full_sequence() {
+    # Start cell-level captures (Procmon + ETW) before any step runs.
+    # Procmon launches silently; wpr requires admin PS so the user is prompted.
+    start_procmon
+    start_wpr
+
     case "$cell_id" in
         T-V3-AF)
             echo "Cell T-V3-AF: v3 mouse, AppleFilter mode (current default state)"
@@ -305,6 +396,11 @@ run_full_sequence() {
             run_action_step "reboot" "Reboot. Re-run with step=test-3 after."
             ;;
     esac
+
+    # Stop cell-level captures.
+    stop_procmon
+    stop_wpr
+
     echo "==== Cell $cell_id sequence complete (or paused for reboot) ===="
     echo "Run dir: $run_dir"
     echo
