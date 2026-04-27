@@ -302,16 +302,29 @@ InputHandler_AclCompletion(
     }
     // -----------------------------------------------------------------------
     // Interrupt channel: translate Report 0x12
+    //
+    // BT HID protocol: every L2CAP interrupt-channel input packet is prefixed
+    // with a single transport header byte:
+    //   0xA1 = HID Transaction (DATA) | HID Type (INPUT)
+    // The actual HID Report ID is at data[1], NOT data[0]. This was empirically
+    // confirmed: every packet on the interrupt channel showed data[0]==0xA1.
+    // Without this fix, the Report ID check below was ALWAYS false.
+    //
+    // We pass (data + 1, bufSize - 1) to TranslateReport12 so the function sees
+    // a clean Report 0x12 buffer at offset 0. The translated Report 0x01 is
+    // written in-place starting at data[1], preserving the 0xA1 transport byte
+    // at data[0]. IoStatus.Information is set to newLen + 1 to include 0xA1.
     // -----------------------------------------------------------------------
     else if (chanHandle == devCtx->InterruptChannelHandle &&
-             bufSize >= 1 &&
-             data[0] == MM_REPORT_ID_TOUCH) {
+             bufSize >= 2 &&
+             data[0] == 0xA1 &&
+             data[1] == MM_REPORT_ID_TOUCH) {
 
         ULONG  newLen  = 0;
         INT8   wheelH  = 0;
 
-        if (TranslateReport12(data, bufSize, &wheelH, &newLen)) {
-            irp->IoStatus.Information = newLen;
+        if (TranslateReport12(data + 1, bufSize - 1, &wheelH, &newLen)) {
+            irp->IoStatus.Information = newLen + 1;  // +1 for 0xA1 transport byte
 
             // Horizontal scroll (wheelH != 0) requires Report 0x02 on TLC2.
             // Delivering a second HID report from this completion requires a
