@@ -1,4 +1,3 @@
-#Requires -RunAsAdministrator
 <#
 .SYNOPSIS
     Magic Mouse driver development cycle - state/build/sign/install/capture in one script.
@@ -41,8 +40,50 @@ param(
     [string]$TimestampUrl = 'http://timestamp.digicert.com',
     [string]$VendorPid  = 'VID&0001004c_PID&0323',  # Magic Mouse 2024 - used for device autodetect
     [string]$DbgViewExe = 'C:\SysinternalsSuite\Dbgview.exe',
-    [string]$SignToolExe = 'C:\Program Files (x86)\Windows Kits\10\bin\10.0.26100.0\x64\signtool.exe'
+    [string]$SignToolExe = 'C:\Program Files (x86)\Windows Kits\10\bin\10.0.26100.0\x64\signtool.exe',
+    [switch]$NoElevate    # internal flag — set when re-launched as admin to prevent infinite recursion
 )
+
+# ---------------------------------------------------------------------------
+# Self-elevation — re-launch as admin if needed (UAC prompt once per call)
+# ---------------------------------------------------------------------------
+function Test-IsAdmin {
+    $id = [System.Security.Principal.WindowsIdentity]::GetCurrent()
+    $p  = New-Object System.Security.Principal.WindowsPrincipal($id)
+    return $p.IsInRole([System.Security.Principal.WindowsBuiltInRole]::Administrator)
+}
+
+if (-not (Test-IsAdmin) -and -not $NoElevate) {
+    Write-Host "[mm-dev] Not Administrator - elevating via UAC (accept the prompt)..." -ForegroundColor Yellow
+
+    # Build relaunch arg list — preserve all bound params + add -NoElevate sentinel
+    $relaunchArgs = @('-NoProfile','-ExecutionPolicy','Bypass','-File',"$PSCommandPath",'-NoElevate')
+    foreach ($k in $PSBoundParameters.Keys) {
+        $v = $PSBoundParameters[$k]
+        if ($v -is [switch]) {
+            if ($v.IsPresent) { $relaunchArgs += "-$k" }
+        } else {
+            $relaunchArgs += "-$k"
+            $relaunchArgs += "$v"
+        }
+    }
+    if (-not ($PSBoundParameters.ContainsKey('Phase'))) {
+        $relaunchArgs += '-Phase'; $relaunchArgs += "$Phase"
+    }
+
+    try {
+        $proc = Start-Process -FilePath 'powershell.exe' `
+                              -ArgumentList $relaunchArgs `
+                              -Verb RunAs -Wait -PassThru `
+                              -WindowStyle Normal
+        Write-Host "[mm-dev] Elevated phase exited with code $($proc.ExitCode)" -ForegroundColor Cyan
+        Write-Host "[mm-dev] Session log: $SessionLog" -ForegroundColor Cyan
+        exit $proc.ExitCode
+    } catch {
+        Write-Host "[mm-dev] Elevation cancelled or failed: $_" -ForegroundColor Red
+        exit 2
+    }
+}
 
 # Auto-detect device ID by VID/PID (avoids hardcoded MAC that breaks on re-pair)
 function Resolve-DeviceId {

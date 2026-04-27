@@ -47,11 +47,20 @@ run_ps1() {
         echo "[mm-dev] ERROR: unknown phase '$1'" >&2
         return 2
     fi
-    echo "[mm-dev] Running Phase=$phase_arg on Windows..."
+    # Mark log boundary so we can show only output from this phase
+    local start_marker="==== mm-dev BEGIN $phase_arg $(date '+%Y-%m-%d %H:%M:%S') ===="
+    echo "$start_marker" | tee -a "$SESSION_LOG" >/dev/null 2>&1 || true
+    echo "[mm-dev] Running Phase=$phase_arg on Windows (UAC prompt may appear)..."
     powershell.exe -ExecutionPolicy Bypass -File "$WIN_PS1" -Phase "$phase_arg"
     local rc=$?
+    # Show all session log lines written since the marker
+    if [[ -f "$SESSION_LOG" ]]; then
+        echo "----- session log (this phase) -----"
+        awk -v m="$start_marker" 'found{print} $0==m{found=1}' "$SESSION_LOG" || true
+        echo "------------------------------------"
+    fi
     if [[ $rc -ne 0 ]]; then
-        echo "[mm-dev] Windows phase FAILED (exit=$rc) - check $SESSION_LOG" >&2
+        echo "[mm-dev] Windows phase FAILED (exit=$rc) - full log: $SESSION_LOG" >&2
     else
         echo "[mm-dev] Windows phase OK (exit=0)"
     fi
