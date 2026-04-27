@@ -76,18 +76,32 @@ da6da82 feat(scripts): mm-dev.sh/ps1 - scripted driver dev cycle with full loggi
 
 ## What still needs to happen (the proper "both" fix)
 
-The previous KMDF filter attempt failed because:
-- Tried to inject custom HID descriptor via BRB-level interception below HidBth
-- Control channel ACL packets are 1 byte (no descriptor delivery there) → injection never fired
-- Translation tried to write Report 0x01 in a 5-byte format
-- Native COL01 is 8 bytes — HidClass rejected the mismatch
+**A late-night peer-review of the architecture revealed the previous PRD-184
+plan can't work as designed.** `hidclass.sys` does NOT communicate with `HidBth`
+via IRPs/IOCTLs — it calls `HidBth`'s registered minidriver support routines
+directly. Therefore:
 
-The right architecture (per NotebookLM citation 10/11 + tonight's empirical caps probe):
+- A LOWER filter on BTHENUM (current design) only sees raw BT bus traffic, never the descriptor.
+- An UPPER filter on BTHENUM also doesn't help — `IOCTL_HID_GET_REPORT_DESCRIPTOR` is absorbed by `hidclass.sys` and never sent down the stack.
+- A class filter on HIDClass would see HID-client-level IOCTLs but not the minidriver's internal descriptor cache.
 
-1. **Filter placement**: between `hidclass.sys` and `HidBth` (UPPER filter on the BTHENUM PDO, OR class filter on `{745a17a0-…}` HIDClass GUID). This is where `IOCTL_HID_GET_REPORT_DESCRIPTOR` actually flows.
-2. **Descriptor strategy**: replace the descriptor for the Magic Mouse only — synthesize a TLC1 Mouse with Wheel + AC Pan, leave TLC2 (vendor battery) intact.
-3. **Translation strategy**: intercept `IOCTL_HID_READ_REPORT` for COL01. When device emits raw Report 0x12 multi-touch (X/Y in 16-bit signed at offsets 0/1 and 2/3), parse two-finger gestures into Wheel/AC Pan deltas and synthesize a new Report 0x12 with the extra fields the descriptor declares. Pass-through Report 0x90 unchanged.
-4. **Install**: replace `applewirelessmouse` in LowerFilters with our filter (the existing INF + signing chain works — confirmed by tonight's `mm-dev.sh full` going through build/sign/install successfully other than the INF schema fix).
+The descriptor flow on BT is: device → SDP/L2CAP exchange → `HidBth` caches in its
+device extension → `hidclass.sys` reads via direct function call. There's no IRP
+to filter.
+
+**Three architecturally viable approaches** (any of these is a real project, not a
+single overnight task):
+
+1. **Replace `HidBth` for this PID** — write a custom HID minidriver. Replaces the function driver entirely. Most invasive, most flexible. Lots of code.
+2. **Patch the cached HID descriptor in registry** — `HidBth` reads the descriptor from SDP during pairing; subsequent enumerations may reuse a registry-cached version. If we can locate that cache key and pre-write our version, `HidBth` serves it without code changes. Low code, unknown feasibility — needs reverse-engineering of `HidBth.sys`'s cache layout.
+3. **Hybrid: ScrollGenerator userland helper + NoFilter mode** — run in NoFilter mode (battery works natively), then have a userland helper that reads the raw Report 0x12 BT stream via lower filter (which we CAN do — that's the BRB path our existing driver implements) and emits `SendInput(MOUSEEVENTF_WHEEL)` events to synthesize scroll. Works around mouhid exclusivity at the input event layer rather than the HID layer. Medium code, novel approach.
+
+Option 3 is the most promising direction — it requires no descriptor surgery, and
+the BRB-level lower filter (which we've already built) is the right place for it.
+The previous filter's translation logic was wrong target (HID report rewrite
+without descriptor support), but the same filter could instead emit Win32 input
+events from kernel mode (via `IoCallDriver` to the user-input subsystem) or push
+data to a userland helper via inverted call.
 
 ## Tools you can use right now (no UAC)
 
