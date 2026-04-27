@@ -66,6 +66,18 @@ HidD_GetInputReport(col02, buf[3], 0x90)
 
 Confirms `MouseBatteryReader.cs` layout: `buf[2]` = battery %. ✅
 
+## applewirelessmouse.sys Baseline
+
+| Field | Value |
+|-------|-------|
+| Path | `C:\Windows\System32\drivers\applewirelessmouse.sys` |
+| FileVersion | 6.1.7700.0 |
+| ProductVersion | 6.1.0.0 |
+| SHA-256 | `08F33D7E3ECE2C73950A9706F1C4C9057894EAEAF1C4FB355F261F3C2333378F` |
+
+This is the Apple BootCamp HID lower filter driver. Version 6.1.7700.0 is the Windows 7-era
+BootCamp build. The KMDF function driver (M12) will replace this driver's role entirely.
+
 ## Raw Descriptor Capture — Not Obtained
 
 `IOCTL_HID_GET_REPORT_DESCRIPTOR` (0x000B0083) returns err=1 (ERROR_INVALID_FUNCTION) when
