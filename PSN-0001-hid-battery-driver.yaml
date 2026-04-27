@@ -2,14 +2,14 @@
 title: PSN-0001 — Magic Mouse HID Battery Reader Driver Binding
 type: problem-session-note
 psn_id: PSN-0001
-version: 1.0.0
+version: 1.1.0
 status: active
 linked_prd: PRD-184
 linked_repo: ReviveBusiness/magic-mouse-tray
 linked_issues: [2, 3, 4]
 opened: 2026-04-17
 last_updated: 2026-04-27
-sessions_logged: 6
+sessions_logged: 7
 ---
 
 # PSN-0001: Magic Mouse HID Battery Reader — Windows 11 Driver Binding
@@ -41,23 +41,27 @@ Apple Magic Mouse v2/2024 on Windows 11 requires the `AppleWirelessMouse64` HID 
 
 ## Next Session Brief
 
-**Current state (2026-04-26)**:
-- startup-repair.ps1 fixed: removed /restart-device (Bug 1), added driver instance key write (Bug 2)
-- COL02 persistence confirmed working via &6& recovery procedure
-- Scroll via applewirelessmouse filter: BLOCKED — error 1077 persists regardless of registry writes
+**Current state (2026-04-27, end of Session 7 — M13 Phase 1 complete)**:
+- M13 Phase 0 + Phase 1 EXECUTED. Three orphans cleared: MagicMouseDriver service key, USB MI_01 LowerFilters="MagicMouse", MAGICMOUSERAWPDO PnP node. Scroll path intact across 5 verify points.
+- Reg-diff verification baked in as MOP gate (`scripts/mm-reg-diff.sh` + `scripts/mm-phase1-closeout.sh`). Plan v1.1 makes it required at every registry-mutating phase boundary.
+- Two cleanup-script bugs fixed mid-session: B1 (COL01 health check matched stale orphan instead of working parent HID PDO) + B2 (`\\` vs `\` in `-like` pattern caused silent no-op).
+- Windows Update paused 7 days (until 2026-05-04T20:45Z) to prevent mid-test driver swaps.
+- Driver fingerprints captured: bthport.sys 10.0.26100.1, HidBth.sys 10.0.26100.1, applewirelessmouse.sys 6.1.7700.0.
+- Stale `HID\{00001124-...}_VID&0001004C_PID&0323&COL01\...` Status=Unknown PDO still present — out of cleanup-script scope, deemed benign for now.
 
-**Files to read first**:
-- `startup-repair.ps1` — fixed version
-- `KMDF-PLAN.md` — next step architecture
-- `sre-windows/references/recovery-procedures.md` — Scroll Fix Status table
+**Files to read first (Phase 2 prep)**:
+- `.ai/test-runs/m13-phase0/phase1-report.md` — full Phase 1 audit + outstanding G1 decisions
+- `.ai/test-runs/m13-phase0/reg-diff.md` — mutation audit report
+- `.ai/test-plans/m13-baseline-and-cache-test.md` v1.1 — updated plan with reg-diff gate
+- `.ai/playbooks/autonomous-agent-team.md` v1.1 — added AP-12/13/14/15 from this session
 
-**Do NOT retry**:
-- Using `ReportDescriptor` access to detect driver binding state (H-001, rejected 2026-04-21)
-- `pnputil /restart-device` anywhere near an active applewirelessmouse filter (H-003, rejected 2026-04-26)
-- Writing LowerFilters to any registry location and expecting it to fix error 1077 (H-004, rejected prior sessions)
+**Do NOT retry** (rejected hypotheses still apply):
+- H-001 ReportDescriptor as binding signal | H-003 `pnputil /restart-device` near active applewirelessmouse | H-004 LowerFilters in driver instance key fixing error 1077
 
-**Next step**: KMDF function driver — pre-build validation complete. Begin driver development:
-EWDK setup → Driver.c → HidDescriptor.c → InputHandler.c (port Linux hid-magicmouse.c) → BatteryHandler.c → INF with SPSVCINST_ASSOCSERVICE. See PRD #184 M12 for full task list.
+**Phase 2 entry blockers (G1 decisions still pending)**:
+1. Confirm Phase 2 axis additions: USB-C cells (T-V3-AF-USB, T-V3-NF-USB) + sleep/wake sub-step + WM_MOUSEWHEEL count measurements
+2. Confirm Phase 4 branch collapse: 4B (registry-patch with Apple's filter) DEAD per peer-review; only 4A (no kernel + userland gesture daemon) and 4C (SDP-scanner filter + cache patch) remain viable
+3. Approve fixing kernel reviewer findings BLK-001/002, SF-003 on commit `5ff866a` BEFORE any kernel filter test in Phase 4
 
 **GitHub Issues to check**: #2 (driver not binding after suspend), #3 (BTHENUM timing), #4 (driver priority logic)
 
@@ -71,3 +75,4 @@ EWDK setup → Driver.c → HidDescriptor.c → InputHandler.c (port Linux hid-m
 | 2026-04-24 | Session 4 | H-003 opened (pnputil restart safety). PSN created. |
 | 2026-04-26 | Session 5 | test-filter-stack.ps1 run. H-003 rejected (/restart-device strips COL02). H-004 rejected (driver instance key write doesn't fix 1077 — tested in prior sessions). startup-repair.ps1 fixed (Bugs 1+2). KMDF driver confirmed as only path for scroll. |
 | 2026-04-27 | Session 6 | Full AppleWirelessMouse.inf (DriverVer 04/21/2026 6.2.0.0) reviewed. INF confirms error 1077 root cause: HKR in .HW.AddReg = Enum key only; PnP skips AddDevice on BTHENUM reuse at boot. Function driver INF design confirmed: SPSVCINST_ASSOCSERVICE, no Include=hidbth.inf, same four hardware IDs. Pre-build validation complete (TouchpadProbe, descriptor, stack baseline, .sys hash). KMDF-PLAN.md updated with INF analysis. |
+| 2026-04-27 | Session 7 | M13 Phase 0 + Phase 1 executed. Three orphans cleared (MagicMouseDriver svc key, USB MI_01 LowerFilters="MagicMouse", MAGICMOUSERAWPDO PnP node). Two cleanup-script bugs fixed (B1 health check, B2 `\\` pattern). Reg-diff verification baked in as MOP gate (mm-reg-diff.sh, mm-phase1-closeout.sh). Plan v1.1, playbook v1.1 (+AP-12/13/14/15). Pre/post .reg backups + diff audit confirm only expected mutations. Halted at Phase 2 gate pending G1 decisions #2/#3/#4. |

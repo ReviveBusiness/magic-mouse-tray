@@ -86,14 +86,24 @@ function Verify-WorkingState {
     }
     OK "applewirelessmouse in LowerFilters"
 
-    # 2. COL01 must be present and Started
-    $col01 = Get-PnpDevice -ErrorAction SilentlyContinue | `
-        Where-Object { $_.InstanceId -like '*VID&0001004C_PID&0323&Col01*' -and $_.Status -eq 'OK' }
-    if (-not $col01) {
-        Fail "COL01 not enumerated or not Started"
+    # 2. The HID mouse PDO under that BTHENUM parent must be functional.
+    #    Note: with applewirelessmouse stripping COL02, HidClass instantiates a
+    #    single child without a COL suffix (Class=Mouse). A COL01-suffixed sibling
+    #    at Status=Unknown is a stale orphan from an earlier descriptor state and
+    #    is itself a cleanup target, not a health gate.
+    $hidMouse = Get-PnpDevice -ErrorAction SilentlyContinue | `
+        Where-Object {
+            $_.InstanceId -like 'HID\{00001124-*}_VID&0001004C_PID&0323\*' -and
+            $_.InstanceId -notlike '*&Col*' -and
+            $_.Class -eq 'Mouse' -and
+            $_.Status -eq 'OK'
+        }
+    if (-not $hidMouse) {
+        Fail "Working HID mouse PDO under BTHENUM parent not found at Status=OK Class=Mouse"
+        Info "  (a COL01-suffixed sibling at Status=Unknown is normal post-applewirelessmouse and gets cleaned up; the parent HID PDO is the health signal)"
         return $false
     }
-    OK "COL01 enumerated, Status=OK"
+    OK "HID mouse PDO Status=OK Class=Mouse"
 
     # 3. Device must not have an error code
     if ($bthenum.Status -ne 'OK') {
@@ -163,7 +173,7 @@ if (-not $WhatIfPreference) {
 # === Step 3: Remove MAGICMOUSERAWPDO orphan PnP node ===
 Step "3" "Remove MAGICMOUSERAWPDO orphan PnP node"
 $rawPdo = Get-PnpDevice -ErrorAction SilentlyContinue | `
-    Where-Object { $_.InstanceId -like '{7D55502A-2C87-441F-9993-0761990E0C7A}\\MagicMouseRawPdo*' }
+    Where-Object { $_.InstanceId -like '{7D55502A-2C87-441F-9993-0761990E0C7A}\*MAGICMOUSERAWPDO*' }
 if ($rawPdo) {
     foreach ($d in $rawPdo) {
         if ($PSCmdlet.ShouldProcess($d.InstanceId, "pnputil /remove-device")) {

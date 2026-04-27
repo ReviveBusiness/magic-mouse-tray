@@ -1,6 +1,6 @@
 # Autonomous Agent Development Team — Playbook
 
-**Status:** v1.0 (2026-04-27, distilled from PRD-184 magic-mouse-tray work)
+**Status:** v1.1 (2026-04-27, +AP-12/13/14/15 from M13 Phase 1 cleanup session)
 **Scope:** how to run a multi-agent autonomous workflow that produces correct results the first time, instead of the iterative-discovery cycles we hit overnight.
 
 This is intended to be lifted out of `magic-mouse-tray/.ai/playbooks/` into a global location (e.g. `~/.claude/playbooks/` or `RILEY/.ai/playbooks/`) once it stabilises across one more autonomous session.
@@ -265,6 +265,26 @@ Before invoking `/peer-review` on architecture work, run a corpus-refresh step:
 **Symptom:** Driver installs without error but doesn't actually work.
 **Concrete instance:** Earlier in the project, `pnputil /add-driver` succeeded but the LowerFilters binding wasn't taking effect because PnP didn't call AddDevice. We discovered this empirically over multiple debug cycles.
 **Fix:** Acceptance test that probes the post-state with concrete checks (LowerFilters present, COL01/COL02 enumerated, battery readable). Don't trust install exit codes alone.
+
+### AP-12: Health checks pinned to assumed device topology, not empirical state
+**Symptom:** Pre-flight verification refuses to start a known-working system because it expects a device topology that no longer exists.
+**Concrete instance (M13 Phase 1):** `mm-phase1-cleanup.ps1` Verify-WorkingState looked for `*VID&0001004C_PID&0323&Col01*` Status=OK, but the post-applewirelessmouse topology has the working PDO at the parent HID node (no `&Col01` suffix), with a stale `&Col01` sibling at Status=Unknown. The check rejected a valid baseline and the cleanup ran zero times until we probed the actual state.
+**Fix:** Health checks must reflect *current* empirical state, not the topology that existed when the script was written. When a check fails, FIRST run a non-mutating PnP probe to confirm the device is actually broken vs the check is stale. Update the check to match reality.
+
+### AP-13: PowerShell `-like` pattern: `\\` is two literal backslashes
+**Symptom:** A `-like` filter that "should" match silently never matches; the script reports "already gone" for things that exist.
+**Concrete instance (M13 Phase 1, Bug B2):** `Where-Object { $_.InstanceId -like '{...}\\MagicMouseRawPdo*' }` — the `\\` inside a single-quoted string is two literal backslashes. Real `InstanceId` values use a single `\`. Step 3 of the cleanup script silently no-op'd; we caught it only by post-cleanup PnP probe + reg-diff confirming the orphan was still present.
+**Fix:** In PowerShell `-like` patterns, backslashes have NO special meaning — write `\` not `\\`. Validate every `-like` filter against a known-positive sample BEFORE relying on it. When a verifier reports "already gone", post-mutation probe must confirm — never trust the verifier alone.
+
+### AP-14: Reg-export without a verification gate
+**Symptom:** You take pre/post registry snapshots but never diff them, so silent no-ops (AP-13) and unintended drift go undetected until they cause downstream failures.
+**Concrete instance (M13 Phase 1):** Phase 1 plan v1.0 listed `mm-reg-export.sh` as "telemetry" but had no diff/verification step. The B2 bug only surfaced because the agent decided to run `diff` after-the-fact at the user's request. Without that, we'd have entered Phase 2 with the RAWPDO orphan still present.
+**Fix:** Reg-export ALWAYS pairs with a reg-diff gate at every mutation phase boundary. The gate produces a markdown audit report (sections + value-level changes, hex(7)/hex(1) decoded inline) and any unexpected drift halts the phase. See `scripts/mm-reg-diff.sh`.
+
+### AP-15: `python3 - <<HEREDOC` swallows pipeline stdin
+**Symptom:** `cmd | python3 - "$ARG" <<'PY' ... PY` runs without error but `sys.stdin.read()` returns empty.
+**Concrete instance (M13, mm-reg-diff.sh):** The decoder function read 0 bytes of diff output even though the pipeline produced ~1200 lines. Python's `-` argument tells it to read its source from stdin; the `<<'PY'` heredoc is the source. The pipeline's stdout never reaches `sys.stdin.read()` because the heredoc redirect overrides the pipe.
+**Fix:** Either write the python to a temp file (`mktemp --suffix=.py`) and call `cmd | python3 /tmp/decoder.py "$ARG"`, OR use `-c "..."` and pay the bash-quoting cost. Never combine `python3 -` with both `cmd | ...` and `<<HEREDOC`.
 
 ---
 

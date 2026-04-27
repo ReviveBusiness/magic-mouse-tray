@@ -1,9 +1,10 @@
 # M13 — Empirical Baseline & BTHPORT Descriptor Cache Investigation
 
-**Status:** plan v1.0 — pending pre-execution review (G1)
+**Status:** plan v1.1 — Phase 1 executed, reg-diff verification baked in as MOP gate
 **Owner:** PRD-184
 **Estimated effort:** 1.5h prep + ~4h execution
 **Pre-flight gate:** see `.ai/playbooks/autonomous-agent-team.md` checklist sections A-E.
+**v1.0 → v1.1 (2026-04-27):** Phase 1 ran; reg-diff verification gate added; orchestrator + bundle script added; cleanup script B1 (COL01 health check) + B2 (RAWPDO `\\` pattern) bugs fixed. See `.ai/test-runs/m13-phase0/phase1-report.md`.
 
 ## Why M13
 
@@ -39,6 +40,7 @@ Goal: remove orphan registry/PnP residue from MU + overnight experiments without
 
 Steps (each verified before next):
 
+0. **MOP gate — pre-flight (admin PS, Phase 0):** `mm-pause-windows-update.ps1` (7d) + `mm-driver-fingerprints` capture
 1. Pre-flight registry export → `D:\Users\Lesley\Documents\Backups\<ts>-pre-cleanup.reg`
 2. Remove dead `MagicMouseDriver` service key (no `.sys` exists, orphan)
 3. Remove stale USB MI_01 `LowerFilters=MagicMouse` (would Code-39 if mouse plugged via USB-C)
@@ -47,13 +49,18 @@ Steps (each verified before next):
 6. Remove orphan `oem*.inf` packages from our overnight experiments (the Windows audit at `.ai/cleanup-audit/windows-audit-2026-04-27.md` enumerates these)
 7. Verify scroll still works (move pointer, 2-finger gesture)
 8. Post-cleanup registry export → `D:\Users\Lesley\Documents\Backups\<ts>-post-cleanup.reg`
-9. `mm-snapshot-state.sh` for in-repo record
+9. **MOP gate — reg-diff verification:** `./scripts/mm-reg-diff.sh --auto` produces a markdown audit report at `.ai/test-runs/<phase>/reg-diff-<ts>.md` showing (a) sections added/removed, (b) value-level diffs with hex(7)/hex(1) decoded inline, (c) full diff totals. Report must show ONLY the expected mutations (MagicMouse* / RAWPDO sections in CCS+CS001) — any unexpected drift halts the phase.
+10. `mm-snapshot-state.sh` for in-repo record
 
-Exact command sequence prepared in companion script — see `scripts/mm-phase1-cleanup.ps1` (numbered with verification check after each step; halts on any verify failure).
+Exact command sequences:
+- Admin PS one-shot orchestrator (steps 0+2-4+6-7 with per-step verify): `scripts/mm-phase01-run.ps1`
+- WSL close-out bundle (steps 1, 8, 9, 10 — runs reg export + diff + snapshot in sequence): `scripts/mm-phase1-closeout.sh`
 
-**Phase-1 success criteria:** scroll works · `LowerFilters=applewirelessmouse` on BTHENUM HID device · COL01 enumerated and Started · no MU residue per Windows audit's safe-to-delete list · post-cleanup registry export saved.
+**Phase-1 success criteria:** scroll works · `LowerFilters=applewirelessmouse` on BTHENUM HID device · parent HID PDO (Class=Mouse, Status=OK, no COL suffix) enumerated · no MU residue per Windows audit's safe-to-delete list · post-cleanup registry export saved · **reg-diff report shows only expected mutations**.
 
-**Halt condition:** scroll stops working after any cleanup step → STOP, restore from pre-cleanup export, do not proceed.
+**Halt conditions:**
+- scroll stops working after any cleanup step → STOP, restore from pre-cleanup export, do not proceed.
+- reg-diff report shows unexpected sections added/removed or value-level changes outside the MagicMouse/RAWPDO/applewirelessmouse filter → STOP, investigate before declaring Phase 1 done.
 
 ### Phase 2 — Empirical baseline (both mice, both states, ~2h)
 
@@ -184,7 +191,8 @@ Per Phase, the test orchestrator opens these channels at start and closes at end
 | Channel | Tool | Output |
 |---|---|---|
 | Filesystem state | `mm-snapshot-state.sh` | tarball at start + end of phase |
-| Registry diff | `reg.exe export` | full HKLM\SYSTEM at start + end |
+| Registry export | `mm-reg-export.sh` | full HKLM\SYSTEM at start + end |
+| **Registry diff (MOP gate)** | `mm-reg-diff.sh --auto` | `reg-diff-<ts>.md` audit report — required at end of every phase that mutates registry (Phase 1 cleanup, Phase 4 cache patch). Shows section adds/removes + value-level diffs with hex decoded inline. Filter `MagicMouse\|RAWPDO\|0323\|applewirelessmouse\|LowerFilters\|UpperFilters\|BTHPORT\|HidBth` by default. |
 | Process activity | `Procmon.exe` | `.PML` filtered to BTHPORT/HidBth/applewirelessmouse |
 | ETW kernel events | `wpr.exe` (Bluetooth, HidClass, Kernel-PnP) | `.etl` |
 | Driver kernel debug | DebugView | tail of `C:\mm3-debug.log` |
