@@ -130,9 +130,11 @@ if ($Phase -eq 'prereboot') {
     # 4. Save the postreboot command somewhere user can find it after reboot.
     #    Set-ExecutionPolicy bypass is required because UNC-loaded scripts
     #    are treated as unsigned/untrusted in a fresh PS process.
-    $cheatPath = "$env:USERPROFILE\Desktop\m13-phase2-resume.txt"
+    #    Desktop may be in OneDrive on Win11, legacy USERPROFILE\Desktop, or
+    #    missing entirely; we try all three + cell run dir + fall back to
+    #    %TEMP%, never failing the prereboot flow over a cosmetic save.
     $resumeCmd = "Set-ExecutionPolicy -Scope Process Bypass -Force; & '$PSCommandPath' postreboot $CellId"
-    @"
+    $cheatBody = @"
 M13 Phase 2 -- resume after reboot
 
 After Windows finishes booting + you log in + wait ~30s for the mouse to
@@ -145,13 +147,41 @@ This will start fresh Procmon + wpr captures, run test-3 in WSL, then stop
 the captures and rename them to *-post-reboot.{PML,etl}.
 
 Cell run dir: $runDirWin
-"@ | Set-Content -Path $cheatPath -Encoding UTF8
+"@
+
+    $cheatTargets = @(
+        "D:\Users\Lesley\Desktop\m13-phase2-resume.txt",
+        "$env:OneDrive\Desktop\m13-phase2-resume.txt",
+        "$env:USERPROFILE\OneDrive\Desktop\m13-phase2-resume.txt",
+        "$env:USERPROFILE\Desktop\m13-phase2-resume.txt",
+        (Join-Path $runDirWin 'resume-after-reboot.txt'),
+        "$env:TEMP\m13-phase2-resume.txt"
+    )
+    $cheatPath = $null
+    foreach ($t in $cheatTargets) {
+        if (-not $t) { continue }
+        $parent = Split-Path -Parent $t
+        if (Test-Path $parent) {
+            try {
+                Set-Content -Path $t -Value $cheatBody -Encoding UTF8 -ErrorAction Stop
+                $cheatPath = $t
+                break
+            } catch {
+                # try next location silently
+            }
+        }
+    }
 
     Write-Host ""
     Write-Host "===== Pre-reboot done -- captures saved =====" -ForegroundColor Green
     Write-Host ""
-    Write-Host "Resume instructions saved to:" -ForegroundColor Cyan
-    Write-Host "  $cheatPath"
+    if ($cheatPath) {
+        Write-Host "Resume instructions saved to:" -ForegroundColor Cyan
+        Write-Host "  $cheatPath"
+    } else {
+        Write-Host "WARN: could not write resume cheat-sheet to any standard location." -ForegroundColor Yellow
+        Write-Host "      Copy the green command below before rebooting." -ForegroundColor Yellow
+    }
     Write-Host ""
     Write-Host "NEXT, in this order:" -ForegroundColor Yellow
     Write-Host "  1. Switch to your WSL bash terminal and press ENTER on the reboot prompt"
