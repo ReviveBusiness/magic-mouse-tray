@@ -211,6 +211,143 @@ TranslateReport12(
 }
 
 // ---------------------------------------------------------------------------
+// SDP HIDDescriptorList scanner + patcher
+//
+// Architecture (confirmed by static analysis of applewirelessmouse.sys —
+// signature byte 09 02 06 appears 9 times in .text/.rdata):
+//   HidBth fetches the device's HID descriptor via SDP/L2CAP during pairing.
+//   The descriptor arrives embedded in an SDP attribute response on PSM 1.
+//   Our lower filter intercepts the BRB_L2CA_ACL_TRANSFER carrying that
+//   response and rewrites the embedded descriptor bytes.
+//
+// Byte pattern (Bluetooth Core Spec 5.4 Vol 3 Part B §3.3 / §4.4 / §5.1.9):
+//   09 02 06     — SDP AttributeID (UINT16) = 0x0206 (HIDDescriptorList)
+//   35 LL        — outer SEQUENCE, 1-byte length form
+//     35 LL      — inner SEQUENCE (one entry), 1-byte length form
+//       08 22    — UINT8 value 0x22 = "Report descriptor"
+//       25 NN    — TEXT_STRING, 1-byte length form, NN bytes follow
+//         <NN bytes> = embedded HID descriptor
+//
+// Apple's device uses 1-byte SEQUENCE length headers (0x35). If a future
+// firmware uses 0x36 (2-byte length) for larger descriptors, this scanner
+// returns FALSE and we fall through without patching — safe degradation.
+// ---------------------------------------------------------------------------
+
+#define SDP_DE_UINT16             0x09
+#define SDP_DE_SEQUENCE_1B        0x35
+#define SDP_DE_UINT8              0x08
+#define SDP_DE_TEXT_1B            0x25
+#define SDP_ATTR_HID_DESC_LIST_HI 0x02
+#define SDP_ATTR_HID_DESC_LIST_LO 0x06
+#define HID_RPT_DESC_TYPE         0x22
+#define SDP_SCAN_MIN_LEN          11      // minimum bytes to match the pattern
+#define SDP_DESC_MAX_EXPECTED_LEN 512     // sanity cap on declared descriptor length
+
+static BOOLEAN
+ScanForSdpHidDescriptor(
+    _In_reads_bytes_(bufSize) PUCHAR  buf,
+    _In_                      ULONG   bufSize,
+    _Out_                     PULONG  outOffset,
+    _Out_                     PULONG  outLen)
+{
+    if (buf == NULL || bufSize < SDP_SCAN_MIN_LEN) {
+        return FALSE;
+    }
+
+    ULONG limit = bufSize - SDP_SCAN_MIN_LEN;
+    for (ULONG i = 0; i <= limit; i++) {
+        if (buf[i]   != SDP_DE_UINT16              ) continue;
+        if (buf[i+1] != SDP_ATTR_HID_DESC_LIST_HI  ) continue;
+        if (buf[i+2] != SDP_ATTR_HID_DESC_LIST_LO  ) continue;
+        if (buf[i+3] != SDP_DE_SEQUENCE_1B         ) continue;
+
+        UCHAR outer_len = buf[i+4];
+        if (outer_len < 4)                            continue;
+        if ((ULONG)(i + 5 + outer_len) > bufSize)     continue;
+
+        if (buf[i+5] != SDP_DE_SEQUENCE_1B)           continue;
+        UCHAR inner_len = buf[i+6];
+        if (inner_len < 4)                            continue;
+        if ((ULONG)(i + 7 + inner_len) > bufSize)     continue;
+
+        if (buf[i+7] != SDP_DE_UINT8)                 continue;
+        if (buf[i+8] != HID_RPT_DESC_TYPE)            continue;
+        if (buf[i+9] != SDP_DE_TEXT_1B)               continue;
+
+        UCHAR desc_len = buf[i+10];
+        if (desc_len == 0)                            continue;
+        if (desc_len > SDP_DESC_MAX_EXPECTED_LEN)     continue;
+        if ((ULONG)(i + 11 + desc_len) > bufSize)     continue;
+
+        *outOffset = i + 11;
+        *outLen    = desc_len;
+        return TRUE;
+    }
+    return FALSE;
+}
+
+// Replaces the embedded descriptor at descOffset (length descLen) with
+// g_HidDescriptor[]. Updates the SDP TLV length bytes at [descOffset-1],
+// [descOffset-3], [descOffset-5]. If our descriptor is larger than the
+// allocated buffer can hold, returns FALSE without modifying anything.
+static BOOLEAN
+PatchSdpHidDescriptor(
+    _Inout_updates_bytes_(bufSize) PUCHAR buf,
+    _In_                           ULONG  bufSize,
+    _In_                           ULONG  descOffset,
+    _In_                           ULONG  descLen,
+    _Out_                          PULONG newBufUsed)
+{
+    if (descOffset < 6) {
+        return FALSE;  // not enough framing bytes before descriptor
+    }
+
+    ULONG newDescLen = g_HidDescriptorSize;
+    ULONG tailOffset = descOffset + descLen;
+    ULONG tailBytes  = bufSize - tailOffset;
+    ULONG newBufSize = descOffset + newDescLen + tailBytes;
+
+    if (newBufSize > bufSize) {
+        DbgPrint("MagicMouse: SDP patch SKIPPED - buffer too small "
+                 "(need %lu, have %lu). Force re-pair to grow buffer.\n",
+                 newBufSize, bufSize);
+        return FALSE;
+    }
+
+    if (newDescLen != descLen) {
+        ULONG newTailOffset = descOffset + newDescLen;
+        if (tailBytes > 0) {
+            RtlMoveMemory(buf + newTailOffset, buf + tailOffset, tailBytes);
+        }
+        if (newDescLen < descLen) {
+            ULONG gapStart = newTailOffset + tailBytes;
+            ULONG gapLen   = descLen - newDescLen;
+            RtlZeroMemory(buf + gapStart, gapLen);
+        }
+    }
+
+    RtlCopyMemory(buf + descOffset, g_HidDescriptor, newDescLen);
+
+    // SDP TLV length-byte fixups (1-byte length form).
+    buf[descOffset - 1] = (UCHAR)newDescLen;                          // TEXT_STRING len
+    ULONG innerPayload = 2 + 2 + newDescLen;                          // 0x08 0x22 + 0x25 LL + descriptor
+    if (innerPayload > 0xFF) {
+        DbgPrint("MagicMouse: SDP patch - inner SEQUENCE length overflow (%lu)\n",
+                 innerPayload);
+    }
+    buf[descOffset - 3] = (UCHAR)(innerPayload & 0xFF);               // inner SEQUENCE len
+    ULONG outerPayload = 2 + innerPayload;                            // outer SEQUENCE wraps inner
+    if (outerPayload > 0xFF) {
+        DbgPrint("MagicMouse: SDP patch - outer SEQUENCE length overflow (%lu)\n",
+                 outerPayload);
+    }
+    buf[descOffset - 5] = (UCHAR)(outerPayload & 0xFF);               // outer SEQUENCE len
+
+    *newBufUsed = descOffset + newDescLen + tailBytes;
+    return TRUE;
+}
+
+// ---------------------------------------------------------------------------
 // ACL transfer completion routine
 // ---------------------------------------------------------------------------
 
@@ -270,70 +407,56 @@ InputHandler_AclCompletion(
     }
 
     PUCHAR data = (PUCHAR)bufPtr;
+    UNREFERENCED_PARAMETER(chanHandle);
+    UNREFERENCED_PARAMETER(devCtx);
 
     // -----------------------------------------------------------------------
-    // Control channel: inject custom HID descriptor once per connection
+    // SDP HIDDescriptorList interception (PSM 1, descriptor-injection path)
+    //
+    // We scan EVERY incoming ACL transfer for the SDP attribute-0x0206 byte
+    // pattern, regardless of which L2CAP channel it arrived on. This catches
+    // the descriptor delivery during the SDP exchange (PSM 1) without us
+    // having to track SDP channel handles separately.
+    //
+    // If the pattern is found, we replace the embedded HID descriptor with
+    // g_HidDescriptor[] (113 bytes, 3 TLCs: Mouse with Wheel + Consumer
+    // AC-Pan + Vendor Battery 0xFF00/0x14). HidBth then caches our descriptor
+    // and creates COL01 (mouse with scroll) AND COL02 (vendor battery) child
+    // PDOs — both work simultaneously.
+    //
+    // For interrupt-channel input reports (post-pairing), pattern won't match
+    // (those are short HID-only packets), so we fall through harmlessly with
+    // no modification.
+    //
+    // CAVEAT: SDP exchange happens during pairing. For an already-paired
+    // device, HidBth has cached the descriptor and won't re-fetch via SDP.
+    // User must force unpair + re-pair after filter install for the new
+    // descriptor to take effect.
     // -----------------------------------------------------------------------
-    if (chanHandle == devCtx->ControlChannelHandle && !devCtx->DescriptorInjected) {
-        // The SDP HIDDescriptorList attribute response contains the raw HID
-        // descriptor bytes embedded in the SDP TLV payload. We locate the start
-        // of the HID descriptor by scanning for the Generic Desktop Usage Page
-        // preamble (0x05 0x01) within the first 256 bytes of the buffer.
-        //
-        // TODO: After the EWDK build is available, capture a WinDbg trace during
-        // BT connect to confirm the exact byte offset within the SDP response
-        // where the HID descriptor begins. If the device's raw descriptor does NOT
-        // start with 0x05 0x01 (Generic Desktop), adjust the scan pattern.
-        ULONG  scanLen = (bufSize < 256) ? bufSize : 256;
-        ULONG  injectAt = MAXULONG;
+    {
+        ULONG descOffset = 0;
+        ULONG descLen    = 0;
+        if (ScanForSdpHidDescriptor(data, bufSize, &descOffset, &descLen)) {
+            DbgPrint("MagicMouse: SDP HIDDescriptorList found at offset %lu "
+                     "(orig len %lu), patching with custom descriptor (%lu bytes)\n",
+                     descOffset, descLen, g_HidDescriptorSize);
 
-        for (ULONG i = 0; i + 1 < scanLen; i++) {
-            if (data[i] == 0x05 && data[i + 1] == 0x01) {
-                injectAt = i;
-                break;
+            ULONG newBufUsed = 0;
+            if (PatchSdpHidDescriptor(data, bufSize, descOffset, descLen, &newBufUsed)) {
+                // Update BRB BufferSize so HidBth sees the patched transfer length
+                ULONG patchedSize = newBufUsed;
+                *(ULONG *)((PUCHAR)brb + MM_BRB_ACL_BUFFER_SIZE_OFFSET) = patchedSize;
+                irp->IoStatus.Information = patchedSize;
+                DbgPrint("MagicMouse: Descriptor injected, new transfer size = %lu bytes\n",
+                         patchedSize);
             }
         }
-
-        if (injectAt != MAXULONG &&
-            (injectAt + g_HidDescriptorSize) <= bufSize) {
-            RtlCopyMemory(data + injectAt, g_HidDescriptor, g_HidDescriptorSize);
-            devCtx->DescriptorInjected = TRUE;
-        }
     }
-    // -----------------------------------------------------------------------
-    // Interrupt channel: translate Report 0x12
-    //
-    // BT HID protocol: every L2CAP interrupt-channel input packet is prefixed
-    // with a single transport header byte:
-    //   0xA1 = HID Transaction (DATA) | HID Type (INPUT)
-    // The actual HID Report ID is at data[1], NOT data[0]. This was empirically
-    // confirmed: every packet on the interrupt channel showed data[0]==0xA1.
-    // Without this fix, the Report ID check below was ALWAYS false.
-    //
-    // We pass (data + 1, bufSize - 1) to TranslateReport12 so the function sees
-    // a clean Report 0x12 buffer at offset 0. The translated Report 0x01 is
-    // written in-place starting at data[1], preserving the 0xA1 transport byte
-    // at data[0]. IoStatus.Information is set to newLen + 1 to include 0xA1.
-    // -----------------------------------------------------------------------
-    else if (chanHandle == devCtx->InterruptChannelHandle &&
-             bufSize >= 2 &&
-             data[0] == 0xA1 &&
-             data[1] == MM_REPORT_ID_TOUCH) {
-
-        ULONG  newLen  = 0;
-        INT8   wheelH  = 0;
-
-        if (TranslateReport12(data + 1, bufSize - 1, &wheelH, &newLen)) {
-            irp->IoStatus.Information = newLen + 1;  // +1 for 0xA1 transport byte
-
-            // Horizontal scroll (wheelH != 0) requires Report 0x02 on TLC2.
-            // Delivering a second HID report from this completion requires a
-            // separate IRP submission into the HidBth read queue — deferred to
-            // Phase 3.5. For now, horizontal scroll is silently discarded.
-            UNREFERENCED_PARAMETER(wheelH);
-        }
-        // Report 0x90 (battery) and unknown IDs fall through unchanged
-    }
+    // Report-translation path REMOVED — replaced by descriptor injection above.
+    // The native device emits Report 0x12 multi-touch frames; with our injected
+    // descriptor declaring TLC1 to consume Report 0x12 with Wheel/AC-Pan usages,
+    // HidClass will interpret the same on-the-wire bytes correctly without us
+    // having to rewrite individual reports. See HidDescriptor.c TLC1.
 
     WdfRequestComplete(Request, status);
 }
