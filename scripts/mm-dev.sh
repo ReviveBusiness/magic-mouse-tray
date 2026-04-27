@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# mm-dev.sh — WSL wrapper for the Magic Mouse driver dev cycle
+# mm-dev.sh - WSL wrapper for the Magic Mouse driver dev cycle
 #
 # USAGE (from WSL, inside the repo):
 #   ./scripts/mm-dev.sh state          # snapshot current PnP + driver state
@@ -7,7 +7,7 @@
 #   ./scripts/mm-dev.sh sign           # signtool
 #   ./scripts/mm-dev.sh install        # remove old + install new + restart device
 #   ./scripts/mm-dev.sh capture        # (re)start DebugView
-#   ./scripts/mm-dev.sh full           # state → build → sign → install → state
+#   ./scripts/mm-dev.sh full           # state -> build -> sign -> install -> state
 #   ./scripts/mm-dev.sh log            # tail session log
 #   ./scripts/mm-dev.sh debug          # tail MagicMouse entries from DebugView log
 #   ./scripts/mm-dev.sh commit "msg"   # stage driver/ and commit via git.py
@@ -33,18 +33,35 @@ DEBUG_LOG="/mnt/c/mm3-debug.log"
 
 phase="${1:-help}"
 
+# Map lowercase phase names -> PowerShell ValidateSet casing (no GNU-sed dep)
+declare -A PHASE_MAP=(
+    [state]=State [build]=Build [sign]=Sign [install]=Install
+    [verify]=Verify [rollback]=Rollback [capture]=Capture
+    [full]=Full   [log]=Log     [debug]=Debug
+)
+
 run_ps1() {
-    local phase_arg
-    # Capitalize first letter for PowerShell ValidateSet
-    phase_arg="$(echo "${1}" | sed 's/./\u&/')"
+    local lookup="${1,,}"  # bash 4+ lowercase
+    local phase_arg="${PHASE_MAP[$lookup]}"
+    if [[ -z "$phase_arg" ]]; then
+        echo "[mm-dev] ERROR: unknown phase '$1'" >&2
+        return 2
+    fi
     echo "[mm-dev] Running Phase=$phase_arg on Windows..."
     powershell.exe -ExecutionPolicy Bypass -File "$WIN_PS1" -Phase "$phase_arg"
-    echo "[mm-dev] Windows phase complete."
+    local rc=$?
+    if [[ $rc -ne 0 ]]; then
+        echo "[mm-dev] Windows phase FAILED (exit=$rc) - check $SESSION_LOG" >&2
+    else
+        echo "[mm-dev] Windows phase OK (exit=0)"
+    fi
+    return $rc
 }
 
 case "$phase" in
-    state|build|sign|install|capture|full|log|debug)
+    state|build|sign|install|verify|rollback|capture|full|log|debug)
         run_ps1 "$phase"
+        exit $?
         ;;
 
     commit)
@@ -78,7 +95,7 @@ Co-Authored-By: Claude Sonnet 4.6 <noreply@anthropic.com>"
 
     help|*)
         cat <<EOF
-mm-dev.sh — Magic Mouse driver dev cycle (WSL wrapper)
+mm-dev.sh - Magic Mouse driver dev cycle (WSL wrapper)
 
 LOOP:
   1. Edit driver/ in WSL
@@ -94,14 +111,18 @@ COMMANDS:
   build       EWDK msbuild Rebuild
   sign        signtool sign .sys + .cat
   install     Remove old driver, install new, restart device
-  capture     (Re)start DebugView → C:\mm3-debug.log
-  full        state + build + sign + install + state
+  verify      Post-install health check (LowerFilters, COL01 Started)
+  rollback    Remove our filter driver entirely (recovery path)
+  capture     (Re)start DebugView -> C:\mm3-debug.log
+  full        state + build + sign + install + verify + state
   log         Tail C:\mm-dev-session.log
   debug       Tail MagicMouse lines from C:\mm3-debug.log
   commit MSG  Stage driver/ and commit via git.py
   diff        Show uncommitted changes in driver/
   read-log N  Read last N lines of session log (default 50)
   read-debug N Read last N MagicMouse debug lines (default 40)
+
+EXIT CODES: 0=ok, 1=phase failure (build/sign/install/verify failed), 2=usage
 EOF
         ;;
 esac
