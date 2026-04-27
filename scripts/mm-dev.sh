@@ -75,7 +75,7 @@ sync_to_windows() {
     cp -f "$REPO_ROOT/driver/"*.inf  "$WIN_DRIVER_DIR/" 2>/dev/null || true
     cp -f "$REPO_ROOT/driver/MagicMouseDriver.vcxproj" "$WIN_DRIVER_DIR/" 2>/dev/null || true
     # Scripts (scripts/* → WIN_DRIVER_DIR/scripts/)
-    mkdir -p "$WIN_DRIVER_DIR/scripts"
+    install -d "$WIN_DRIVER_DIR/scripts"
     cp -f "$REPO_ROOT/scripts/"*.ps1 "$WIN_DRIVER_DIR/scripts/" 2>/dev/null || true
     return 0
 }
@@ -104,7 +104,7 @@ declare -A PHASE_MAP=(
 run_via_task() {
     local phase_arg="$1"
     local nonce; nonce="$(date +%s%N)"
-    mkdir -p "$QUEUE_DIR"
+    install -d "$QUEUE_DIR"
     rm -f "$QUEUE_DIR/result.txt" 2>/dev/null
 
     # Write request (CRLF for Windows tooling robustness)
