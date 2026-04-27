@@ -44,7 +44,11 @@ AddReg = AddReg_LowerFilter
 HKR,,"LowerFilters",0x00010008,"MagicMouseDriver"
 
 [Install.Services]
-AddService = MagicMouseDriver,, ServiceInstall
+; SPSVCINST_ASSOCSERVICE (0x2) tells the WDK validator that this filter
+; service is associated with the hardware, satisfying error 1296.
+; For lower filters this is unusual but required by Universal INF compliance
+; when no other AddService directive exists for the hardware.
+AddService = MagicMouseDriver, 0x00000002, ServiceInstall
 
 [ServiceInstall]
 DisplayName   = %ServiceDesc%
@@ -61,9 +65,18 @@ DriverFiles = 12                ; %windir%\system32\drivers\
 [DriverFiles]
 MagicMouseDriver.sys
 
+; SourceDisks sections required by Universal target platform validator
+; (otherwise stampinf throws error 1230: 'Missing file ... under [SourceDisksFiles]')
+[SourceDisksNames]
+1 = %DiskName%,,,""
+
+[SourceDisksFiles]
+MagicMouseDriver.sys = 1,,
+
 ; ---- Strings ----
 
 [Strings]
 ManufacturerName = "Magic Mouse Driver"
 DeviceDesc       = "Apple Magic Mouse 2024 HID Lower Filter"
 ServiceDesc      = "Magic Mouse Driver (scroll + battery coexistence)"
+DiskName         = "Magic Mouse Driver Installation Disk"
