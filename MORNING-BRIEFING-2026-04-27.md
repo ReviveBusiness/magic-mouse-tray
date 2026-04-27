@@ -1,3 +1,7 @@
+---
+created: 2026-04-27
+modified: 2026-04-27
+---
 # Magic Mouse 2024 — Overnight Autonomous Session Brief
 **Generated 2026-04-27 ~07:05 by Claude (Opus 4.7)**
 
@@ -74,46 +78,70 @@ da6da82 feat(scripts): mm-dev.sh/ps1 - scripted driver dev cycle with full loggi
 
 23 commits ahead of origin/main. None pushed. Decide tomorrow whether to push.
 
-## What still needs to happen (the proper "both" fix)
+## What still needs to happen — CORRECTED architecture
 
-**A late-night peer-review of the architecture revealed the previous PRD-184
-plan can't work as designed.** `hidclass.sys` does NOT communicate with `HidBth`
-via IRPs/IOCTLs — it calls `HidBth`'s registered minidriver support routines
-directly. Therefore:
+**Update**: I called the original PRD-184 lower-filter plan "architecturally
+impossible" earlier in this briefing. **That was wrong.** MagicUtilities
+(commercial product) has a working implementation that proves the lower-filter
+approach works. Our own PRD-184 doc (line: "Magic Utilities runtime analysis")
+already documented this:
 
-- A LOWER filter on BTHENUM (current design) only sees raw BT bus traffic, never the descriptor.
-- An UPPER filter on BTHENUM also doesn't help — `IOCTL_HID_GET_REPORT_DESCRIPTOR` is absorbed by `hidclass.sys` and never sent down the stack.
-- A class filter on HIDClass would see HID-client-level IOCTLs but not the minidriver's internal descriptor cache.
+> MU 3.1.6.1 installs MagicMouse.sys kernel filter, replaces applewirelessmouse
+> in LowerFilters. Creates COL02 (Status OK) but intercepts Report 0x90 at
+> kernel level and exposes it via proprietary MAGICMOUSERAWPDO.
 
-The descriptor flow on BT is: device → SDP/L2CAP exchange → `HidBth` caches in its
-device extension → `hidclass.sys` reads via direct function call. There's no IRP
-to filter.
+**What we got wrong tonight (and the previous attempt got wrong):**
 
-**Three architecturally viable approaches** (any of these is a real project, not a
-single overnight task):
+The lower filter on BTHENUM can affect the HID descriptor — but not via the HID
+control channel (PSM 17) ACL we were watching. The descriptor arrives via
+**SDP traffic on PSM 1**, embedded in the HIDDescriptorList SDP attribute
+response. Our previous filter only watched PSM 17 + 19 (HID control + interrupt)
+and saw the SDP traffic was already past — that's why control packets were 1
+byte (idle/protocol pings, not descriptor delivery).
 
-1. **Replace `HidBth` for this PID** — write a custom HID minidriver. Replaces the function driver entirely. Most invasive, most flexible. Lots of code.
-2. **Patch the cached HID descriptor in registry** — `HidBth` reads the descriptor from SDP during pairing; subsequent enumerations may reuse a registry-cached version. If we can locate that cache key and pre-write our version, `HidBth` serves it without code changes. Low code, unknown feasibility — needs reverse-engineering of `HidBth.sys`'s cache layout.
-3. **Hybrid: ScrollGenerator userland helper + NoFilter mode** — run in NoFilter mode (battery works natively), then have a userland helper that reads the raw Report 0x12 BT stream via lower filter (which we CAN do — that's the BRB path our existing driver implements) and emits `SendInput(MOUSEEVENTF_WHEEL)` events to synthesize scroll. Works around mouhid exclusivity at the input event layer rather than the HID layer. Medium code, novel approach.
+**Corrected architecture for the proper fix:**
 
-Option 3 is the most promising direction — it requires no descriptor surgery, and
-the BRB-level lower filter (which we've already built) is the right place for it.
-The previous filter's translation logic was wrong target (HID report rewrite
-without descriptor support), but the same filter could instead emit Win32 input
-events from kernel mode (via `IoCallDriver` to the user-input subsystem) or push
-data to a userland helper via inverted call.
+1. Lower filter on BTHENUM (where applewirelessmouse sits). Same INF + signing
+   chain we already have works.
+2. Intercept ALL `BRB_L2CA_ACL_TRANSFER` BRBs, not just the channels we knew about.
+3. Pattern-match the SDP HIDDescriptorList attribute response (UUID `0x1124`
+   service, attribute `0x0206`). Embedded inside the SDP TLV is the raw HID
+   descriptor — replace those bytes with our custom version (TLC1 mouse with
+   Wheel/AC Pan, TLC2 vendor battery FF00/14).
+4. After pairing/initial enumeration, normal HID interrupt traffic flows on
+   PSM 19 — pass through unchanged for COL01 X/Y, and pass through Report 0x90
+   on COL02.
+
+The HidDescriptor.c we already have (113 bytes, 3 TLCs) is approximately right —
+it just was never injected because the injection was looking at the wrong BRB
+stream. Fix the interception layer in `InputHandler.c` to monitor SDP traffic,
+and the existing descriptor + the existing scroll synthesis logic can be the
+basis of a working filter.
+
+**One catch**: SDP exchange happens during pairing. If the device is already
+paired (which yours is), HidBth has cached the descriptor. We need either:
+(a) force fresh pairing after filter install (visible to user; one-time), or
+(b) find HidBth's descriptor cache in the registry and overwrite it — see
+`HKLM\SYSTEM\CurrentControlSet\Enum\BTHENUM\...\Device Parameters` for candidates.
+This is a tractable reverse-engineering task, not the "needs HidBth replacement"
+mountain I claimed earlier.
+
+**Honest correction**: tonight's research delivered useful empirical state and
+diagnostic tooling, but the final architectural conclusion was wrong. The
+lower-filter approach the project was already pursuing IS viable — it just
+needs the right interception layer (SDP, not HID-channel ACL).
 
 ## Tools you can use right now (no UAC)
 
-| Command (from WSL) | What it does |
-|--------------------|--------------|
-| `./scripts/mm-dev.sh state` | Snapshot PnP + driver + last 15 debug log lines |
-| `./scripts/mm-dev.sh build` | EWDK msbuild via SetupBuildEnv (no `cmd /k` deadlock) |
-| `./scripts/mm-dev.sh full` | state → build → sign → install → verify → state |
-| `./scripts/mm-dev.sh rollback` | Remove our filter package; restore Apple-only state |
-| FLIP:NoFilter via task | Battery on, scroll off (~5 sec) |
-| FLIP:AppleFilter via task | Scroll on, battery off |
-| `./scripts/mm-dev.sh debug` | Tail MagicMouse entries from kernel debug log |
+| Command (from WSL)             | What it does                                          |
+| ------------------------------ | ----------------------------------------------------- |
+| `./scripts/mm-dev.sh state`    | Snapshot PnP + driver + last 15 debug log lines       |
+| `./scripts/mm-dev.sh build`    | EWDK msbuild via SetupBuildEnv (no `cmd /k` deadlock) |
+| `./scripts/mm-dev.sh full`     | state → build → sign → install → verify → state       |
+| `./scripts/mm-dev.sh rollback` | Remove our filter package; restore Apple-only state   |
+| FLIP:NoFilter via task         | Battery on, scroll off (~5 sec)                       |
+| FLIP:AppleFilter via task      | Scroll on, battery off                                |
+| `./scripts/mm-dev.sh debug`    | Tail MagicMouse entries from kernel debug log         |
 
 The scheduled task `MM-Dev-Cycle` runs as you (Lesley/Highest), security descriptor allows non-admin trigger. **Zero UAC for any of the above.**
 
