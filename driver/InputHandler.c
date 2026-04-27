@@ -1,140 +1,421 @@
 // SPDX-License-Identifier: MIT
 //
-// InputHandler — translates raw Apple Magic Mouse BT HID reports.
+// InputHandler — BRB-level interception for Magic Mouse 2024 KMDF lower filter.
 //
-// Raw BT device sends two report types:
-//   Report 0x12 — multi-touch: 14-byte header + N × 9-byte touch records
-//   Report 0x90 — battery:     [0x90, flags, battery%]
+// Architecture (confirmed 2026-04-27 via static analysis of applewirelessmouse.sys):
 //
-// We translate 0x12 → Report 0x01 (standard mouse format matching TLC1 descriptor).
-// Report 0x90 passes through unchanged (TLC2 descriptor matches exactly).
+//   A lower filter below HidBth on the BTHENUM PDO never sees Windows HID IOCTLs
+//   (IOCTL_HID_GET_REPORT_DESCRIPTOR, IOCTL_HID_READ_REPORT). These are absorbed by
+//   hidclass.sys and never travel down the stack to a lower filter.
 //
-// TODO: Fill in TranslateTouch() once TouchpadProbe.ps1 output is captured.
-//   Run: scripts\TouchpadProbe.ps1 (elevated, on Windows, mouse connected)
-//   Move finger while it runs — capture Report 0x12 raw hex to docs\
-//   Then port Linux hid-magicmouse.c touch parsing to TranslateTouch().
+//   The correct hook point is IOCTL_INTERNAL_BTH_SUBMIT_BRB (0x00410003). HidBth
+//   uses this to submit Bluetooth Request Blocks (BRBs) to BthEnum for all L2CAP
+//   operations. HID descriptor bytes and input reports both travel via the
+//   BRB_L2CA_ACL_TRANSFER type on this path.
 //
-// Reference: drivers/hid/hid-magicmouse.c in the Linux kernel
-//   MOUSE2_REPORT_ID = 0x12
-//   Each touch record: x(int16), y(int16), touch_state(u8), size(u8), pressure(u8), ...
-//   Scroll: accumulate Y delta across 1-finger moves; emit on threshold.
+// L2CAP channel tracking:
+//   Apple Magic Mouse opens two L2CAP channels after pairing:
+//     1. HID Control (PSM 17) — carries SDP attribute responses and GET_REPORT
+//        replies, including the raw HID report descriptor bytes.
+//     2. HID Interrupt (PSM 19) — carries pushed input reports (Report 0x12
+//        for multi-touch, Report 0x90 for battery).
+//
+//   This driver tracks channels by order of BRB_L2CA_OPEN_CHANNEL completion:
+//     First  → ControlChannelHandle  (descriptor injection target)
+//     Second → InterruptChannelHandle (input report translation target)
+//
+// BRB field offsets (64-bit Windows, confirmed from static analysis unless noted TODO):
+//   BRB_HEADER.Type:                       +0x16  confirmed
+//   BRB_L2CA_OPEN/CLOSE.ChannelHandle:     +0x20  TODO: verify vs bthddi.h
+//   BRB_L2CA_ACL_TRANSFER.ChannelHandle:   +0x78  confirmed
+//   BRB_L2CA_ACL_TRANSFER.TransferFlags:   +0x28  TODO: verify
+//   BRB_L2CA_ACL_TRANSFER.BufferSize:      +0x2C  TODO: verify
+//   BRB_L2CA_ACL_TRANSFER.Buffer:          +0x30  TODO: verify
+//   BRB_L2CA_ACL_TRANSFER.BufferMDL:       +0x38  TODO: verify
+//
+// Report translation output:
+//   Report 0x12 → Report 0x01 [reportId, buttons, X, Y, WheelV] (TLC1, 5 bytes)
+//   Report 0x90 → unchanged                                       (TLC3)
+//   Horizontal scroll (AC Pan) → Report 0x02 delivery TBD (Phase 3.5)
 
 #include "InputHandler.h"
+#include "HidDescriptor.h"
 
-// Minimum report length to attempt 0x12 parsing (9-byte header minimum)
-#define MM_TOUCH_REPORT_MIN_LEN   9
+// ---------------------------------------------------------------------------
+// Raw BRB field access helpers
+// ---------------------------------------------------------------------------
 
-// Bytes per touch record in Report 0x12 (from Linux hid-magicmouse.c MOUSE2 format)
-// TODO: verify exact byte layout against TouchpadProbe.ps1 output
-#define MM_TOUCH_RECORD_BYTES     9
-
-// Header bytes before first touch record in Report 0x12
-#define MM_TOUCH_HEADER_BYTES     9
-
-// Signed byte clamp to INT8 range
-static INT8 ClampToInt8(INT32 val) {
-    if (val > 127)  return 127;
-    if (val < -127) return -127;
-    return (INT8)val;
+static FORCEINLINE ULONG_PTR
+BrbReadHandle(
+    _In_ PVOID  Brb,
+    _In_ SIZE_T Offset)
+{
+    return *(ULONG_PTR *)((PUCHAR)Brb + Offset);
 }
 
-// TODO: Implement using actual Report 0x12 byte layout from TouchpadProbe output.
-// Signature kept minimal — extend as needed for multi-finger gestures.
+static FORCEINLINE ULONG
+BrbReadUlong(
+    _In_ PVOID  Brb,
+    _In_ SIZE_T Offset)
+{
+    return *(ULONG *)((PUCHAR)Brb + Offset);
+}
+
+static FORCEINLINE PVOID
+BrbReadPtr(
+    _In_ PVOID  Brb,
+    _In_ SIZE_T Offset)
+{
+    return *(PVOID *)((PUCHAR)Brb + Offset);
+}
+
+// ---------------------------------------------------------------------------
+// Channel tracking
+// ---------------------------------------------------------------------------
+
 static VOID
-TranslateTouch(
-    _In_reads_bytes_(reportLen) PUCHAR reportBuf,
-    _In_  ULONG  reportLen,
-    _Out_ PUCHAR outBuf6)  // 6-byte output: [0x01, buttons, X, Y, WheelV, WheelH]
+StoreChannelHandle(
+    _Inout_ PDEVICE_CONTEXT Ctx,
+    _In_    ULONG_PTR       Handle)
 {
-    UNREFERENCED_PARAMETER(reportLen);
+    if (Handle == 0) return;
 
-    // Zero the output report
-    RtlZeroMemory(outBuf6, MM_MOUSE_REPORT_LEN);
-    outBuf6[0] = MM_REPORT_ID_MOUSE;
-
-    // TODO: Parse reportBuf per Linux hid-magicmouse.c MOUSE2_REPORT_ID handling.
-    //
-    // Reference layout (verify with TouchpadProbe.ps1):
-    //   reportBuf[0] = 0x12 (Report ID)
-    //   reportBuf[1] = buttons bitmask (bit 0 = left click)
-    //   reportBuf[2] = ? (possibly click force / number of touches)
-    //   reportBuf[3..8] = rest of header
-    //   reportBuf[9 + i*9 .. 9 + i*9 + 8] = touch record i:
-    //     [0..1] = X (INT16 little-endian, unit: 100ths of mm)
-    //     [2..3] = Y (INT16 little-endian, unit: 100ths of mm)
-    //     [4]    = tracking ID + touch flags
-    //     [5]    = touch size
-    //     [6..8] = other data
-    //
-    // Basic single-finger implementation:
-    //   nTouches = (reportLen - MM_TOUCH_HEADER_BYTES) / MM_TOUCH_RECORD_BYTES;
-    //   if (nTouches == 1) {
-    //       INT16 rawX = (INT16)(reportBuf[10] << 8 | reportBuf[9]);
-    //       INT16 rawY = (INT16)(reportBuf[12] << 8 | reportBuf[11]);
-    //       outBuf6[2] = ClampToInt8(rawX / SCALE);  // X pointer
-    //       outBuf6[3] = ClampToInt8(rawY / SCALE);  // Y pointer
-    //   } else if (nTouches == 2) {
-    //       // Two-finger scroll: accumulate Y → WheelV, X → WheelH
-    //   }
-    //
-    // Pass through button state from report header byte 1:
-    outBuf6[1] = (reportBuf[1] & 0x01);  // left button — assume bit 0
+    if (Ctx->ChannelCount == 0) {
+        Ctx->ControlChannelHandle = Handle;
+    } else if (Ctx->ChannelCount == 1) {
+        Ctx->InterruptChannelHandle = Handle;
+    }
+    Ctx->ChannelCount++;
 }
 
-VOID
-InputHandler_ForwardWithCompletion(
-    _In_ WDFDEVICE  Device,
-    _In_ WDFREQUEST Request)
+static VOID
+ClearChannelHandle(
+    _Inout_ PDEVICE_CONTEXT Ctx,
+    _In_    ULONG_PTR       Handle)
 {
-    WdfRequestFormatRequestUsingCurrentType(Request);
-    WdfRequestSetCompletionRoutine(Request, InputHandler_OnReadComplete, Device);
+    if (Handle == 0) return;
 
-    if (!WdfRequestSend(Request, WdfDeviceGetIoTarget(Device), WDF_NO_SEND_OPTIONS)) {
-        WdfRequestComplete(Request, WdfRequestGetStatus(Request));
+    if (Ctx->ControlChannelHandle == Handle) {
+        Ctx->ControlChannelHandle = 0;
+        Ctx->DescriptorInjected   = FALSE;
+        if (Ctx->ChannelCount > 0) Ctx->ChannelCount--;
+    } else if (Ctx->InterruptChannelHandle == Handle) {
+        Ctx->InterruptChannelHandle = 0;
+        if (Ctx->ChannelCount > 0) Ctx->ChannelCount--;
     }
 }
 
+// ---------------------------------------------------------------------------
+// Report 0x12 translation helpers
+// ---------------------------------------------------------------------------
+
+// Report 0x12 (MOUSE2_REPORT_ID) layout per Linux hid-magicmouse.c.
+// PID 0323 assumed identical to MagicMouse2 format — verify on first test run.
+//
+//   data[0]          = 0x12  (Report ID)
+//   data[1]          = button state (bit 0 = left, bit 1 = right)
+//   data[2]          = touch count + click force
+//   data[3..13]      = header (11 bytes)
+//   data[14 + i*8 .. 14 + i*8 + 7] = touch block i (8 bytes):
+//     tdata[0..1]: X encoding — (tdata[1]<<28 | tdata[0]<<20)>>20 (signed 12-bit)
+//     tdata[2..3]: Y encoding — -((tdata[2]<<24 | tdata[1]<<16)>>20) (signed 12-bit)
+//     tdata[5]:    size (bits 0-5), touch state high (bits 6-7)
+//     tdata[6]:    tracking id (bits 0-3), orientation (bits 2-7)
+//     tdata[7]:    touch state flags — high nibble: 0x30=START, 0x40=DRAG, 0x00=NONE
+#define TOUCH2_HEADER    14
+#define TOUCH2_BLOCK      8
+#define TOUCH_START    0x30
+#define TOUCH_DRAG     0x40
+#define SCALE_POINTER     4   // divisor: 100ths-of-mm → approximate screen delta
+#define SCALE_SCROLL      8   // divisor: 100ths-of-mm → scroll step
+
+static FORCEINLINE INT8
+ClampInt8(INT32 v)
+{
+    if (v >  127) return  127;
+    if (v < -127) return -127;
+    return (INT8)v;
+}
+
+// Decode signed 12-bit X from two touch bytes (Linux formula)
+static FORCEINLINE INT32
+TouchX(PUCHAR t)
+{
+    return (INT32)((((UINT32)t[1] << 28) | ((UINT32)t[0] << 20))) >> 20;
+}
+
+// Decode signed 12-bit Y from two touch bytes (Linux formula, negated for Windows coords)
+static FORCEINLINE INT32
+TouchY(PUCHAR t)
+{
+    return -((INT32)((((UINT32)t[2] << 24) | ((UINT32)t[1] << 16))) >> 20);
+}
+
+// Translate Report 0x12 into Report 0x01 in-place.
+// Also extracts horizontal scroll value (for future Report 0x02 emission).
+// Returns FALSE if the buffer is too short to parse.
+static BOOLEAN
+TranslateReport12(
+    _Inout_updates_bytes_(bufSize) PUCHAR  buf,
+    _In_                           ULONG   bufSize,
+    _Out_opt_                      PINT8   outWheelH,
+    _Out_                          PULONG  outReportLen)
+{
+    *outReportLen = 0;
+    if (outWheelH) *outWheelH = 0;
+
+    if (bufSize < (ULONG)(TOUCH2_HEADER + 1)) {
+        return FALSE;
+    }
+
+    UCHAR  buttons = buf[1] & 0x03;
+    ULONG  nBlocks = (bufSize - TOUCH2_HEADER) / TOUCH2_BLOCK;
+    INT8   x = 0, y = 0, wheelV = 0, wheelH = 0;
+
+    if (nBlocks >= 1) {
+        PUCHAR t = &buf[TOUCH2_HEADER];
+        INT32  rawX = TouchX(t);
+        INT32  rawY = TouchY(t);
+        UCHAR  state = t[7] & 0xF0;
+
+        if (nBlocks == 1) {
+            // Single finger — pointer movement
+            x = ClampInt8(rawX / SCALE_POINTER);
+            y = ClampInt8(rawY / SCALE_POINTER);
+        } else {
+            // Two or more fingers — scroll gesture
+            if (state == TOUCH_START || state == TOUCH_DRAG) {
+                wheelV = ClampInt8(rawY / SCALE_SCROLL);
+                wheelH = ClampInt8(rawX / SCALE_SCROLL);
+            }
+        }
+    }
+
+    // Write Report 0x01 into the same buffer (5 bytes, in-place)
+    buf[0] = MM_REPORT_ID_MOUSE;
+    buf[1] = buttons;
+    buf[2] = (UCHAR)x;
+    buf[3] = (UCHAR)y;
+    buf[4] = (UCHAR)wheelV;
+
+    if (outWheelH) *outWheelH = wheelH;
+    *outReportLen = MM_MOUSE_REPORT_LEN;
+    return TRUE;
+}
+
+// ---------------------------------------------------------------------------
+// ACL transfer completion routine
+// ---------------------------------------------------------------------------
+
 VOID
-InputHandler_OnReadComplete(
+InputHandler_AclCompletion(
     _In_ WDFREQUEST                     Request,
     _In_ WDFIOTARGET                    Target,
     _In_ PWDF_REQUEST_COMPLETION_PARAMS Params,
     _In_ WDFCONTEXT                     Context)
 {
     UNREFERENCED_PARAMETER(Target);
-    UNREFERENCED_PARAMETER(Context);
 
-    NTSTATUS status = Params->IoStatus.Status;
+    NTSTATUS        status = Params->IoStatus.Status;
+    PDEVICE_CONTEXT devCtx = (PDEVICE_CONTEXT)Context;
+
     if (!NT_SUCCESS(status)) {
         WdfRequestComplete(Request, status);
         return;
     }
 
-    ULONG reportLen = (ULONG)Params->IoStatus.Information;
-    if (reportLen < 1) {
-        WdfRequestComplete(Request, status);
-        return;
-    }
-
-    // Report buffer is in Irp->UserBuffer for METHOD_NEITHER IOCTL_HID_READ_REPORT
+    // Re-read the BRB from the IRP stack.
+    // After WdfRequestFormatRequestUsingCurrentType + WdfRequestSend, our stack
+    // location is current again when this completion fires (IoAdvanceIrpStackLocation
+    // unwinds the IRP back to our level before calling the WDF completion routine).
     PIRP irp = WdfRequestWdmGetIrp(Request);
-    PUCHAR data = (PUCHAR)irp->UserBuffer;
-    if (data == NULL) {
+    PIO_STACK_LOCATION stack = IoGetCurrentIrpStackLocation(irp);
+    PVOID brb = stack->Parameters.Others.Argument1;
+
+    if (brb == NULL) {
         WdfRequestComplete(Request, STATUS_INVALID_PARAMETER);
         return;
     }
 
-    UCHAR reportId = data[0];
+    ULONG_PTR chanHandle = BrbReadHandle(brb, MM_BRB_ACL_CHANNEL_HANDLE_OFFSET);
+    ULONG     flags      = BrbReadUlong(brb,  MM_BRB_ACL_TRANSFER_FLAGS_OFFSET);
 
-    if (reportId == MM_REPORT_ID_TOUCH && reportLen >= MM_TOUCH_REPORT_MIN_LEN) {
-        // Translate raw multi-touch → standard mouse report in place
-        UCHAR translated[MM_MOUSE_REPORT_LEN];
-        TranslateTouch(data, reportLen, translated);
-        RtlCopyMemory(data, translated, MM_MOUSE_REPORT_LEN);
-        Params->IoStatus.Information = MM_MOUSE_REPORT_LEN;
-        irp->IoStatus.Information    = MM_MOUSE_REPORT_LEN;
+    // Only process device → host data
+    if (!(flags & MM_ACL_TRANSFER_IN)) {
+        WdfRequestComplete(Request, status);
+        return;
     }
-    // Report 0x90 (battery) and any others pass through unchanged
+
+    ULONG bufSize = BrbReadUlong(brb, MM_BRB_ACL_BUFFER_SIZE_OFFSET);
+    PVOID bufPtr  = BrbReadPtr(brb,  MM_BRB_ACL_BUFFER_OFFSET);
+
+    if (bufPtr == NULL) {
+        // MDL path — map the MDL to get a system-space pointer
+        PMDL mdl = (PMDL)BrbReadPtr(brb, MM_BRB_ACL_BUFFER_MDL_OFFSET);
+        if (mdl != NULL) {
+            bufPtr = MmGetSystemAddressForMdlSafe(mdl, NormalPagePriority);
+        }
+    }
+
+    if (bufPtr == NULL || bufSize == 0) {
+        WdfRequestComplete(Request, status);
+        return;
+    }
+
+    PUCHAR data = (PUCHAR)bufPtr;
+
+    // -----------------------------------------------------------------------
+    // Control channel: inject custom HID descriptor once per connection
+    // -----------------------------------------------------------------------
+    if (chanHandle == devCtx->ControlChannelHandle && !devCtx->DescriptorInjected) {
+        // The SDP HIDDescriptorList attribute response contains the raw HID
+        // descriptor bytes embedded in the SDP TLV payload. We locate the start
+        // of the HID descriptor by scanning for the Generic Desktop Usage Page
+        // preamble (0x05 0x01) within the first 256 bytes of the buffer.
+        //
+        // TODO: After the EWDK build is available, capture a WinDbg trace during
+        // BT connect to confirm the exact byte offset within the SDP response
+        // where the HID descriptor begins. If the device's raw descriptor does NOT
+        // start with 0x05 0x01 (Generic Desktop), adjust the scan pattern.
+        ULONG  scanLen = (bufSize < 256) ? bufSize : 256;
+        ULONG  injectAt = ULONG_MAX;
+
+        for (ULONG i = 0; i + 1 < scanLen; i++) {
+            if (data[i] == 0x05 && data[i + 1] == 0x01) {
+                injectAt = i;
+                break;
+            }
+        }
+
+        if (injectAt != ULONG_MAX &&
+            (injectAt + g_HidDescriptorSize) <= bufSize) {
+            RtlCopyMemory(data + injectAt, g_HidDescriptor, g_HidDescriptorSize);
+            devCtx->DescriptorInjected = TRUE;
+        }
+    }
+    // -----------------------------------------------------------------------
+    // Interrupt channel: translate Report 0x12
+    // -----------------------------------------------------------------------
+    else if (chanHandle == devCtx->InterruptChannelHandle &&
+             bufSize >= 1 &&
+             data[0] == MM_REPORT_ID_TOUCH) {
+
+        ULONG  newLen  = 0;
+        INT8   wheelH  = 0;
+
+        if (TranslateReport12(data, bufSize, &wheelH, &newLen)) {
+            irp->IoStatus.Information = newLen;
+
+            // Horizontal scroll (wheelH != 0) requires Report 0x02 on TLC2.
+            // Delivering a second HID report from this completion requires a
+            // separate IRP submission into the HidBth read queue — deferred to
+            // Phase 3.5. For now, horizontal scroll is silently discarded.
+            UNREFERENCED_PARAMETER(wheelH);
+        }
+        // Report 0x90 (battery) and unknown IDs fall through unchanged
+    }
 
     WdfRequestComplete(Request, status);
+}
+
+// ---------------------------------------------------------------------------
+// OPEN_CHANNEL completion — store the new channel handle
+// ---------------------------------------------------------------------------
+
+VOID
+InputHandler_OpenChannelCompletion(
+    _In_ WDFREQUEST                     Request,
+    _In_ WDFIOTARGET                    Target,
+    _In_ PWDF_REQUEST_COMPLETION_PARAMS Params,
+    _In_ WDFCONTEXT                     Context)
+{
+    UNREFERENCED_PARAMETER(Target);
+
+    NTSTATUS        status = Params->IoStatus.Status;
+    PDEVICE_CONTEXT devCtx = (PDEVICE_CONTEXT)Context;
+
+    // Only record the channel if the open succeeded
+    if (NT_SUCCESS(status)) {
+        PIRP irp = WdfRequestWdmGetIrp(Request);
+        PIO_STACK_LOCATION stack = IoGetCurrentIrpStackLocation(irp);
+        PVOID brb = stack->Parameters.Others.Argument1;
+
+        if (brb != NULL) {
+            // ChannelHandle is the output field of BRB_L2CA_OPEN_CHANNEL,
+            // populated by BthEnum after the L2CAP connection is established.
+            // Offset 0x20 = immediately after the 0x20-byte BRB_HEADER.
+            // TODO: verify offset against bthddi.h BRB_L2CA_OPEN_CHANNEL.ChannelHandle
+            ULONG_PTR handle = BrbReadHandle(brb, MM_BRB_CHANNEL_HANDLE_OFFSET);
+            StoreChannelHandle(devCtx, handle);
+        }
+    }
+
+    WdfRequestComplete(Request, status);
+}
+
+// ---------------------------------------------------------------------------
+// Main BRB submit dispatch
+// ---------------------------------------------------------------------------
+
+VOID
+InputHandler_HandleBrbSubmit(
+    _In_ WDFDEVICE  Device,
+    _In_ WDFREQUEST Request)
+{
+    PIRP irp = WdfRequestWdmGetIrp(Request);
+    PIO_STACK_LOCATION stack = IoGetCurrentIrpStackLocation(irp);
+    PVOID brb = stack->Parameters.Others.Argument1;
+    PDEVICE_CONTEXT devCtx = GetDeviceContext(Device);
+
+    if (brb == NULL) {
+        goto passthrough;
+    }
+
+    USHORT brbType = *(USHORT *)((PUCHAR)brb + MM_BRB_TYPE_OFFSET);
+
+    switch (brbType) {
+
+    // Forward OPEN_CHANNEL with a completion routine to capture the output ChannelHandle.
+    case BRB_L2CA_OPEN_CHANNEL:
+    case BRB_L2CA_OPEN_CHANNEL_RESPONSE:
+        WdfRequestFormatRequestUsingCurrentType(Request);
+        WdfRequestSetCompletionRoutine(Request,
+                                       InputHandler_OpenChannelCompletion,
+                                       devCtx);
+        if (!WdfRequestSend(Request, WdfDeviceGetIoTarget(Device),
+                            WDF_NO_SEND_OPTIONS)) {
+            WdfRequestComplete(Request, WdfRequestGetStatus(Request));
+        }
+        return;
+
+    // Read the ChannelHandle input before forwarding (it's the channel to close).
+    case BRB_L2CA_CLOSE_CHANNEL: {
+        ULONG_PTR handle = BrbReadHandle(brb, MM_BRB_CHANNEL_HANDLE_OFFSET);
+        ClearChannelHandle(devCtx, handle);
+        goto passthrough;
+    }
+
+    // Forward ACL transfers with a completion routine to intercept the data buffer.
+    case BRB_L2CA_ACL_TRANSFER:
+        WdfRequestFormatRequestUsingCurrentType(Request);
+        WdfRequestSetCompletionRoutine(Request,
+                                       InputHandler_AclCompletion,
+                                       devCtx);
+        if (!WdfRequestSend(Request, WdfDeviceGetIoTarget(Device),
+                            WDF_NO_SEND_OPTIONS)) {
+            WdfRequestComplete(Request, WdfRequestGetStatus(Request));
+        }
+        return;
+
+    default:
+        goto passthrough;
+    }
+
+passthrough:
+    WdfRequestFormatRequestUsingCurrentType(Request);
+    WDF_REQUEST_SEND_OPTIONS opts;
+    WDF_REQUEST_SEND_OPTIONS_INIT(&opts, WDF_REQUEST_SEND_OPTION_SEND_AND_FORGET);
+    if (!WdfRequestSend(Request, WdfDeviceGetIoTarget(Device), &opts)) {
+        WdfRequestComplete(Request, WdfRequestGetStatus(Request));
+    }
 }

@@ -1,52 +1,137 @@
 // SPDX-License-Identifier: MIT
 // Magic Mouse 2024 KMDF Lower Filter Driver
-// Replaces applewirelessmouse.sys: returns a custom HID descriptor that preserves
-// both the scroll collection (COL01) and battery collection (COL02) on every
-// enumeration, eliminating the descriptor-strip conflict.
 //
-// Stack position (between BthEnum and HidBth):
+// Stack position (lower filter between BthEnum and HidBth):
 //   HidClass → HidBth → [MagicMouseDriver (this)] → BthEnum
 //
-// Two interception points:
-//   IOCTL_HID_GET_REPORT_DESCRIPTOR: complete immediately with custom descriptor
-//   IOCTL_HID_READ_REPORT:           forward + translate Report 0x12 on completion
+// Interception mechanism (confirmed 2026-04-27 via static analysis of applewirelessmouse.sys):
+//
+//   IOCTL_HID_GET_REPORT_DESCRIPTOR and IOCTL_HID_READ_REPORT are upward-facing
+//   Windows HID IOCTLs absorbed by hidclass.sys. They never reach a lower filter
+//   below HidBth. This driver does NOT intercept those IOCTLs.
+//
+//   The correct interception point is IOCTL_INTERNAL_BTH_SUBMIT_BRB (0x00410003) —
+//   the Bluetooth Request Block submit IOCTL. All L2CAP data (HID descriptor bytes
+//   and input reports) travels via BRB_L2CA_ACL_TRANSFER on this path.
+//
+// HID descriptor delivery:
+//   g_HidDescriptor[] (113 bytes, 3 TLCs) is injected into the SDP/GET_REPORT
+//   response buffer on the first incoming BRB_L2CA_ACL_TRANSFER on the HID control
+//   L2CAP channel. HidDescriptor_Handle() (IOCTL-based) is vestigial and unused.
+//
+// Report translation:
+//   BRB_L2CA_ACL_TRANSFER on the HID interrupt channel translates Report 0x12
+//   (raw Apple multi-touch) to Report 0x01 (TLC1 mouse: buttons + X/Y + WheelV).
+//   Report 0x90 (battery) passes through unchanged → TLC3.
 
 #pragma once
 
 #include <ntddk.h>
 #include <wdf.h>
 
-// HID IOCTL codes (from WDK hidport.h / FILE_DEVICE_KEYBOARD=0x0B, METHOD_NEITHER=3)
-// Verified: IOCTL_HID_GET_REPORT_DESCRIPTOR = 0x000B0083 (confirmed by baseline test 2026-04-26)
-#ifndef IOCTL_HID_GET_REPORT_DESCRIPTOR
-#define IOCTL_HID_GET_REPORT_DESCRIPTOR  0x000B0083UL
-#endif
-#ifndef IOCTL_HID_READ_REPORT
-#define IOCTL_HID_READ_REPORT            0x000B000FUL  // verify at first build
-#endif
+// ---------------------------------------------------------------------------
+// Bluetooth BRB submit IOCTL
+// ---------------------------------------------------------------------------
 
+// IOCTL_INTERNAL_BTH_SUBMIT_BRB — private internal version (NOT the public 0x0041002B).
+// CTL_CODE(FILE_DEVICE_BLUETOOTH=0x41, Function=0, METHOD_NEITHER=3, FILE_ANY_ACCESS=0)
+// Confirmed via static analysis of applewirelessmouse.sys SHA-256 08F33D7E...
+#define IOCTL_INTERNAL_BTH_SUBMIT_BRB    0x00410003UL
+
+// BRB types handled by this driver (from bthddi.h BRB_TYPE enum)
+#define BRB_L2CA_OPEN_CHANNEL            0x0102
+#define BRB_L2CA_OPEN_CHANNEL_RESPONSE   0x0103
+#define BRB_L2CA_CLOSE_CHANNEL           0x0104
+#define BRB_L2CA_ACL_TRANSFER            0x0105
+
+// ---------------------------------------------------------------------------
+// BRB field offsets (64-bit Windows)
+// ---------------------------------------------------------------------------
+
+// BRB_HEADER layout (0x20 bytes, confirmed from static analysis):
+//   +0x00  LIST_ENTRY.Flink  (8 bytes)
+//   +0x08  LIST_ENTRY.Blink  (8 bytes)
+//   +0x10  Length            (ULONG)
+//   +0x14  Version           (USHORT)
+//   +0x16  Type              (USHORT) ← dispatch here
+//   +0x18  Status            (ULONG)
+//   +0x1C  Reserved          (ULONG)
+#define MM_BRB_TYPE_OFFSET                  0x16
+
+// BRB_L2CA_OPEN_CHANNEL and BRB_L2CA_CLOSE_CHANNEL:
+//   ChannelHandle is the first field after the 0x20-byte header.
+//   For OPEN_CHANNEL:  output parameter (populated by BthEnum on success).
+//   For CLOSE_CHANNEL: input parameter (caller sets it to the channel to close).
+//   TODO: verify offset 0x20 against bthddi.h at EWDK build time.
+#define MM_BRB_CHANNEL_HANDLE_OFFSET        0x20
+
+// BRB_L2CA_ACL_TRANSFER field offsets (TODO: verify all except 0x78 against bthddi.h):
+//   +0x78  ChannelHandle — confirmed: cmp [stored_handle],[brb+0x78] in analysis
+//   +0x28  TransferFlags — tentative
+//   +0x2C  BufferSize    — tentative
+//   +0x30  Buffer        — tentative (PVOID; NULL when MDL is used)
+//   +0x38  BufferMDL     — tentative (PMDL; NULL when Buffer is used)
+#define MM_BRB_ACL_CHANNEL_HANDLE_OFFSET    0x78
+#define MM_BRB_ACL_TRANSFER_FLAGS_OFFSET    0x28
+#define MM_BRB_ACL_BUFFER_SIZE_OFFSET       0x2C
+#define MM_BRB_ACL_BUFFER_OFFSET            0x30
+#define MM_BRB_ACL_BUFFER_MDL_OFFSET        0x38
+
+// TransferFlags bit: data flows device → host (incoming read).
+// From bthddi.h: ACL_TRANSFER_DIRECTION_IN = 0x00000001
+#define MM_ACL_TRANSFER_IN                  0x00000001UL
+
+// ---------------------------------------------------------------------------
 // Report IDs
-#define MM_REPORT_ID_TOUCH    0x12   // Raw multi-touch report from BT device
-#define MM_REPORT_ID_MOUSE    0x01   // Standard mouse report ID in our descriptor (TLC1)
-#define MM_REPORT_ID_BATTERY  0x90   // Battery report — pass through unchanged (TLC2)
+// ---------------------------------------------------------------------------
 
-// TLC1 output report layout (what we emit from InputHandler):
-//   [0] = 0x01  Report ID
-//   [1] = buttons bitmask (bits 0-2: L/R/Middle, bits 3-7: padding)
-//   [2] = X delta  (INT8, -127..127, relative)
-//   [3] = Y delta  (INT8, -127..127, relative)
-//   [4] = Wheel vertical  (INT8, scroll up/down)
-//   [5] = Wheel horizontal (INT8, AC Pan, scroll left/right)
-#define MM_MOUSE_REPORT_LEN   6
+#define MM_REPORT_ID_TOUCH      0x12  // Raw Apple multi-touch (device → host)
+#define MM_REPORT_ID_MOUSE      0x01  // TLC1 standard mouse report (emitted)
+#define MM_REPORT_ID_CONSUMER   0x02  // TLC2 AC Pan / horizontal scroll (emitted)
+#define MM_REPORT_ID_BATTERY    0x90  // TLC3 vendor battery — pass through
 
-// Device context (reserved for per-device state if needed)
+// TLC1 mouse report buffer: [0x01, buttons, X, Y, WheelV] = 5 bytes
+//   InputReportByteLength = 4 (per descriptor, excludes report ID byte)
+#define MM_MOUSE_REPORT_LEN     5
+
+// TLC2 consumer report buffer: [0x02, WheelH] = 2 bytes
+//   InputReportByteLength = 1
+#define MM_CONSUMER_REPORT_LEN  2
+
+// Minimum Report 0x12 length for parsing (header bytes before first touch block)
+#define MM_TOUCH_REPORT_MIN_LEN 14
+
+// ---------------------------------------------------------------------------
+// Device context
+// ---------------------------------------------------------------------------
+
+// Per-device state shared across BRB completion routines.
+// All fields modified only at PASSIVE_LEVEL or under BRB serialization.
 typedef struct _DEVICE_CONTEXT {
-    ULONG Reserved;
+
+    // L2CAP channel handles — populated on BRB_L2CA_OPEN_CHANNEL completion.
+    // Convention: first channel opened = HID control (PSM 17, descriptor traffic).
+    //             second channel       = HID interrupt (PSM 19, input report stream).
+    // Cleared to 0 on the corresponding BRB_L2CA_CLOSE_CHANNEL.
+    ULONG_PTR ControlChannelHandle;
+    ULONG_PTR InterruptChannelHandle;
+
+    // Count of channels successfully opened. Used to assign control vs. interrupt slot.
+    // Incremented in the OPEN_CHANNEL completion routine.
+    ULONG     ChannelCount;
+
+    // TRUE after g_HidDescriptor[] has been injected into the control channel ACL buffer.
+    // Reset to FALSE when ControlChannelHandle is cleared so we re-inject on reconnect.
+    BOOLEAN   DescriptorInjected;
+
 } DEVICE_CONTEXT, *PDEVICE_CONTEXT;
 
 WDF_DECLARE_CONTEXT_TYPE_WITH_NAME(DEVICE_CONTEXT, GetDeviceContext)
 
+// ---------------------------------------------------------------------------
 // Function declarations
+// ---------------------------------------------------------------------------
+
 DRIVER_INITIALIZE DriverEntry;
 EVT_WDF_DRIVER_DEVICE_ADD EvtDeviceAdd;
 EVT_WDF_IO_QUEUE_IO_INTERNAL_DEVICE_CONTROL EvtIoInternalDeviceControl;

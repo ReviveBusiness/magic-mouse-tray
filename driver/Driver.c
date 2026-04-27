@@ -21,7 +21,6 @@ EvtDeviceAdd(
 {
     UNREFERENCED_PARAMETER(Driver);
 
-    // Mark as filter — WDF will not claim exclusive I/O ownership
     WdfFdoInitSetFilter(DeviceInit);
 
     WDF_OBJECT_ATTRIBUTES deviceAttributes;
@@ -33,7 +32,8 @@ EvtDeviceAdd(
         return status;
     }
 
-    // Internal device control queue handles HID IOCTLs (IRP_MJ_INTERNAL_DEVICE_CONTROL)
+    // Internal device control queue — handles IRP_MJ_INTERNAL_DEVICE_CONTROL,
+    // which carries IOCTL_INTERNAL_BTH_SUBMIT_BRB (0x00410003) from HidBth to BthEnum.
     WDF_IO_QUEUE_CONFIG queueConfig;
     WDF_IO_QUEUE_CONFIG_INIT_DEFAULT_QUEUE(&queueConfig, WdfIoQueueDispatchParallel);
     queueConfig.EvtIoInternalDeviceControl = EvtIoInternalDeviceControl;
@@ -51,28 +51,17 @@ EvtIoInternalDeviceControl(
     _In_ size_t     InputBufferLength,
     _In_ ULONG      IoControlCode)
 {
+    UNREFERENCED_PARAMETER(OutputBufferLength);
     UNREFERENCED_PARAMETER(InputBufferLength);
 
     WDFDEVICE device = WdfIoQueueGetDevice(Queue);
 
-    switch (IoControlCode) {
-
-    case IOCTL_HID_GET_REPORT_DESCRIPTOR:
-        // Complete with our custom descriptor immediately — do not forward to BthEnum.
-        // HidBth receives our descriptor and creates COL01 (scroll) + COL02 (battery).
-        HidDescriptor_Handle(Request, OutputBufferLength);
+    if (IoControlCode == IOCTL_INTERNAL_BTH_SUBMIT_BRB) {
+        InputHandler_HandleBrbSubmit(device, Request);
         return;
-
-    case IOCTL_HID_READ_REPORT:
-        // Forward to BthEnum (blocks until BT data arrives); translate 0x12 on completion.
-        InputHandler_ForwardWithCompletion(device, Request);
-        return;
-
-    default:
-        break;
     }
 
-    // Pass all other IOCTLs straight through
+    // All other IOCTLs pass through untouched.
     WdfRequestFormatRequestUsingCurrentType(Request);
     WDF_REQUEST_SEND_OPTIONS opts;
     WDF_REQUEST_SEND_OPTIONS_INIT(&opts, WDF_REQUEST_SEND_OPTION_SEND_AND_FORGET);
