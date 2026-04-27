@@ -1,0 +1,99 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  MagicMouseDriver.vcxproj — KMDF Kernel-Mode Driver Project
+  Build with EWDK (Enterprise WDK) standalone environment:
+
+    1. Mount EWDK ISO (no install needed)
+    2. Run: <ISO>\LaunchBuildEnv.cmd
+    3. In the EWDK shell: cd <this directory>
+    4. Build: msbuild MagicMouseDriver.vcxproj /p:Configuration=Debug /p:Platform=x64
+
+  If this .vcxproj does not work with your EWDK version, clone mac-precision-touchpad
+  (https://github.com/roblabla/MacTrackpad) and adapt its project files:
+    - Change TargetName to MagicMouseDriver
+    - Replace source files with Driver.c, HidDescriptor.c, InputHandler.c
+    - Update the INF reference to MagicMouseDriver.inf
+
+  Requires test signing for development:
+    bcdedit /set testsigning on  (run elevated, then reboot once)
+-->
+<Project DefaultTargets="Build" ToolsVersion="15.0"
+         xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+
+  <ItemGroup Label="ProjectConfigurations">
+    <ProjectConfiguration Include="Debug|x64">
+      <Configuration>Debug</Configuration>
+      <Platform>x64</Platform>
+    </ProjectConfiguration>
+    <ProjectConfiguration Include="Release|x64">
+      <Configuration>Release</Configuration>
+      <Platform>x64</Platform>
+    </ProjectConfiguration>
+  </ItemGroup>
+
+  <PropertyGroup Label="Globals">
+    <ProjectGuid>{A1B2C3D4-E5F6-7890-ABCD-EF1234567890}</ProjectGuid>
+    <TargetName>MagicMouseDriver</TargetName>
+    <TargetExt>.sys</TargetExt>
+    <!-- KMDF version — update to match EWDK version (1.33 = Windows 11 22H2) -->
+    <DriverType>KMDF</DriverType>
+    <KmdfVersionMajor>1</KmdfVersionMajor>
+    <KmdfVersionMinor>33</KmdfVersionMinor>
+  </PropertyGroup>
+
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.Default.props" />
+
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug|x64'" Label="Configuration">
+    <ConfigurationType>Driver</ConfigurationType>
+    <UseDebugLibraries>true</UseDebugLibraries>
+    <PlatformToolset>WindowsKernelModeDriver10.0</PlatformToolset>
+    <TargetVersion>Windows10</TargetVersion>
+    <DriverTargetPlatform>Universal</DriverTargetPlatform>
+    <EnableInf2cat>false</EnableInf2cat>
+  </PropertyGroup>
+
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'" Label="Configuration">
+    <ConfigurationType>Driver</ConfigurationType>
+    <UseDebugLibraries>false</UseDebugLibraries>
+    <PlatformToolset>WindowsKernelModeDriver10.0</PlatformToolset>
+    <TargetVersion>Windows10</TargetVersion>
+    <DriverTargetPlatform>Universal</DriverTargetPlatform>
+    <EnableInf2cat>false</EnableInf2cat>
+  </PropertyGroup>
+
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.props" />
+
+  <ItemDefinitionGroup>
+    <ClCompile>
+      <AdditionalIncludeDirectories>$(IntDir);%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <WarningLevel>Level4</WarningLevel>
+      <TreatWarningAsError>true</TreatWarningAsError>
+    </ClCompile>
+    <Link>
+      <SubSystem>Native</SubSystem>
+      <Driver>WDM</Driver>
+      <AdditionalDependencies>wdmguid.lib;%(AdditionalDependencies)</AdditionalDependencies>
+    </Link>
+  </ItemDefinitionGroup>
+
+  <ItemGroup>
+    <ClCompile Include="Driver.c" />
+    <ClCompile Include="HidDescriptor.c" />
+    <ClCompile Include="InputHandler.c" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ClInclude Include="Driver.h" />
+    <ClInclude Include="HidDescriptor.h" />
+    <ClInclude Include="InputHandler.h" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <Inf Include="MagicMouseDriver.inf" />
+  </ItemGroup>
+
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
+  <Import Project="$(WDKContentRoot)\build\WindowsDriver.targets"
+          Condition="Exists('$(WDKContentRoot)\build\WindowsDriver.targets')" />
+
+</Project>

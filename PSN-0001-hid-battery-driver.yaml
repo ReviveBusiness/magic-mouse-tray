@@ -1,0 +1,73 @@
+---
+title: PSN-0001 — Magic Mouse HID Battery Reader Driver Binding
+type: problem-session-note
+psn_id: PSN-0001
+version: 1.0.0
+status: active
+linked_prd: PRD-184
+linked_repo: ReviveBusiness/magic-mouse-tray
+linked_issues: [2, 3, 4]
+opened: 2026-04-17
+last_updated: 2026-04-27
+sessions_logged: 6
+---
+
+# PSN-0001: Magic Mouse HID Battery Reader — Windows 11 Driver Binding
+
+## Problem Statement
+
+Apple Magic Mouse v2/2024 on Windows 11 requires the `AppleWirelessMouse64` HID driver to be bound to read battery via HID Input Report `0x90` (byte[2] = battery %). The driver doesn't reliably bind after suspend-resume or after Windows updates. PRD-184 delivers the core battery reader, but GitHub Issues #2, #3, #4 track ongoing driver binding reliability problems.
+
+## Current Working Theory
+
+`pnputil /restart-device` is unsafe to call unconditionally after driver install because it can be called during `BTHENUM` (Bluetooth Enumerator) re-enumeration, causing the HID device to disappear from Windows device manager mid-restart. Need to check enumeration state before calling restart.
+
+## Hypotheses
+
+| ID | Hypothesis | Status | Date Tested | Evidence |
+|----|-----------|--------|-------------|---------|
+| H-001 | ReportDescriptor access indicates driver bound | **REJECTED** | 2026-04-21 | False negative — descriptor can be null even when bound due to timing. See peer-review 20260421 finding #2 |
+| H-002 | worst-state-wins semantics for DriverHealthChecker returns correct binding state | **CONFIRMED** | 2026-04-22 | PR fix/issue-4-driver-priority-v2, commit cb49ece. Multiple HID devices share same VID — any unbound device = broken state. |
+| H-003 | pnputil /restart-device safe to call unconditionally after driver install | **REJECTED** | 2026-04-26 | /restart-device strips COL02 (same as /disable+/enable with filter active). Removed from startup-repair.ps1. |
+| H-004 | Writing LowerFilters to driver instance key (Control\Class\{GUID}\NNNN) resolves error 1077 at boot | **REJECTED** | Prior sessions | "LowerFilters in BOTH keys + DEMAND_START" tested — error 1077 persisted. PnP not loading filter regardless of registry location. Root cause unknown. KMDF driver required for scroll. |
+
+## Decisions Made
+
+| ID | Date | Decision | Rationale | Status |
+|----|------|---------|-----------|--------|
+| D-001 | 2026-04-17 | Use HidLibrary + HID Report 0x90, not WinRT GATT | Apple devices use proprietary HID battery reporting confirmed by WinMagicBattery reverse engineering | active |
+| D-002 | 2026-04-22 | worst-state-wins semantics for DriverHealthChecker | Multiple Magic Mouse HID devices share same Vendor ID — if any one is unbound, the whole device is in broken state | active |
+| D-003 | 2026-04-21 | Do NOT use ReportDescriptor as binding signal (H-001) | Too many false negatives — descriptor can be null even when driver is bound | active |
+
+## Next Session Brief
+
+**Current state (2026-04-26)**:
+- startup-repair.ps1 fixed: removed /restart-device (Bug 1), added driver instance key write (Bug 2)
+- COL02 persistence confirmed working via &6& recovery procedure
+- Scroll via applewirelessmouse filter: BLOCKED — error 1077 persists regardless of registry writes
+
+**Files to read first**:
+- `startup-repair.ps1` — fixed version
+- `KMDF-PLAN.md` — next step architecture
+- `sre-windows/references/recovery-procedures.md` — Scroll Fix Status table
+
+**Do NOT retry**:
+- Using `ReportDescriptor` access to detect driver binding state (H-001, rejected 2026-04-21)
+- `pnputil /restart-device` anywhere near an active applewirelessmouse filter (H-003, rejected 2026-04-26)
+- Writing LowerFilters to any registry location and expecting it to fix error 1077 (H-004, rejected prior sessions)
+
+**Next step**: KMDF function driver — pre-build validation complete. Begin driver development:
+EWDK setup → Driver.c → HidDescriptor.c → InputHandler.c (port Linux hid-magicmouse.c) → BatteryHandler.c → INF with SPSVCINST_ASSOCSERVICE. See PRD #184 M12 for full task list.
+
+**GitHub Issues to check**: #2 (driver not binding after suspend), #3 (BTHENUM timing), #4 (driver priority logic)
+
+## Session History
+
+| Date | Session | What Happened |
+|------|---------|--------------|
+| 2026-04-17 | Session 1 | Initial feasibility + HID 0x90 discovery. All 7 milestones completed. |
+| 2026-04-21 | Session 2 | Peer review via NotebookLM. 3 blocking bugs filed as Issues #2, #3, #4. H-001 rejected. |
+| 2026-04-22 | Session 3 | H-002 confirmed (worst-state-wins). PR merged. |
+| 2026-04-24 | Session 4 | H-003 opened (pnputil restart safety). PSN created. |
+| 2026-04-26 | Session 5 | test-filter-stack.ps1 run. H-003 rejected (/restart-device strips COL02). H-004 rejected (driver instance key write doesn't fix 1077 — tested in prior sessions). startup-repair.ps1 fixed (Bugs 1+2). KMDF driver confirmed as only path for scroll. |
+| 2026-04-27 | Session 6 | Full AppleWirelessMouse.inf (DriverVer 04/21/2026 6.2.0.0) reviewed. INF confirms error 1077 root cause: HKR in .HW.AddReg = Enum key only; PnP skips AddDevice on BTHENUM reuse at boot. Function driver INF design confirmed: SPSVCINST_ASSOCSERVICE, no Include=hidbth.inf, same four hardware IDs. Pre-build validation complete (TouchpadProbe, descriptor, stack baseline, .sys hash). KMDF-PLAN.md updated with INF analysis. |
