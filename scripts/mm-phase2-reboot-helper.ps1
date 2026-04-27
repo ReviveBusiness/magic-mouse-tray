@@ -127,16 +127,19 @@ if ($Phase -eq 'prereboot') {
         Write-Host "  (no etw-trace.etl to rename)" -ForegroundColor Yellow
     }
 
-    # 4. Save the postreboot command somewhere user can find it after reboot
+    # 4. Save the postreboot command somewhere user can find it after reboot.
+    #    Set-ExecutionPolicy bypass is required because UNC-loaded scripts
+    #    are treated as unsigned/untrusted in a fresh PS process.
     $cheatPath = "$env:USERPROFILE\Desktop\m13-phase2-resume.txt"
+    $resumeCmd = "Set-ExecutionPolicy -Scope Process Bypass -Force; & '$PSCommandPath' postreboot $CellId"
     @"
 M13 Phase 2 -- resume after reboot
 
 After Windows finishes booting + you log in + wait ~30s for the mouse to
 reconnect (verify scroll works manually first), open a NEW admin PowerShell
-and run:
+and paste this single line:
 
-    & '$PSCommandPath' postreboot $CellId
+    $resumeCmd
 
 This will start fresh Procmon + wpr captures, run test-3 in WSL, then stop
 the captures and rename them to *-post-reboot.{PML,etl}.
@@ -153,9 +156,9 @@ Cell run dir: $runDirWin
     Write-Host "NEXT, in this order:" -ForegroundColor Yellow
     Write-Host "  1. Switch to your WSL bash terminal and press ENTER on the reboot prompt"
     Write-Host "  2. Reboot Windows (Start > Power > Restart)"
-    Write-Host "  3. After login + ~30s mouse-reconnect, open a NEW admin PS and run:"
+    Write-Host "  3. After login + ~30s mouse-reconnect, open a NEW admin PS and paste:"
     Write-Host ""
-    Write-Host "       & '$PSCommandPath' postreboot $CellId" -ForegroundColor Green
+    Write-Host "       $resumeCmd" -ForegroundColor Green
     Write-Host ""
     exit 0
 }
