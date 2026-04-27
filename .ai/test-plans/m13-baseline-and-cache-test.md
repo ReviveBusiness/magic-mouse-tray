@@ -1,10 +1,11 @@
 # M13 — Empirical Baseline & BTHPORT Descriptor Cache Investigation
 
-**Status:** plan v1.1 — Phase 1 executed, reg-diff verification baked in as MOP gate
+**Status:** plan v1.2 — G1 #1 + #2 approved; Phase 2 staged with USB-C cells + sleep/wake axis + WM_MOUSEWHEEL metric
 **Owner:** PRD-184
-**Estimated effort:** 1.5h prep + ~4h execution
+**Estimated effort:** 1.5h prep + ~4h execution (Phase 2 alone now ~2.5h with new axes)
 **Pre-flight gate:** see `.ai/playbooks/autonomous-agent-team.md` checklist sections A-E.
-**v1.0 → v1.1 (2026-04-27):** Phase 1 ran; reg-diff verification gate added; orchestrator + bundle script added; cleanup script B1 (COL01 health check) + B2 (RAWPDO `\\` pattern) bugs fixed. See `.ai/test-runs/m13-phase0/phase1-report.md`.
+**v1.0 → v1.1 (2026-04-27):** Phase 1 ran; reg-diff verification gate added; orchestrator + bundle script added; cleanup script B1 (COL01 health check) + B2 (RAWPDO `\\` pattern) bugs fixed.
+**v1.1 → v1.2 (2026-04-27):** G1 user sign-off — #1 (test-matrix axis additions: USB-C cells + sleep/wake + WM_MOUSEWHEEL) APPROVED, #2 (Phase 4 branch collapse: 4B dead per peer-review) APPROVED, #3 (kernel bug fix gate BLK-001/002, SF-003) DEFERRED to post-Phase-2 evaluation. Phase 2 test matrix expanded to 6 cells; Phase 4 reduced to 4A + 4C. See `.ai/test-runs/m13-phase0/phase1-report.md`.
 
 ## Why M13
 
@@ -70,12 +71,18 @@ Goal: capture HID enumeration + battery readability + scroll behavior under all 
 
 | ID | Mouse | Driver state | Test sequence | Expected scroll | Expected battery |
 |---|---|---|---|---|---|
-| T-V3-AF | v3 (PID 0x0323) | AppleFilter (current) | test → unpair → repair → test → reboot → test | ✓ | ✗ (per overnight finding) |
-| T-V3-NF | v3 (PID 0x0323) | NoFilter | flip → test → unpair → repair → test → reboot → test | ✗ (per overnight finding) | ✓ (per overnight finding) |
-| T-V1-AF | v1 (PID 0x030D) | AppleFilter | pair → test → unpair → repair → test → reboot → test | ? | ? |
-| T-V1-NF | v1 (PID 0x030D) | NoFilter | flip → test → unpair → repair → test → reboot → test | ? | ? |
+| T-V3-AF | v3 (PID 0x0323) | AppleFilter (current) | test → unpair → repair → test → sleep/wake → test → reboot → test | ✓ | ✗ (per overnight finding) |
+| T-V3-NF | v3 (PID 0x0323) | NoFilter | flip → test → unpair → repair → test → sleep/wake → test → reboot → test | ✗ (per overnight finding) | ✓ (per overnight finding) |
+| T-V3-AF-USB | v3 (PID 0x0323) | AppleFilter + USB-C connected | plug USB-C → test → unplug → test → reboot → plug → test | ? | ? |
+| T-V3-NF-USB | v3 (PID 0x0323) | NoFilter + USB-C connected | flip → plug USB-C → test → unplug → test → reboot → plug → test | ? | ? |
+| T-V1-AF | v1 (PID 0x030D) | AppleFilter | pair → test → unpair → repair → test → sleep/wake → test → reboot → test | ? | ? |
+| T-V1-NF | v1 (PID 0x030D) | NoFilter | flip → test → unpair → repair → test → sleep/wake → test → reboot → test | ? | ? |
 
 The "?" cells are the empirical gaps M13 fills.
+
+**Sleep/wake sub-step rationale (G1 #1 axis):** S3 / Modern Standby does NOT re-run AddDevice; BTHPORT cache may behave differently on resume vs boot. Without this axis, "scroll works after reboot" tells us nothing about whether scroll survives a daily lid-close.
+
+**USB-C cells rationale (G1 #1 axis):** Magic Mouse 2024 charges via USB-C; USB and BT enumeration paths compete. Phase 1 cleanup removed a Code-39-causing orphan (`USB MI_01 LowerFilters="MagicMouse"`); these cells verify the hazard stays absent and surface any new USB+BT interaction failures.
 
 #### Per-test-cell capture
 
@@ -93,16 +100,27 @@ Per-test-cell capture data:
 - Procmon `.PML` (closed at cell end)
 - ETW `.etl` (closed at cell end)
 - DebugView log slice
+- **WM_MOUSEWHEEL event count + per-event timestamp during 3-second 2-finger gesture (G1 #1 quantitative metric — replaces human "scroll works" judgement; 5% intermittent drop rate would otherwise pass and ship broken)**
 - Quick subjective notes from human (scroll smooth? click registers? gesture continuous?)
 
 #### "Test" step definition
 
 At each "test" point in the sequence, the human:
 1. Moves the pointer corner-to-corner across the screen — verifies pointer responsiveness
-2. Performs 2-finger vertical scroll gesture for ≥3 seconds — verifies wheel events
+2. Performs 2-finger vertical scroll gesture for **exactly 3 seconds** — `mm-wheel-counter.ps1` (low-level mouse hook) captures every `WM_MOUSEWHEEL` event with timestamp; orchestrator emits `wheel-events.json` per cell-step
 3. Performs 2-finger horizontal swipe — verifies AC-Pan
 4. Clicks left + right
 5. Tray app should poll within 30s; screenshot/log the tooltip
+
+#### Sleep/wake sub-step definition (G1 #1)
+
+Between `repair → test` and `reboot → test` in every applicable cell:
+1. `powercfg /requestsoverride` recorded (baseline)
+2. `rundll32.exe powrprof.dll,SetSuspendState 0,1,0` (S3 sleep)
+3. Resume via mouse-click or keyboard
+4. Wait 30s for BT stack settle
+5. Run "Test" step above
+6. Compare HID enumeration + battery-readability + wheel count against the post-repair, pre-sleep state — divergence = data point
 
 Test orchestrator prompts the human with these instructions and records observations.
 
@@ -145,6 +163,10 @@ Steps:
 Both descriptors decoded, fixtures saved, comparison matrix produced. Q1, Q2, Q3 in success criteria answered.
 
 ### Phase 4 — Hypothesis test (varies by Phase 3 result)
+
+**G1 #2 outcome (2026-04-27):** Branch 4B (registry-patch with Apple's filter) is **DEAD per NLM peer-review REJECT** — three empirical citations: (a) Apple's filter repackages multi-touch into proprietary report layout; (b) Linux `hid-magicmouse.c` proves wheel synthesis is at input-event layer not HID-report layer; (c) MagicUtilities replaced HidBth as function driver, did NOT patch BTHPORT cache. Only **4A** (no kernel + userland gesture daemon) and **4C** (SDP-scanner filter + cache patch on `5ff866a`) remain.
+
+**G1 #3 outcome (2026-04-27, deferred):** Kernel reviewer findings BLK-001 (BRB Length not validated), BLK-002 (MDL `NormalPagePriority` no recovery), SF-003 (SDP TLV length-byte fixup offset bug) — fix priority re-evaluated **after Phase 2 ETW traces** confirm whether real BTHPORT BRBs trigger malformed conditions. If Phase 2 shows only well-formed BRBs, BSOD risk is theoretical; if Phase 2 surfaces malformed BRBs, fixes become a hard gate before any 4C install.
 
 Decision tree (pre-written so we don't drift):
 
