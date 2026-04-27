@@ -223,14 +223,24 @@ if ($Phase -eq 'postreboot') {
         if (Test-Path $pmlStagingPath) {
             Remove-Item $pmlStagingPath -Force
         }
-        Start-Process -FilePath $ProcmonExe `
-            -ArgumentList @('/BackingFile', $pmlStagingPath, '/Quiet', '/Minimized', '/AcceptEula') `
-            -WindowStyle Minimized
+        # Load PMF filter (Path-based rules + Drop Filtered Events) so capture
+        # is restricted to BTHPORT / HID / Magic Mouse activity. Validated on
+        # Cell 1: 1.4 MB Logfile.PML for a few-minute filtered test vs the
+        # 27 GB unfiltered baseline.
+        $pmfWin = "$repoWin\scripts\m13-procmon-filter.PMF"
+        $procmonArgs = @('/BackingFile', $pmlStagingPath, '/Quiet', '/Minimized', '/AcceptEula')
+        if (Test-Path $pmfWin) {
+            $procmonArgs += @('/LoadConfig', $pmfWin)
+            Write-Host "  filter:  $pmfWin"
+        } else {
+            Write-Host "  WARN: PMF filter not found at $pmfWin -- falling back to unfiltered (potentially huge .PML)" -ForegroundColor Yellow
+        }
+        Start-Process -FilePath $ProcmonExe -ArgumentList $procmonArgs -WindowStyle Minimized
         Start-Sleep -Seconds 3
         if (-not (Get-Process Procmon* -ErrorAction SilentlyContinue)) {
             Write-Host "  WARN: Procmon process not detected after launch" -ForegroundColor Yellow
         } else {
-            Write-Host "  -> Procmon running"
+            Write-Host "  -> Procmon running (filtered)"
         }
     }
 
