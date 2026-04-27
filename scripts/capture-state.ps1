@@ -12,8 +12,8 @@
 param(
     [string]$Label = "",
     [switch]$Compare,
-    [string]$FileA = "",
-    [string]$FileB = "",
+    [Parameter(Position=0)][string]$FileA = "",
+    [Parameter(Position=1)][string]$FileB = "",
     [string]$OutputDir = "."
 )
 
