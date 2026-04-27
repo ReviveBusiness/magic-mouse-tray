@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# mm-test-matrix.sh - M13 Phase 2 test orchestrator.
+# mm-test-matrix.sh - M13 Phase 2 test orchestrator. Version: v1.2.0
 #
 # Walks a test cell through the standard sequence:
 #   pair -> test -> unpair -> repair -> test -> reboot -> test
