@@ -93,3 +93,19 @@ Either path satisfies Q7. Phase 3 (descriptor decode) still informs which is che
 - Actual cache contents (Phase 3)
 
 Halting per the per-phase close-out gate. Block 1 next.
+
+## Corrections (post Phase 3)
+
+The following material errors in this report were identified via independent multi-agent forensic analysis (3 blind agents + synthesis) and superseded by Phase 3 cache decode (commit 6b4453e).
+
+**M-1**: My "Q7 trending YES via Phase 4A" was directionally correct but for the wrong reason. I described the mechanism vaguely. Phase 3 confirms YES via 4A, but the mechanism is specifically: userland reads raw Report 0x12 multi-touch data + injects wheel events via SendInput WM_MOUSEWHEEL. This is the same pattern as Linux hid-magicmouse.c at the Win32 input layer -- NOT anything related to descriptor augmentation or filter behavior.
+Source: phase3-cache-decoded.md
+
+**M-2**: My section "MagicMouse: AclIn lines prove kernel filter running post-reboot" was based on kernel-debug-tail content that Agent B identified as stale duplicate data from a prior capture window -- not post-reboot evidence. The content was from an earlier session and was inadvertently included in the Cell 1 analysis window. The AclIn conclusion is invalid.
+Source: agent-b-independent-report.md (Agent B finding: stale duplicate data)
+
+**M-3**: My H-005 rejection stated "Real failure mode is descriptor-level." This was directionally wrong. Phase 3 confirms LowerFilters binding DOES survive reboot (consistent with my finding), but the correct mechanism is: the RUNTIME BEHAVIOR of applewirelessmouse (Win32-layer input injection + Feature report trapping) goes inert post-reboot, despite the filter being loaded. The failure is runtime behavior becoming inert, NOT a descriptor-level issue as I originally stated. H-005 status: REJECTED, but with a corrected mechanism.
+Source: phase3-cache-decoded.md, synthesis-stage4.md
+
+**M-4**: NEW correction not in original report. My initial reading of "battery N/A pre-reboot, 44% post-reboot" as device behavior was wrong. The cache HAS battery data (Report 0x90 confirmed in Phase 3 decode). What changes pre/post-reboot is whether applewirelessmouse blocks Feature 0x47 reads. When filter active (pre-reboot) = Feature trap blocks battery reads (FEATURE_BLOCKED err=87). When filter inert (post-reboot) = cache surfaces unmodified, battery readable at 44%. One mechanism (Feature trap) explains both the err=87 blocking and the post-reboot recovery.
+Source: phase3-cache-decoded.md (Report 0x90 on UP=0xFF00 U=0x14 confirmed in cache)
