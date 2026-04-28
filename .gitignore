@@ -25,3 +25,6 @@ obj/
 
 # Procmon filter typo (superseded by single-dot version; leave for user delete)
 scripts/m13-procmon-filter..PMF
+
+# 7-Zip extraction artefacts from Inno Setup probe (PE sections, ~80 MB, transient)
+$tmp/

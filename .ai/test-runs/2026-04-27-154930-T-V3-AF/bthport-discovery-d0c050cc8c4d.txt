@@ -1,5 +1,5 @@
 ﻿[discover] Device root: HKLM:\SYSTEM\CurrentControlSet\Services\BTHPORT\Parameters\Devices\d0c050cc8c4d
-[discover] Captured: 2026-04-28 09:38:46
+[discover] Captured: 2026-04-28 09:55:55
 
 KEY: HKEY_LOCAL_MACHINE\SYSTEM\CurrentControlSet\Services\BTHPORT\Parameters\Devices\d0c050cc8c4d
   VAL: DibServiceVersion (kind=DWord size=6)

@@ -116,13 +116,72 @@ This is the **first time we have a clean view of the filter's keyboard-only AddD
 
 ---
 
-## Outstanding empirical tests (need user input or a follow-up sub-experiment)
+## Empirical results from 2026-04-28 09:55+ retest
 
-1. **v1 mouse: scroll yes/no?** — User has v1 connected. Quick swipe test with Notepad or any scrollable window.
-2. **v1 mouse: battery in Settings → Bluetooth?** — Should be visible because Feature 0x47 is standard.
-3. **v3 mouse: rerun mm-tray with v1 active simultaneously** — Tray polls a single instance; with two paired mice we need to verify it picks the right one. Probably requires a config knob.
-4. **AirPods Pro:** different BT profile (A2DP/HFP, not HID) — won't appear in the same SDP cache pattern. Will be in `…\Devices\<mac>\` but with audio profiles not HID. Worth dumping for completeness.
-5. **Keyboard LowerFilter cleanup MOP** — task #26.
+### v1 mouse SCROLL: **WORKS** (without `applewirelessmouse` on its PnP filter stack)
+
+User confirmed: v1 Magic Mouse scrolls in standard apps. Live filter chain still
+shows no `applewirelessmouse` on the v1 BTHENUM HID PDO. The descriptor only
+declares Mouse TLC + X/Y (16-bit) inputs — no Wheel input.
+
+This contradicts the original hypothesis. Three plausible explanations:
+
+1. **`applewirelessmouse` registers a global Win32 input hook on DriverEntry**.
+   It's currently loaded into the kernel (Status=Running) because the keyboard's
+   stale LowerFilter ref pulled it in. Once loaded, it could synthesize scroll
+   for any Apple HID device it recognises, regardless of per-stack binding.
+2. v1 mouse uses a different scroll mechanism — e.g., Windows's HidBth path has
+   an Apple-specific code path for VID=0x05AC mice that interprets touch surface
+   reports (Vendor 0xFF02 ReportID 0x55) as wheel events. Unverified.
+3. The v1 sends an extra Vendor input report at runtime that Windows somehow
+   recognises. The descriptor doesn't declare such an input, but BT HID can
+   send unsolicited reports the host happens to know about.
+
+**Test to disambiguate:** `Stop-Service applewirelessmouse` then try scrolling v1.
+If scroll fails → theory 1 confirmed. If scroll persists → theories 2/3 in play.
+NOT yet executed — user is in active test cycle.
+
+### v1 mouse BATTERY: **not surfaced by Windows native** despite standard descriptor
+
+User asked: "where can I see v1 battery?" Answer: **nowhere natively.**
+
+The deep battery probe (`bt-battery-probe.txt`) confirmed:
+- `DEVPKEY_Device_BatteryLevel` is empty on every BTHENUM and HID PDO node.
+- WMI classes `AppleWirelessHIDDeviceBattery`, `BatteryStatus`, `Win32_Battery` are all empty.
+- Settings → Bluetooth & devices won't show a percent for either Apple mouse.
+
+Even though the v1 mouse declares standard HID Feature 0x47 (UP=0x06, U=0x20),
+**Windows doesn't auto-poll Classic-BT HID Feature reports** for battery — that
+behaviour only applies to BLE devices using HOGP+Battery Service (0x180F).
+
+To surface v1 battery the tray app must call `HidD_GetFeature(handle, [0x47, ...], 2)`
+itself. mm-tray already does this kind of read for v3 (vendor 0x90); a small
+extension to also try the standard 0x47 report would give the v1 user a battery
+reading. **Phase 4-Ω+v1-support task added.**
+
+### AirPods Pro: out of scope
+
+MAC `38c43a5f7a5f`, PID 0x2024. Pure audio device — A2DP (BthA2dp), HFP
+(BthHFEnum), AVRCP, GATT (Find My), Apple AAP/UARP. **No HID profile.** No
+relevance to the scroll/battery problem on the mouse stack. Cache value
+`00000000` is a multi-language SDP service-name list, not a HID descriptor.
+
+Battery for AirPods is exposed via Apple's proprietary AAP Server (BTHENUM
+GUID `{74EC2172-0BAD-4D01-8F77-997B2BE0722A}`) which Windows can't decode
+without third-party tooling. Not pursued.
+
+### v3 mouse stale child PDOs
+
+Snapshot showed orphan HID nodes from old USB Magic Mouse instances
+(`HID\VID_05AC&PID_0323&MI_01\COL01..03\8&4FB45D0`) — Status=Unknown. These
+are from the cabled-mouse phase before BT pairing. Not active, but cluttering
+PnP. Cleanup candidate (low priority).
+
+## Outstanding empirical tests
+
+1. **`Stop-Service applewirelessmouse` + v1 scroll test** — disambiguates the global-hook hypothesis. Needs user approval (changes BT stack state).
+2. **`HidD_GetFeature(0x47)` direct read on v1 mouse** — would prove the standard battery report is readable. Could be done from a small one-off test program or extension to mm-tray.
+3. **Keyboard LowerFilter cleanup MOP** — task #26.
 
 ---
 

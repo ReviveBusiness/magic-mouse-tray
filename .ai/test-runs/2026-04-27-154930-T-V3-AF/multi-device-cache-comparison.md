@@ -5,6 +5,7 @@ Captured: 2026-04-28 09:38
 | MAC | Name | Cache | DescLen | Mouse TLC | Wheel | Vendor | Battery (UP=FF00,U=14) | Keyboard TLC | Consumer TLC |
 |---|---|---|---|---|---|---|---|---|---|
 | `04f13eeede10` | Trevor’s Mouse | 337B | 98 | YES | NO | NO | NO | NO | NO |
+| `38c43a5f7a5f` | AirPods Pro - Find My | 182B | 0 | - | - | - | - | - | - |
 | `b2227a7a501b` | ENVY 6000 series | - | 0 | - | - | - | - | - | - |
 | `d0c050cc8c4d` | Magic Mouse | 351B | 135 | YES | NO | YES | YES | NO | NO |
 | `e806884b0741` | Trevor’s Keyboard | 454B | 224 | NO | NO | NO | NO | YES | YES |
@@ -25,6 +26,11 @@ Captured: 2026-04-28 09:38
 - Input reports: [(16, 9, 2), (16, 9, 2), (16, 1, 49)]
 - Output reports: []
 - Feature reports: [(71, 6, 32), (85, 65282, 85)]
+
+### `38c43a5f7a5f` — AirPods Pro - Find My
+
+- Cache value name: `00000000`  size: 182 bytes
+- HID descriptor present: False  length: 0
 
 ### `b2227a7a501b` — ENVY 6000 series
 

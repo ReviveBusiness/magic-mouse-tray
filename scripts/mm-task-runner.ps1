@@ -79,6 +79,115 @@ try {
             $rc = 99
         }
     }
+    # Special phase prefix "CTRDUMP:*" routes to mm-container-dump.ps1
+    elseif ($phase -like 'CTRDUMP:*') {
+        $cdScript = 'D:\mm3-driver\scripts\mm-container-dump.ps1'
+        if (-not (Test-Path $cdScript)) {
+            Log "ERROR: mm-container-dump.ps1 not found at $cdScript"
+            "127|$nonce" | Set-Content $ResFile -Encoding ASCII
+            exit 127
+        }
+        Log "Using $cdScript"
+        try {
+            & $cdScript
+            $rc = $LASTEXITCODE
+            if ($null -eq $rc) { $rc = 0 }
+        } catch {
+            Log "Exception running mm-container-dump.ps1: $_"
+            $rc = 99
+        }
+    }
+    # Special phase prefix "DEVMGR:*" routes to mm-devmgr-dump.ps1
+    elseif ($phase -like 'DEVMGR:*') {
+        $dmScript = 'D:\mm3-driver\scripts\mm-devmgr-dump.ps1'
+        if (-not (Test-Path $dmScript)) {
+            Log "ERROR: mm-devmgr-dump.ps1 not found at $dmScript"
+            "127|$nonce" | Set-Content $ResFile -Encoding ASCII
+            exit 127
+        }
+        Log "Using $dmScript"
+        try {
+            & $dmScript
+            $rc = $LASTEXITCODE
+            if ($null -eq $rc) { $rc = 0 }
+        } catch {
+            Log "Exception running mm-devmgr-dump.ps1: $_"
+            $rc = 99
+        }
+    }
+    # Special phase prefix "EVTLOG:*" routes to mm-pnp-eventlog.ps1
+    elseif ($phase -like 'EVTLOG:*') {
+        $eScript = 'D:\mm3-driver\scripts\mm-pnp-eventlog.ps1'
+        if (-not (Test-Path $eScript)) {
+            Log "ERROR: mm-pnp-eventlog.ps1 not found at $eScript"
+            "127|$nonce" | Set-Content $ResFile -Encoding ASCII
+            exit 127
+        }
+        Log "Using $eScript"
+        try {
+            & $eScript
+            $rc = $LASTEXITCODE
+            if ($null -eq $rc) { $rc = 0 }
+        } catch {
+            Log "Exception running mm-pnp-eventlog.ps1: $_"
+            $rc = 99
+        }
+    }
+    # Special phase prefix "SVCCTRL:Action" routes to mm-svc-control.ps1
+    elseif ($phase -like 'SVCCTRL:*') {
+        $svcAction = ($phase -split ':', 2)[1]
+        $svcScript = 'D:\mm3-driver\scripts\mm-svc-control.ps1'
+        if (-not (Test-Path $svcScript)) {
+            Log "ERROR: mm-svc-control.ps1 not found at $svcScript"
+            "127|$nonce" | Set-Content $ResFile -Encoding ASCII
+            exit 127
+        }
+        Log "Using $svcScript Action=$svcAction"
+        try {
+            & $svcScript -Action $svcAction
+            $rc = $LASTEXITCODE
+            if ($null -eq $rc) { $rc = 0 }
+        } catch {
+            Log "Exception running mm-svc-control.ps1: $_"
+            $rc = 99
+        }
+    }
+    # Special phase prefix "HIDREAD:*" routes to mm-hid-feature-read.ps1
+    elseif ($phase -like 'HIDREAD:*') {
+        $hrScript = 'D:\mm3-driver\scripts\mm-hid-feature-read.ps1'
+        if (-not (Test-Path $hrScript)) {
+            Log "ERROR: mm-hid-feature-read.ps1 not found at $hrScript"
+            "127|$nonce" | Set-Content $ResFile -Encoding ASCII
+            exit 127
+        }
+        Log "Using $hrScript"
+        try {
+            & $hrScript
+            $rc = $LASTEXITCODE
+            if ($null -eq $rc) { $rc = 0 }
+        } catch {
+            Log "Exception running mm-hid-feature-read.ps1: $_"
+            $rc = 99
+        }
+    }
+    # Special phase prefix "BATPROBE:*" routes to mm-battery-probe-deep.ps1
+    elseif ($phase -like 'BATPROBE:*') {
+        $bpScript = 'D:\mm3-driver\scripts\mm-battery-probe-deep.ps1'
+        if (-not (Test-Path $bpScript)) {
+            Log "ERROR: mm-battery-probe-deep.ps1 not found at $bpScript"
+            "127|$nonce" | Set-Content $ResFile -Encoding ASCII
+            exit 127
+        }
+        Log "Using $bpScript"
+        try {
+            & $bpScript
+            $rc = $LASTEXITCODE
+            if ($null -eq $rc) { $rc = 0 }
+        } catch {
+            Log "Exception running mm-battery-probe-deep.ps1: $_"
+            $rc = 99
+        }
+    }
     # Special phase prefix "DISCOVER:Target" routes to mm-bthport-discover.ps1
     elseif ($phase -like 'DISCOVER:*') {
         $target = ($phase -split ':', 2)[1]

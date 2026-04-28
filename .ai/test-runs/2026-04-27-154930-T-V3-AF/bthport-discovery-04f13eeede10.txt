@@ -1,5 +1,5 @@
 ﻿[discover] Device root: HKLM:\SYSTEM\CurrentControlSet\Services\BTHPORT\Parameters\Devices\04f13eeede10
-[discover] Captured: 2026-04-28 09:38:46
+[discover] Captured: 2026-04-28 09:55:54
 
 KEY: HKEY_LOCAL_MACHINE\SYSTEM\CurrentControlSet\Services\BTHPORT\Parameters\Devices\04f13eeede10
   VAL: COD (kind=DWord size=4)
