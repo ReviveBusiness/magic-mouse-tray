@@ -2,14 +2,14 @@
 title: PSN-0001 — Magic Mouse HID Battery Reader Driver Binding
 type: problem-session-note
 psn_id: PSN-0001
-version: 1.2.0
+version: 1.3.0
 status: active
 linked_prd: PRD-184
 linked_repo: ReviveBusiness/magic-mouse-tray
 linked_issues: [2, 3, 4]
 opened: 2026-04-17
 last_updated: 2026-04-27
-sessions_logged: 7
+sessions_logged: 8
 close_out_gate: ".ai/playbooks/autonomous-agent-team.md#per-phase-close-out-gate-non-skippable"
 session_protocol: |
   Every session that touches PRD-184 work MUST end by running through the
@@ -37,6 +37,9 @@ Apple Magic Mouse v2/2024 on Windows 11 requires the `AppleWirelessMouse64` HID 
 | H-002 | worst-state-wins semantics for DriverHealthChecker returns correct binding state | **CONFIRMED** | 2026-04-22 | PR fix/issue-4-driver-priority-v2, commit cb49ece. Multiple HID devices share same VID — any unbound device = broken state. |
 | H-003 | pnputil /restart-device safe to call unconditionally after driver install | **REJECTED** | 2026-04-26 | /restart-device strips COL02 (same as /disable+/enable with filter active). Removed from startup-repair.ps1. |
 | H-004 | Writing LowerFilters to driver instance key (Control\Class\{GUID}\NNNN) resolves error 1077 at boot | **REJECTED** | Prior sessions | "LowerFilters in BOTH keys + DEMAND_START" tested — error 1077 persisted. PnP not loading filter regardless of registry location. Root cause unknown. KMDF driver required for scroll. |
+| H-005 | applewirelessmouse filter binding is unreliable across reboot | **REJECTED** | 2026-04-27 (M13 Cell 1) | Live registry probe post-reboot confirms LowerFilters=["applewirelessmouse"] on the HID-class GUID device; sc.exe lists service loaded. Filter binding survived. Real failure mode is descriptor-level. |
+| H-006 | Scroll path requires applewirelessmouse to inject wheel events | **REJECTED (partial)** | 2026-04-27 (M13 Cell 1) | applewirelessmouse bound but scroll still broken because COL01 HID descriptor lacks Wheel usage (0x38). Whatever wheel synthesis Apple does, HidClass has no value cap to deliver events through. |
+| H-007 | Q7 yes/no — can scroll+battery ship without a kernel driver? | **CONFIRMED-PARTIAL** | 2026-04-27 (M13 Cell 1) | Battery YES — COL02 vendor TLC works without any filter intervention. Scroll requires either (4A) userland daemon synthesizing wheel events from raw multi-touch, or (4C) descriptor patch on cached SDP TLV to add Wheel usage to COL01. Final verdict pending Phase 4 cell. |
 
 ## Decisions Made
 
@@ -48,29 +51,20 @@ Apple Magic Mouse v2/2024 on Windows 11 requires the `AppleWirelessMouse64` HID 
 
 ## Next Session Brief
 
-**Current state (2026-04-27, end of Session 7 — M13 Phase 1 complete)**:
-- M13 Phase 0 + Phase 1 EXECUTED. Three orphans cleared: MagicMouseDriver service key, USB MI_01 LowerFilters="MagicMouse", MAGICMOUSERAWPDO PnP node. Scroll path intact across 5 verify points.
-- Reg-diff verification baked in as MOP gate (`scripts/mm-reg-diff.sh` + `scripts/mm-phase1-closeout.sh`). Plan v1.1 makes it required at every registry-mutating phase boundary.
-- Two cleanup-script bugs fixed mid-session: B1 (COL01 health check matched stale orphan instead of working parent HID PDO) + B2 (`\\` vs `\` in `-like` pattern caused silent no-op).
-- Windows Update paused 7 days (until 2026-05-04T20:45Z) to prevent mid-test driver swaps.
-- Driver fingerprints captured: bthport.sys 10.0.26100.1, HidBth.sys 10.0.26100.1, applewirelessmouse.sys 6.1.7700.0.
-- Stale `HID\{00001124-...}_VID&0001004C_PID&0323&COL01\...` Status=Unknown PDO still present — out of cleanup-script scope, deemed benign for now.
+**Current state (2026-04-27 post-Cell-1)**:
+- M13 Phase 2 Cell 1 (T-V3-AF) complete. applewirelessmouse bound + battery working + scroll broken. COL01 lacks Wheel usage in HID descriptor. ETW pre/post-reboot captures + 9 Procmon Bootlog rollover files archived in .ai/test-runs/2026-04-27-154930-T-V3-AF/. Filter v1 (m13-procmon-filter.PMF) wired into postreboot helper for Cell 2+.
 
-**Files to read first (Phase 2 prep)**:
-- `.ai/test-runs/m13-phase0/phase1-report.md` — full Phase 1 audit + outstanding G1 decisions
-- `.ai/test-runs/m13-phase0/reg-diff.md` — mutation audit report
-- `.ai/test-plans/m13-baseline-and-cache-test.md` v1.1 — updated plan with reg-diff gate
-- `.ai/playbooks/autonomous-agent-team.md` v1.1 — added AP-12/13/14/15 from this session
+**Files to read first**:
+- `Personal/magic-mouse-tray/.ai/test-runs/2026-04-27-154930-T-V3-AF/cell1-report.md` (cell findings)
+- `accept-test.json` (5/8 PASS, AC-01 false-neg)
+- `live-driver-state.json` (current driver state)
 
 **Do NOT retry** (rejected hypotheses still apply):
-- H-001 ReportDescriptor as binding signal | H-003 `pnputil /restart-device` near active applewirelessmouse | H-004 LowerFilters in driver instance key fixing error 1077
+- H-001 ReportDescriptor as binding signal | H-003 `pnputil /restart-device` near active applewirelessmouse | H-004 LowerFilters in driver instance key fixing error 1077 | H-005 filter binding unreliable across reboot
 
-**Phase 2 entry blockers (G1 decisions still pending)**:
-1. Confirm Phase 2 axis additions: USB-C cells (T-V3-AF-USB, T-V3-NF-USB) + sleep/wake sub-step + WM_MOUSEWHEEL count measurements
-2. Confirm Phase 4 branch collapse: 4B (registry-patch with Apple's filter) DEAD per peer-review; only 4A (no kernel + userland gesture daemon) and 4C (SDP-scanner filter + cache patch) remain viable
-3. Approve fixing kernel reviewer findings BLK-001/002, SF-003 on commit `5ff866a` BEFORE any kernel filter test in Phase 4
+**Next step**: Cell 2 (T-V3-NF) — flip to NoFilter mode, run same sequence. If COL02 already works in AppleFilter (per Cell 1), NoFilter cell tests whether scroll changes when filter is removed. Before starting, fix mm-accept-test AC-01 GUID, switch wpr GeneralProfile to focused logman trace (HIDClass + BTH-BTHPORT + Kernel-PnP), filter v2 additions (BTHPORT path, kernel-object paths).
 
-**GitHub Issues to check**: #2 (driver not binding after suspend), #3 (BTHENUM timing), #4 (driver priority logic)
+**GitHub Issues**: #2 (suspend-resume), #3 (BTHENUM timing), #4 (driver priority logic) — see Block 3 cross-references this commit.
 
 ## Session History
 
@@ -83,3 +77,4 @@ Apple Magic Mouse v2/2024 on Windows 11 requires the `AppleWirelessMouse64` HID 
 | 2026-04-26 | Session 5 | test-filter-stack.ps1 run. H-003 rejected (/restart-device strips COL02). H-004 rejected (driver instance key write doesn't fix 1077 — tested in prior sessions). startup-repair.ps1 fixed (Bugs 1+2). KMDF driver confirmed as only path for scroll. |
 | 2026-04-27 | Session 6 | Full AppleWirelessMouse.inf (DriverVer 04/21/2026 6.2.0.0) reviewed. INF confirms error 1077 root cause: HKR in .HW.AddReg = Enum key only; PnP skips AddDevice on BTHENUM reuse at boot. Function driver INF design confirmed: SPSVCINST_ASSOCSERVICE, no Include=hidbth.inf, same four hardware IDs. Pre-build validation complete (TouchpadProbe, descriptor, stack baseline, .sys hash). KMDF-PLAN.md updated with INF analysis. |
 | 2026-04-27 | Session 7 | M13 Phase 0 + Phase 1 executed. Three orphans cleared (MagicMouseDriver svc key, USB MI_01 LowerFilters="MagicMouse", MAGICMOUSERAWPDO PnP node). Two cleanup-script bugs fixed (B1 health check, B2 `\\` pattern). Reg-diff verification baked in as MOP gate (mm-reg-diff.sh, mm-phase1-closeout.sh). Plan v1.1, playbook v1.1 (+AP-12/13/14/15). Pre/post .reg backups + diff audit confirm only expected mutations. Halted at Phase 2 gate pending G1 decisions #2/#3/#4. |
+| 2026-04-27 | Session 8 | M13 Phase 2 Cell 1 (T-V3-AF) executed end-to-end. test-1 -> unpair -> repair -> test-2 -> sleep/wake -> test-2b -> reboot -> test-3. Post-reboot: pointer OK, battery OK (44%), scroll broken, AC-Pan broken. wheel-events.json event_count=0 over 3-sec gesture. Live probe: applewirelessmouse IS bound (LowerFilters on HID-class GUID confirmed) and service IS loaded -- earlier hypothesis "filter unreliable across reboots" is WRONG. Real cause: COL01 HID descriptor declares only X (Usage 0x30) + Y (0x31), NO Wheel (0x38) -- even with Apple filter, HidClass has no value cap to deliver wheel events through. Phase 4A (userland scroll daemon) trending viable; 4C (descriptor patch) alternative. Caveats: mm-accept-test AC-01 script bug -- queries SDP-service GUID {00001200-...} where LowerFilters never lives instead of HID-class GUID {00001124-...}; ignore that PASS/FAIL until script fixed. Pre-reboot ETW 14.5 GB; post-reboot ETW 1.65 GB; 9 unfiltered Procmon Bootlog rollover files at ~3 GB each (filter v1 not active for cell 1 -- wired in for cells 2-6). Block 1 close-out complete (reg-diff + state snapshot). Cell 1 report: .ai/test-runs/2026-04-27-154930-T-V3-AF/cell1-report.md. |

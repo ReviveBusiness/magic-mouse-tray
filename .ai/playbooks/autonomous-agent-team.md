@@ -1,6 +1,6 @@
 # Autonomous Agent Development Team — Playbook
 
-**Status:** v1.3 (2026-04-27, +Conditional peer-review trigger in Block 1)
+**Status:** v1.4 (2026-04-27, +AP-16 acceptance-test wrong-GUID anti-pattern from M13 Cell 1)
 **Scope:** how to run a multi-agent autonomous workflow that produces correct results the first time, instead of the iterative-discovery cycles we hit overnight.
 
 This is intended to be lifted out of `magic-mouse-tray/.ai/playbooks/` into a global location (e.g. `~/.claude/playbooks/` or `RILEY/.ai/playbooks/`) once it stabilises across one more autonomous session.
@@ -280,6 +280,11 @@ Before invoking `/peer-review` on architecture work, run a corpus-refresh step:
 **Symptom:** You take pre/post registry snapshots but never diff them, so silent no-ops (AP-13) and unintended drift go undetected until they cause downstream failures.
 **Concrete instance (M13 Phase 1):** Phase 1 plan v1.0 listed `mm-reg-export.sh` as "telemetry" but had no diff/verification step. The B2 bug only surfaced because the agent decided to run `diff` after-the-fact at the user's request. Without that, we'd have entered Phase 2 with the RAWPDO orphan still present.
 **Fix:** Reg-export ALWAYS pairs with a reg-diff gate at every mutation phase boundary. The gate produces a markdown audit report (sections + value-level changes, hex(7)/hex(1) decoded inline) and any unexpected drift halts the phase. See `scripts/mm-reg-diff.sh`.
+
+### AP-16: Acceptance test queries the wrong GUID for filter binding
+**Symptom:** AC-01 (Driver bound -- LowerFilters) reports FAIL even though `applewirelessmouse` is empirically bound and the kernel filter is loaded.
+**Concrete instance (M13 Cell 1):** `mm-accept-test.ps1` queries `HKLM\...\Enum\BTHENUM\{00001200-0000-1000-8000-00805F9B34FB}_VID&...` -- the SDP-service GUID, not the HID-class GUID. LowerFilters is set on the HID-class device `{00001124-...}` only. Result: 50+ minutes of misdiagnosis chasing "filter didn't bind on this boot" before live registry probe revealed the bug.
+**Fix:** Change the AC-01 GUID to `{00001124-0000-1000-8000-00805F9B34FB}`. Also: any acceptance test that queries a registry key by GUID should validate that the key class matches the test intent (here: filter bind tests must run against HID-class GUIDs, not BT-service GUIDs).
 
 ### AP-15: `python3 - <<HEREDOC` swallows pipeline stdin
 **Symptom:** `cmd | python3 - "$ARG" <<'PY' ... PY` runs without error but `sys.stdin.read()` returns empty.
