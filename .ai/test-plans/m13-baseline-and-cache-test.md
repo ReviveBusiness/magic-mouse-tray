@@ -1,12 +1,13 @@
 # M13 — Empirical Baseline & BTHPORT Descriptor Cache Investigation
 
-**Status:** plan v1.3 — Cell 1 (T-V3-AF) complete; COL01 descriptor root cause confirmed; Q7 trending YES via Phase 4A
+**Status:** plan v1.4 — Phase 4-Omega discovery + Experiment A breakthrough + 65-min persistence monitor; CRITICAL: Phase 4-Omega restores State A only, does NOT solve mutual exclusion; Phase 4A required for PRD-184 battery-readout feature
 **Owner:** PRD-184
 **Estimated effort:** 1.5h prep + ~4h execution (Phase 2 alone now ~2.5h with new axes)
 **Pre-flight gate:** see `.ai/playbooks/autonomous-agent-team.md` checklist sections A-E.
 **v1.0 → v1.1 (2026-04-27):** Phase 1 ran; reg-diff verification gate added; orchestrator + bundle script added; cleanup script B1 (COL01 health check) + B2 (RAWPDO `\\` pattern) bugs fixed.
 **v1.1 → v1.2 (2026-04-27):** G1 user sign-off — #1 (test-matrix axis additions: USB-C cells + sleep/wake + WM_MOUSEWHEEL) APPROVED, #2 (Phase 4 branch collapse: 4B dead per peer-review) APPROVED, #3 (kernel bug fix gate BLK-001/002, SF-003) DEFERRED to post-Phase-2 evaluation. Phase 2 test matrix expanded to 6 cells; Phase 4 reduced to 4A + 4C. See `.ai/test-runs/m13-phase0/phase1-report.md`.
 **v1.2 -> v1.3 (2026-04-27):** Cell 1 (T-V3-AF) executed end-to-end. Empirical Q7 trending YES via Phase 4A path. Scroll-broken root cause: COL01 HID descriptor lacks Wheel usage (0x38), not filter binding. Battery confirmed working without intervention. mm-accept-test AC-01 script bug discovered (queries wrong GUID -- false negative). Filter v2 additions backlogged. logman-focused-trace alternative to wpr GeneralProfile backlogged. btsnoop logging scheduled for Phase 4 entry. See `.ai/test-runs/2026-04-27-154930-T-V3-AF/cell1-report.md`.
+**v1.3 -> v1.4 (2026-04-27 evening):** Phase 3 cache decode complete; Experiment A breakthrough confirmed Disable+Enable BTHENUM recycle restores filter to active. 65-min persistence monitor showed unified mode stable in idle. CRITICAL CLARIFICATION: Phase 4-Omega only restores State A (scroll works, battery N/A) -- does NOT solve mutual exclusion of scroll vs battery. PRD-184's battery-readout feature requires Phase 4A (userland daemon) or Phase 4C (cache patch). Cells 2-6 deprioritized -- not blocking; defense-in-depth only.
 
 ## Why M13
 

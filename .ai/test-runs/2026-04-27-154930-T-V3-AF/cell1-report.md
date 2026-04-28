@@ -109,3 +109,9 @@ Source: phase3-cache-decoded.md, synthesis-stage4.md
 
 **M-4**: NEW correction not in original report. My initial reading of "battery N/A pre-reboot, 44% post-reboot" as device behavior was wrong. The cache HAS battery data (Report 0x90 confirmed in Phase 3 decode). What changes pre/post-reboot is whether applewirelessmouse blocks Feature 0x47 reads. When filter active (pre-reboot) = Feature trap blocks battery reads (FEATURE_BLOCKED err=87). When filter inert (post-reboot) = cache surfaces unmodified, battery readable at 44%. One mechanism (Feature trap) explains both the err=87 blocking and the post-reboot recovery.
 Source: phase3-cache-decoded.md (Report 0x90 on UP=0xFF00 U=0x14 confirmed in cache)
+
+## Post-Phase-4-investigation corrections (2026-04-27 evening)
+
+**M-5** (NEW): Phase 4-Omega alone does NOT enable battery-while-scrolling. State A (recycle target) has scroll-works + battery-N/A. Mutual exclusion is fundamental to Apple's filter design when the filter is active. Phase 4A or 4C required for both features simultaneously.
+
+**M-6** (NEW): Experiment A persistence monitor confirmed State A holds at least 65 min idle. Cell 1's '43-min flip' may have been triggered by orchestrator activity rather than passive idle-out. Selective Suspend hypothesis (H-alpha) remains unconfirmed but moot given recycle availability.

@@ -2,14 +2,14 @@
 title: PSN-0001 — Magic Mouse HID Battery Reader Driver Binding
 type: problem-session-note
 psn_id: PSN-0001
-version: 1.4.0
+version: 1.5.0
 status: active
 linked_prd: PRD-184
 linked_repo: ReviveBusiness/magic-mouse-tray
 linked_issues: [2, 3, 4]
 opened: 2026-04-17
 last_updated: 2026-04-27
-sessions_logged: 9
+sessions_logged: 10
 close_out_gate: ".ai/playbooks/autonomous-agent-team.md#per-phase-close-out-gate-non-skippable"
 session_protocol: |
   Every session that touches PRD-184 work MUST end by running through the
@@ -39,7 +39,8 @@ Apple Magic Mouse v2/2024 on Windows 11 requires the `AppleWirelessMouse64` HID 
 | H-004 | Writing LowerFilters to driver instance key (Control\Class\{GUID}\NNNN) resolves error 1077 at boot | **REJECTED** | Prior sessions | "LowerFilters in BOTH keys + DEMAND_START" tested — error 1077 persisted. PnP not loading filter regardless of registry location. Root cause unknown. KMDF driver required for scroll. |
 | H-005 | applewirelessmouse filter binding is unreliable across reboot | **REJECTED** | 2026-04-27 (Cell 1 + Phase 3) | Registry binding (LowerFilters) survives reboot. The runtime BEHAVIOR (Win32-layer wheel-event synthesis) becomes inert post-reboot despite filter being loaded. Real failure mode is runtime, not binding. |
 | H-006 | Scroll path requires applewirelessmouse to inject wheel events | **CONFIRMED** | 2026-04-27 (Phase 3) | Cache has NO Wheel usage. applewirelessmouse runs Win32-layer input injection (Linux hid-magicmouse.c pattern) -- not descriptor augmentation. When filter inert, no Wheel exists anywhere in the stack. |
-| H-007 | Q7 yes/no -- can scroll+battery ship without a kernel driver? | **CONFIRMED YES via Phase 4A** | 2026-04-27 (Phase 3) | Battery is in cache (Report 0x90 on UP=0xFF00 U=0x14) -- works without filter. Scroll requires userland gesture-to-wheel daemon reading raw multi-touch from Report 0x12 + SendInput WM_MOUSEWHEEL. Phase 4A ships PRD-184 without a kernel driver. Phase 4C (cache patch with Wheel + AC-Pan) is documented alternative but lower priority. |
+| H-007 | Q7 yes/no -- can scroll+battery ship without a kernel driver? | **CONFIRMED YES via Phase 4A** | 2026-04-27 (Phase 3 + Experiment A) | Cache has battery TLC (Report 0x90 on COL02 vendor TLC UP=0xFF00 U=0x14) -- works without filter. Scroll requires either (4A) userland gesture-to-wheel daemon reading raw multi-touch from Report 0x12 + SendInput WM_MOUSEWHEEL, or (4C) cache patch with Wheel + AC-Pan items added to Mouse TLC. Phase 4-Omega alone does NOT enable both -- it only restores State A (scroll works, battery N/A). |
+| H-009 | A simple PnP recycle (Disable+Enable BTHENUM) restores filter to active state from inert | **CONFIRMED** | 2026-04-27 (Experiment A) | Recycle reliably flips State B -> State A in ~5 sec. 65-min idle persistence monitor confirmed State A holds without immediate degradation. Tray app can self-heal by detecting State B and triggering recycle via existing MM-Dev-Cycle queue. C# prototype committed in e323df6. |
 | H-008 | applewirelessmouse traps Feature reports as scroll-synthesis mechanism | **CONFIRMED-PARTIAL** | 2026-04-27 (Cell 1 tray-debug evidence) | Tray-debug shows FEATURE_BLOCKED err=87 on Feature 0x47 polls when filter active (pre-reboot). When filter inert (post-reboot), Feature 0x47 polls succeed with battery data. Feature trap = scroll synthesis enabler AND COL02 read blocker (one mechanism, two effects). |
 
 ## Decisions Made
@@ -52,19 +53,25 @@ Apple Magic Mouse v2/2024 on Windows 11 requires the `AppleWirelessMouse64` HID 
 
 ## Next Session Brief
 
-**Current state (2026-04-27 post-Phase-3)**:
-- Phase 3 complete (commit 6b4453e). BTHPORT cache decoded: 135-byte HID descriptor with Mouse (X+Y, NO Wheel) + Vendor Feature (64-byte) + Vendor Battery (Report 0x90). Q1=YES Q2=NO. Q7=YES via Phase 4A (userland gesture-to-wheel daemon). H-006 CONFIRMED (cache has no Wheel -- applewirelessmouse runs Win32-layer input injection). H-007 CONFIRMED YES via 4A. Cells 2-6 deprioritized as defense-in-depth only. Phase 4A is PRD-184 path forward.
+**Current state (2026-04-27 evening post-Phase-4 investigation)**:
+- Phase 3 complete (commit 6b4453e). BTHPORT cache decoded: 135-byte HID descriptor with Mouse (X+Y, NO Wheel) + Vendor Feature (64-byte) + Vendor Battery (Report 0x90). Q1=YES Q2=NO.
+- Experiment A confirmed: Disable+Enable BTHENUM recycle reliably flips State B (filter inert, scroll broken, battery readable) -> State A (filter active, scroll works, battery N/A) in ~5 sec.
+- 65-min idle persistence monitor: State A held without degradation.
+- CRITICAL CLARIFICATION: Phase 4-Omega restores State A -- the SAME state the user is in at steady-state. It does NOT solve mutual exclusion of scroll vs battery. PRD-184's primary feature (battery readout) requires Phase 4A (userland scroll daemon, NoFilter mode) or Phase 4C (cache patch). Phase 4-Omega alone is insufficient for PRD-184.
+- C# prototype (SelfHealManager.cs / SelfHealRequest.cs) committed at e323df6 but NOT YET WIRED into TrayApp.cs pending user decision.
 
 **Files to read first**:
-- `.ai/test-runs/2026-04-27-154930-T-V3-AF/phase3-cache-decoded.md` (Phase 3 cache decode findings)
-- `.ai/test-runs/2026-04-27-154930-T-V3-AF/cell1-report.md` (with M-1/M-2/M-3/M-4 corrections appended)
-- `.ai/test-runs/2026-04-27-154930-T-V3-AF/independent-analysis-prep/synthesis-stage4.md`
-- `.ai/test-runs/2026-04-27-154930-T-V3-AF/independent-analysis-prep/agent-a-*.md`, `agent-b-*.md`, `agent-c-*.md`
+- `.ai/test-runs/2026-04-27-154930-T-V3-AF/cell1-report.md` (with M-1 through M-6 corrections)
+- `.ai/test-runs/2026-04-27-154930-T-V3-AF/phase3-cache-decoded.md`
+- `.ai/test-runs/2026-04-27-154930-T-V3-AF/cell1-finding-unified-to-split-flip.md`
+- `.ai/test-runs/2026-04-27-154930-T-V3-AF/exp-a-recycle/finding.md`
+- `PHASE4-OMEGA-PLAN.md`
+- `keyboard-and-regdiff-findings.md` (when subagent finishes)
 
 **Do NOT retry** (rejected hypotheses still apply):
-- H-001 ReportDescriptor as binding signal | H-003 `pnputil /restart-device` near active applewirelessmouse | H-004 LowerFilters in driver instance key fixing error 1077 | H-005 filter binding unreliable across reboot (REJECTED -- binding survives; runtime inert) | H-006 confirmed (no descriptor augmentation path)
+- H-001 ReportDescriptor as binding signal | H-003 `pnputil /restart-device` near active applewirelessmouse | H-004 LowerFilters in driver instance key fixing error 1077 | H-005 filter binding unreliable across reboot (REJECTED -- binding survives; runtime inert) | H-006 confirmed (no descriptor augmentation path) | H-007 CONFIRMED YES via 4A (not via Phase 4-Omega alone) | H-008 CONFIRMED-PARTIAL | H-009 CONFIRMED
 
-**Next step**: Phase 4A daemon prototype design + build. Userland gesture-to-wheel daemon reads raw multi-touch from Report 0x12 + injects WM_MOUSEWHEEL via SendInput. Battery already in cache (Report 0x90 on UP=0xFF00 U=0x14) -- accessible via existing tray without filter.
+**Next step**: User decides Phase 4-Omega alone vs Phase 4A vs Phase 4-Omega+4A combined. Phase 4A required for actual battery delivery in PRD-184; Phase 4-Omega is auto-recovery for the regression (State B -> State A) only. C# prototype at e323df6 ready to wire once direction confirmed.
 
 **GitHub Issues**: #2 (suspend-resume), #3 (BTHENUM timing), #4 (driver priority logic) -- see Block 3 cross-references this commit.
 
@@ -81,3 +88,4 @@ Apple Magic Mouse v2/2024 on Windows 11 requires the `AppleWirelessMouse64` HID 
 | 2026-04-27 | Session 7 | M13 Phase 0 + Phase 1 executed. Three orphans cleared (MagicMouseDriver svc key, USB MI_01 LowerFilters="MagicMouse", MAGICMOUSERAWPDO PnP node). Two cleanup-script bugs fixed (B1 health check, B2 `\\` pattern). Reg-diff verification baked in as MOP gate (mm-reg-diff.sh, mm-phase1-closeout.sh). Plan v1.1, playbook v1.1 (+AP-12/13/14/15). Pre/post .reg backups + diff audit confirm only expected mutations. Halted at Phase 2 gate pending G1 decisions #2/#3/#4. |
 | 2026-04-27 | Session 8 | M13 Phase 2 Cell 1 (T-V3-AF) executed end-to-end. test-1 -> unpair -> repair -> test-2 -> sleep/wake -> test-2b -> reboot -> test-3. Post-reboot: pointer OK, battery OK (44%), scroll broken, AC-Pan broken. wheel-events.json event_count=0 over 3-sec gesture. Live probe: applewirelessmouse IS bound (LowerFilters on HID-class GUID confirmed) and service IS loaded -- earlier hypothesis "filter unreliable across reboots" is WRONG. Real cause: COL01 HID descriptor declares only X (Usage 0x30) + Y (0x31), NO Wheel (0x38) -- even with Apple filter, HidClass has no value cap to deliver wheel events through. Phase 4A (userland scroll daemon) trending viable; 4C (descriptor patch) alternative. Caveats: mm-accept-test AC-01 script bug -- queries SDP-service GUID {00001200-...} where LowerFilters never lives instead of HID-class GUID {00001124-...}; ignore that PASS/FAIL until script fixed. Pre-reboot ETW 14.5 GB; post-reboot ETW 1.65 GB; 9 unfiltered Procmon Bootlog rollover files at ~3 GB each (filter v1 not active for cell 1 -- wired in for cells 2-6). Block 1 close-out complete (reg-diff + state snapshot). Cell 1 report: .ai/test-runs/2026-04-27-154930-T-V3-AF/cell1-report.md. |
 | 2026-04-27 | Session 9 | M13 Phase 3 BTHPORT cache decode + independent multi-agent forensic analysis on Cell 1. Phase 3 reveals cache has 135-byte HID descriptor with Mouse(X+Y, NO Wheel) + Vendor Feature + Vendor Battery (Report 0x90). Q1=YES Q2=NO. REFUTES Agent A + Agent C cache hypotheses. Independent analysis pipeline ran 3 blind agents + synthesis -- caught 2 material errors in original Cell 1 conclusions (M-1 Q7 trending YES via 4A claim was premature; M-2 kernel-debug-tail content was stale duplicate from one earlier window). applewirelessmouse must do scroll synthesis at Win32 input layer (Linux hid-magicmouse.c pattern), NOT via descriptor augmentation. Q7 answer: YES via Phase 4A. Bug found in mm-bthport-read.ps1 path assumption (CachedServices\00010000 is a value name, not subkey) -- discover.ps1 written as workaround. Tooling fixes landed: AC-01 GUID fix, kernel-log rotation, m13.wprp focused ETW profile (commit ce0dd18). Phase 3 commit 6b4453e. |
+| 2026-04-27 | Session 10 | Phase 4-Omega discovery + persistence-monitor + state clarification. Disable+Enable BTHENUM HID device reliably flips State B (filter inert, scroll broken, battery readable) -> State A (filter active, scroll works, battery N/A). 65-min persistence monitor confirmed State A held idle without degradation. CRITICAL CLARIFICATION: Phase 4-Omega restores State A which is the SAME state user is in steady-state -- it auto-recovers from the regression but does NOT solve the mutual-exclusion of scroll vs battery. PRD-184's primary feature (battery readout) requires Phase 4A (userland scroll daemon, NoFilter mode) or Phase 4C (cache patch) -- these put the device in State D or E where BOTH work simultaneously. Phase 4-Omega alone is insufficient for PRD-184. State table documented in PHASE4-OMEGA-PLAN.md and the user's chat history. C# prototype committed (e323df6) but NOT YET WIRED into TrayApp.cs pending user approval on path. Open questions: keyboard's behavior (subagent extracting), v1 mouse comparison (user pairing now), the actual trigger of State A->B (Selective Suspend H-alpha still unconfirmed but moot given Phase 4-Omega sidestep). |

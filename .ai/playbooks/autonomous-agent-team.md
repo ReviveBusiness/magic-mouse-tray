@@ -1,6 +1,6 @@
 # Autonomous Agent Development Team — Playbook
 
-**Status:** v1.4 (2026-04-27, +AP-16 acceptance-test wrong-GUID anti-pattern from M13 Cell 1)
+**Status:** v1.5 (2026-04-27 evening, +AP-17 premature feature delivery claim without state-machine analysis)
 **Scope:** how to run a multi-agent autonomous workflow that produces correct results the first time, instead of the iterative-discovery cycles we hit overnight.
 
 This is intended to be lifted out of `magic-mouse-tray/.ai/playbooks/` into a global location (e.g. `~/.claude/playbooks/` or `RILEY/.ai/playbooks/`) once it stabilises across one more autonomous session.
@@ -285,6 +285,11 @@ Before invoking `/peer-review` on architecture work, run a corpus-refresh step:
 **Symptom:** AC-01 (Driver bound -- LowerFilters) reports FAIL even though `applewirelessmouse` is empirically bound and the kernel filter is loaded.
 **Concrete instance (M13 Cell 1):** `mm-accept-test.ps1` queries `HKLM\...\Enum\BTHENUM\{00001200-0000-1000-8000-00805F9B34FB}_VID&...` -- the SDP-service GUID, not the HID-class GUID. LowerFilters is set on the HID-class device `{00001124-...}` only. Result: 50+ minutes of misdiagnosis chasing "filter didn't bind on this boot" before live registry probe revealed the bug.
 **Fix:** Change the AC-01 GUID to `{00001124-0000-1000-8000-00805F9B34FB}`. Also: any acceptance test that queries a registry key by GUID should validate that the key class matches the test intent (here: filter bind tests must run against HID-class GUIDs, not BT-service GUIDs).
+
+### AP-17: Premature feature delivery claim without state-machine analysis
+**Symptom:** Agent declares "fix complete" or "Q7 confirmed YES" based on a single observation without working through the state-machine implications. User builds wrong mental model based on agent's claim.
+**Concrete instance (M13 Cell 1, post-Experiment A):** Agent declared Phase 4-Omega as the recommended PRD-184 fix path based on "Disable+Enable BTHENUM recycles to unified mode" -- without explicitly mapping that "unified mode" = State A = scroll works + battery N/A, which is the SAME as the user's current steady-state. User reasonably assumed "unified mode" meant "everything works" and started planning approval. Agent had to walk back and clarify Phase 4-Omega alone doesn't deliver PRD-184's primary feature (battery readout).
+**Fix:** Before claiming a fix path delivers a feature, build a state table mapping each possible state to (a) what the user observes, (b) which feature is delivered, (c) which feature is missing. Cross-check that the proposed fix moves the system into a state where ALL required features are delivered, not just the one the agent was investigating.
 
 ### AP-15: `python3 - <<HEREDOC` swallows pipeline stdin
 **Symptom:** `cmd | python3 - "$ARG" <<'PY' ... PY` runs without error but `sys.stdin.read()` returns empty.
