@@ -5,10 +5,10 @@
 
 ---
 
-## TL;DR (3 bullets)
+## TL;DR (3 bullets — REVISED 2026-04-28 PM)
 
 1. **The tray's existing `splitVendorBattery` code path successfully reads v3 mouse battery 96 times on 2026-04-27** between 06:04 and 19:43 — via the **COL02 vendor TLC** HID interface (path `...&pid&0323&col02#...`, ReportID 0x90 Input report, byte 1 = battery %). Bug isn't in the tray.
-2. **The v3 mouse's HID descriptor that HidBth serves is fragile** — sometimes it includes the vendor TLC as COL02 (battery readable), sometimes it presents only a single Mouse TLC with a phantom Feature 0x47 that returns err=87. The descriptor flipped between states in a 30-min gap on 2026-04-27 around 19:43→20:13, likely correlating with a Selective Suspend wake-up cycle.
+2. **The applewirelessmouse filter has TWO mutually-exclusive operational modes** on v3 — Mode A (split) gives battery but **NO scroll synthesis**; Mode B (unified) gives scroll synthesis but **strips the battery channel**. We've never empirically observed both working simultaneously on v3 with applewirelessmouse on this system. The 96 OK battery reads on April 27 happened during a Mode A window; scroll was likely NOT working then (consistent with user's "scrolling does not work" reports from that day).
 3. **The "Apple driver traps Feature 0x47" log message in the tray is a misnomer** — there is no trap. When HidBth presents the unified-mode descriptor (single Mouse TLC + phantom 0x47), the device simply doesn't back that report ID, so HidD_GetFeature returns err=87. **No filter is doing anything malicious; the descriptor is just the wrong one.**
 
 ---
@@ -105,24 +105,32 @@ The current self-heal trigger on degradation does a BTHENUM Disable+Enable. Empi
 
 So a recycle CAN restore Descriptor A — but the device can subsequently flip to B without us knowing. Self-heal as designed targets the wrong signal.
 
-### Three viable architectures (all empirically validated paths)
+### Architecture options (REVISED 2026-04-28 PM after user correction)
 
-**Option Z — Userland-only, descriptor-aware (recommended)**
-- Keep the existing tray code paths (already correct).
-- Add a periodic check: if `splitVendorBattery` was previously detected and now isn't, run a self-heal recycle.
-- Disable Selective Suspend on the v3 BTHENUM HID PDO (registry: `SelectiveSuspendEnabled = 0` already set per snapshot). May need additional power-policy mutation.
-- No new driver, no Magic Utilities license.
-- **Cost: ~1 day to add the COL02-disappearance detector. Probably the right answer.**
+**Option Z — Userland-only, descriptor-aware — ELIMINATED**
+- ~~Originally proposed: detect Descriptor B in tray + recycle to A.~~
+- **Eliminated**: empirical correction shows Mode A doesn't synthesize scroll. Recycling to A trades scroll for battery — net regression.
+- The applewirelessmouse filter has two **mutually exclusive** modes; neither delivers both simultaneously.
 
-**Option Y — Pin descriptor via INF rewrite**
-- Investigate whether a custom INF can force HidBth to use a static descriptor.
-- Requires Apple-class driver development and signing.
-- **Cost: 1-2 weeks. Brittle.**
+**Option M12 — Custom KMDF filter (preferred for both)**
+- Replace `applewirelessmouse` with our own KMDF kernel filter.
+- Architecture: read raw multi-touch reports via the BT HID pipe AND surface the vendor 0xFF00 TLC as a separate HID interface (mimicking Mode A's vendor TLC exposure) AND synthesize wheel events (mimicking Mode B's scroll synth). Linux `hid-magicmouse.c` is the canonical reference (~50 LOC kernel C for the descriptor parsing).
+- **Cost: 2-4 weeks driver dev + WHQL signing.** Deterministic battery + scroll.
+- This is the clean root-cause fix.
 
-**Option X — Magic Utilities (user has ruled this out)**
-- Vendor product, paid subscription.
-- Empirically had v3 binding from 2026-03-18 onwards.
-- **Ruled out by user.**
+**Option preserve-INF — Magic Utilities trial → save driver files (last resort, EULA-grey)**
+- Install during 28-day trial, run mm-magicutilities-capture.ps1, validate kernel driver works without userland service, preserve INF + .sys + .cat.
+- Magic Utilities advertises both scroll + battery for v3, and was empirically bound to v3 in March 2026 per registry. **Untested on this system whether both worked simultaneously.** Validation needed.
+- **Cost: ~2 hours.** EULA grey area.
+- Last resort.
+
+**Option X — Magic Utilities (paid subscription, ruled out)**
+- ~$4-9/year per device. User has declined.
+
+**Status quo — accept "scroll yes, battery N/A"**
+- v3 mouse stays in Mode B. Tray displays "battery N/A". User keeps scroll.
+- v1 mouse + keyboard work fine independently.
+- **Zero cost.** Ship the tray as-is with the corrected log message ("Descriptor B detected; battery channel unreachable in unified mode") and move on to other work.
 
 ---
 
@@ -156,14 +164,14 @@ docs/
 
 ---
 
-## E. Recommended next step (gated)
+## E. Recommended next step (gated) — REVISED 2026-04-28 PM
 
-Before any intrusive testing, the cleanest action is:
+After eliminating Option Z, the architecture decision is between:
 
-1. **Execute one PnP recycle on v3 BTHENUM** — tests whether we can deterministically restore Descriptor A (multi-TLC). If yes → Option Z is unblocked.
-2. **Then disable Selective Suspend on v3** to see if it stays in Descriptor A long-term.
-3. **THEN** decide whether to ship the COL02-disappearance detector to the tray (small change) or move on.
+- **M12** (custom KMDF, 2-4 weeks, deterministic both)
+- **preserve-INF** (Magic Utilities trial → save driver, ~2 hours, EULA-grey, validation needed)
+- **status quo** (ship as-is with corrected log message, accept battery N/A on v3)
 
-Estimated time including verification: 30 min. No code changes, no service modifications, fully reversible.
+A single PnP recycle to validate Mode A *exists* is no longer the unblocking test — Mode A's existence was already proven by the 96 OK reads. The recycle test is now only useful if we want to *see Mode A's scroll behavior* directly (i.e. confirm scroll really does break in Mode A, closing the empirical gap).
 
-**Approval needed to proceed.**
+**Decision required**: which architecture path?

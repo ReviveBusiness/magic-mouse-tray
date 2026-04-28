@@ -105,23 +105,39 @@ One TLC → one HID interface → tray sees `unified-apple Feature 0x47` cap →
 | Standard Feature 0x47 (UP=0x06 BatteryStrength) | NO (not declared) | **YES, but phantom** (err=87) |
 | Mouse InputReportByteLength | 8 (small, just X/Y/buttons) | **47 (large, raw touch-surface data)** |
 | Battery readable via HID API | YES — `HidD_GetInputReport(0x90)` on COL02 | **NO** — every channel returns nothing (588 attempts, 0 hits) |
-| Scroll works | likely YES (filter on stack synthesizes) | YES (confirmed user-perceptible) |
+| Scroll works | **NO** (per user — never observed concurrent with battery) | YES (confirmed user-perceptible) |
 | Filter `applewirelessmouse` on stack | YES | YES (same!) |
 | Registry on `Enum\BTHENUM\…PID&0323\…\Device Parameters` | identical | identical |
 
+**Empirical correction (2026-04-28 PM, user feedback)**: We have NEVER observed v3
+mouse battery and scroll working simultaneously on this system. The 96 OK
+battery reads on 2026-04-27 06:04-19:43 happened during a Descriptor A window;
+scroll was NOT confirmed working in that window. The user's observation of
+"scrolling does not work" earlier on 2026-04-27 likely COINCIDED with that
+exact window. Modes A and B are **mutually exclusive** in their operational
+behavior, not orthogonal as the original diff section assumed.
+
 ---
 
-## E. What the filter is doing differently between A and B
+## E. What the filter is doing differently between A and B (REVISED interpretation)
 
 The filter `applewirelessmouse.sys` is on the v3 stack in BOTH states. The registry is identical. Yet the descriptor delivered to HidClass is completely different.
 
-The most consistent explanation: **the filter has two operational modes ("split" and "unified"), determined at AddDevice time by some condition we don't directly observe.** Either:
+**Mutually exclusive operational modes** — corrected per user observation:
 
-1. **Device state at AddDevice** — if the device is fully active and serving the original multi-TLC descriptor over the BT HID pipe, filter passes through (split mode = Descriptor A). If the device is in a half-asleep state and serves a stripped descriptor, filter does descriptor mutation to fabricate a "unified" view (Descriptor B).
-2. **Filter init-time branch** — possibly a one-time random branch, or based on a previous-instance state preserved across recycles.
-3. **Triggered by DSM property writes** — the 19:50 DSM event correlates with the A→B flip yesterday. DSM may write a property the filter reads at AddDevice and decides "go unified mode."
+- **Split mode (Descriptor A)** — filter is a passthrough. Vendor TLCs exposed as separate HID children. Battery readable via Input 0x90 on COL02. **No scroll synthesis** — Mouse TLC's small input report only carries X/Y/buttons; raw touch data isn't surfaced anywhere the filter is doing wheel translation from.
+- **Unified mode (Descriptor B)** — filter is active. Vendor TLCs stripped. Mouse TLC's 47-byte input report carries raw multi-touch data merged in. **Filter synthesizes wheel events from that raw touch data** via the Win32 input layer. Battery is unreachable because the vendor TLC is gone and the phantom Feature 0x47 isn't backed.
 
-Without disassembling `applewirelessmouse.sys` we can't determine which. The empirical pattern: a clean PnP recycle right after a reboot tends to land Descriptor A; subsequent re-cycles after DSM events trend toward Descriptor B.
+The two modes embody two opposite design choices Apple's filter author had to make:
+- Mode A treats v3 as a "battery-aware HID device" — preserves the device's native descriptor, lets standard HID battery utilities work, but **doesn't translate touch to wheel** because the standard mouse interface is intentionally minimal.
+- Mode B treats v3 as a "raw-touch source" — exposes everything in one Mouse TLC for downstream consumers (precision touchpad pipeline, custom userland tools) AND synthesizes wheel events itself, but **trades away the standard battery channel** because everything's merged into one report.
+
+The filter binary picks one mode at AddDevice time based on a condition we don't directly observe. Empirically:
+- Reboot followed by fresh BT pair tended to land in Mode A (per the April 27 17:43 → 19:43 window — 96 OK battery reads).
+- DSM property writes trigger A→B flips (correlation: 19:50 DSM event → 20:13 first FEATURE_BLOCKED).
+- The persistence-monitor's repeated `FLIP:VerifyOnly` recycles (which do Disable+Enable BTHENUM) on April 27 evening also landed in Mode B.
+
+**Implication**: the filter is structurally incapable of giving us both battery AND scroll simultaneously. The two modes are exclusive by design. Magic Utilities (when previously bound) presumably gives both because their custom KMDF does scroll synthesis WHILE preserving the vendor TLC's standalone HID interface — that's a different filter architecture, not just a different mode.
 
 ---
 
