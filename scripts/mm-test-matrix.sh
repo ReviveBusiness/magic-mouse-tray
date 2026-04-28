@@ -132,7 +132,29 @@ capture_log_tails() {
         tail -50 "$TRAY_LOG" > "$step_dir/tray-debug-tail.log" 2>/dev/null || true
     fi
     if [[ -f "$KERNEL_LOG" ]]; then
-        grep "MagicMouse" "$KERNEL_LOG" 2>/dev/null | tail -100 > "$step_dir/kernel-debug-tail.log" || true
+        # Advance a per-cell byte offset so each sub-step captures only NEW
+        # kernel log lines since the previous sub-step.  Without this, every
+        # sub-step grabs the same trailing 100 lines (agent-b audit finding).
+        local offset_file="$run_dir/.kernel-log-offset"
+        local prev_offset=1
+        if [[ -f "$offset_file" ]]; then
+            prev_offset=$(cat "$offset_file" 2>/dev/null || echo 1)
+            # Ensure offset is a valid positive integer; reset on corruption.
+            if ! [[ "$prev_offset" =~ ^[0-9]+$ ]] || [[ "$prev_offset" -lt 1 ]]; then
+                prev_offset=1
+            fi
+        fi
+        # tail -c +N reads from byte N onward (1-based); then filter for our
+        # driver messages and keep up to 200 lines per step.
+        tail -c "+${prev_offset}" "$KERNEL_LOG" 2>/dev/null \
+            | grep "MagicMouse" \
+            | tail -200 \
+            > "$step_dir/kernel-debug-tail.log" || true
+        # Record new end-of-file offset for next sub-step.
+        local new_offset
+        new_offset=$(wc -c < "$KERNEL_LOG" 2>/dev/null || echo "$prev_offset")
+        # Advance by 1 so next tail -c +N starts after the last byte we read.
+        echo $(( new_offset + 1 )) > "$offset_file"
     fi
     echo "[capture]   tray + kernel log tails"
 }
@@ -183,11 +205,16 @@ WPR_EXE="C:\\Windows\\System32\\wpr.exe"
 start_wpr() {
     local run_dir_win
     run_dir_win=$(wslpath -w "$run_dir")
+    local wprp_win
+    wprp_win=$(wslpath -w "$REPO_ROOT/scripts/m13.wprp")
     cat <<EOF
 
 ==== ETW capture ====
 wpr.exe requires an ADMIN PowerShell session. From your admin PowerShell, run:
-    wpr -start GeneralProfile -filemode
+    wpr -start "${wprp_win}!CustomProfile" -filemode
+
+(Falls back to GeneralProfile if m13.wprp is unavailable -- but GeneralProfile
+captures no BT/HID/PnP events; always prefer the focused profile.)
 
 Press ENTER once wpr has started (you will see "Recording is now on." or similar).
 EOF

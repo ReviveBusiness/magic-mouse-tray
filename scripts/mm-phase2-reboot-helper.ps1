@@ -244,9 +244,17 @@ if ($Phase -eq 'postreboot') {
         }
     }
 
-    # 2. Start fresh wpr
-    Write-Host "[2/4] Starting wpr ETW (GeneralProfile)" -ForegroundColor Cyan
-    & wpr.exe -start GeneralProfile -filemode 2>&1 | ForEach-Object { Write-Host "  $_" }
+    # 2. Start fresh wpr using the focused M13 BT/HID/PnP/Power profile.
+    #    m13.wprp replaces GeneralProfile which produced 14.5 GB of CPU/StackWalk
+    #    noise with zero BT/HID/PnP/WDF events (agent-b audit 2026-04-27, AP-16).
+    $m13WprpWin = Join-Path $scriptsDir "m13.wprp"
+    Write-Host "[2/4] Starting wpr ETW (m13.wprp CustomProfile)" -ForegroundColor Cyan
+    if (Test-Path $m13WprpWin) {
+        & wpr.exe -start "${m13WprpWin}!CustomProfile" -filemode 2>&1 | ForEach-Object { Write-Host "  $_" }
+    } else {
+        Write-Host "  WARN: m13.wprp not found at $m13WprpWin -- falling back to GeneralProfile" -ForegroundColor Yellow
+        & wpr.exe -start GeneralProfile -filemode 2>&1 | ForEach-Object { Write-Host "  $_" }
+    }
     if ($LASTEXITCODE -ne 0) {
         Write-Host "  WARN: wpr -start returned $LASTEXITCODE -- continuing without ETW" -ForegroundColor Yellow
     }

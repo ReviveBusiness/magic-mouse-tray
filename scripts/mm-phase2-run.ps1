@@ -153,8 +153,17 @@ try {
     }
 
     if (-not $SkipETW) {
-        Write-Host "----- Starting wpr ETW (GeneralProfile) -----" -ForegroundColor Cyan
-        & wpr.exe -start GeneralProfile -filemode
+        # Use the focused M13 BT/HID/PnP/Power profile instead of GeneralProfile.
+        # GeneralProfile produced 14.5 GB CPU/StackWalk noise, zero BT events
+        # (agent-b audit 2026-04-27). m13.wprp targets only needed providers.
+        $m13WprpWin = Join-Path $scriptsDir "m13.wprp"
+        if (Test-Path $m13WprpWin) {
+            Write-Host "----- Starting wpr ETW (m13.wprp CustomProfile) -----" -ForegroundColor Cyan
+            & wpr.exe -start "${m13WprpWin}!CustomProfile" -filemode
+        } else {
+            Write-Host "----- Starting wpr ETW (GeneralProfile fallback -- m13.wprp not found) -----" -ForegroundColor Yellow
+            & wpr.exe -start GeneralProfile -filemode
+        }
         if ($LASTEXITCODE -ne 0) {
             Write-Host "[phase2-run] WARN: wpr -start exited $LASTEXITCODE; continuing without ETW" -ForegroundColor Yellow
         } else {
