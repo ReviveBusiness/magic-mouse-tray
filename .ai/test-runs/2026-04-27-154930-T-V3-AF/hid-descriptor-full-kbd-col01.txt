@@ -1,0 +1,18 @@
+﻿=== HID descriptor dump: kbd-col01 ===
+Path: \\?\hid#{00001124-0000-1000-8000-00805f9b34fb}_vid&000205ac_pid&0239&col01#a&eaf9d13&2&0000#{4d1e55b2-f16f-11cf-88cb-001111000030}\kbd
+Captured: 2026-04-28 17:31:19
+
+HIDP_CAPS:
+  TLC: UsagePage=0x0001 Usage=0x0006
+  Report lengths: Input=9 Output=2 Feature=0
+  Counts: LinkColl=1 InpBC=2 InpVC=0 OutBC=1 OutVC=0 FeatBC=0 FeatVC=0
+
+## Link Collection Nodes (1)
+  [0] UP=0x0001 U=0x0006 type=Application parent=0 children=0 firstChild=0 nextSibling=0
+
+## Input Button Caps (2)
+  [0] RID=0x01 UP=0x0007 Usage=MIN=0xE0 MAX=0xE7 BitField=0x0002 LinkColl=0 DataIdx=0-7
+  [1] RID=0x01 UP=0x0007 Usage=MIN=0x0 MAX=0xFF BitField=0x0000 LinkColl=0 DataIdx=8-263
+
+## Output Button Caps (1)
+  [0] RID=0x01 UP=0x0008 Usage=MIN=0x1 MAX=0x5 BitField=0x0002 LinkColl=0 DataIdx=0-4

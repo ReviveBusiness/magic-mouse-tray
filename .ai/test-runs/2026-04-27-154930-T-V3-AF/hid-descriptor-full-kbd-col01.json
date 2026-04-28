@@ -1,0 +1,64 @@
+﻿{
+    "Path":  "\\\\?\\hid#{00001124-0000-1000-8000-00805f9b34fb}_vid\u0026000205ac_pid\u00260239\u0026col01#a\u0026eaf9d13\u00262\u00260000#{4d1e55b2-f16f-11cf-88cb-001111000030}\\kbd",
+    "Caps":  {
+                 "TLC_UP":  1,
+                 "OutLen":  2,
+                 "FeatLen":  0,
+                 "InLen":  9,
+                 "NIVC":  0,
+                 "NIBC":  2,
+                 "NFBC":  0,
+                 "NOBC":  1,
+                 "NOVC":  0,
+                 "NLnk":  1,
+                 "NFVC":  0,
+                 "TLC_U":  6
+             },
+    "LinkCollections":  [
+                            {
+                                "Children":  0,
+                                "NextSibling":  0,
+                                "Idx":  0,
+                                "FirstChild":  0,
+                                "Parent":  0,
+                                "UP":  1,
+                                "Type":  "Application",
+                                "U":  6
+                            }
+                        ],
+    "ButtonCaps":  [
+                       {
+                           "RID":  1,
+                           "UsageMin":  224,
+                           "IsRange":  true,
+                           "UP":  7,
+                           "ReportType":  "Input",
+                           "UsageMax":  231,
+                           "BitField":  2,
+                           "LinkColl":  0
+                       },
+                       {
+                           "RID":  1,
+                           "UsageMin":  0,
+                           "IsRange":  true,
+                           "UP":  7,
+                           "ReportType":  "Input",
+                           "UsageMax":  255,
+                           "BitField":  0,
+                           "LinkColl":  0
+                       },
+                       {
+                           "RID":  1,
+                           "UsageMin":  1,
+                           "IsRange":  true,
+                           "UP":  8,
+                           "ReportType":  "Output",
+                           "UsageMax":  5,
+                           "BitField":  2,
+                           "LinkColl":  0
+                       }
+                   ],
+    "ValueCaps":  [
+
+                  ]
+}
