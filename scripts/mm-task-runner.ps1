@@ -61,8 +61,49 @@ try {
 
     $rc = 0
 
+    # Special phase prefix "SNAPSHOT:Stack" routes to mm-bt-stack-snapshot.ps1
+    if ($phase -like 'SNAPSHOT:*') {
+        $snapScript = 'D:\mm3-driver\scripts\mm-bt-stack-snapshot.ps1'
+        if (-not (Test-Path $snapScript)) {
+            Log "ERROR: mm-bt-stack-snapshot.ps1 not found at $snapScript"
+            "127|$nonce" | Set-Content $ResFile -Encoding ASCII
+            exit 127
+        }
+        Log "Using $snapScript"
+        try {
+            & $snapScript
+            $rc = $LASTEXITCODE
+            if ($null -eq $rc) { $rc = 0 }
+        } catch {
+            Log "Exception running mm-bt-stack-snapshot.ps1: $_"
+            $rc = 99
+        }
+    }
+    # Special phase prefix "DISCOVER:Target" routes to mm-bthport-discover.ps1
+    elseif ($phase -like 'DISCOVER:*') {
+        $target = ($phase -split ':', 2)[1]
+        $discScript = 'D:\mm3-driver\scripts\mm-bthport-discover.ps1'
+        if (-not (Test-Path $discScript)) {
+            Log "ERROR: mm-bthport-discover.ps1 not found at $discScript"
+            "127|$nonce" | Set-Content $ResFile -Encoding ASCII
+            exit 127
+        }
+        Log "Using $discScript Target=$target"
+        try {
+            if ($target -eq 'All') {
+                & $discScript -AllDevices
+            } else {
+                & $discScript -Mac $target
+            }
+            $rc = $LASTEXITCODE
+            if ($null -eq $rc) { $rc = 0 }
+        } catch {
+            Log "Exception running mm-bthport-discover.ps1: $_"
+            $rc = 99
+        }
+    }
     # Special phase prefix "FLIP:Mode" routes to mm-state-flip.ps1 (LowerFilters mutation)
-    if ($phase -like 'FLIP:*') {
+    elseif ($phase -like 'FLIP:*') {
         $mode = ($phase -split ':', 2)[1]
         $flipScript = 'D:\mm3-driver\scripts\mm-state-flip.ps1'
         if (-not (Test-Path $flipScript)) {

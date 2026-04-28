@@ -17,7 +17,8 @@
 [CmdletBinding()]
 param(
     [string]$Mac = 'd0c050cc8c4d',
-    [string]$OutDir = '\\wsl.localhost\Ubuntu\home\lesley\projects\Personal\magic-mouse-tray\.ai\test-runs\2026-04-27-154930-T-V3-AF'
+    [string]$OutDir = '\\wsl.localhost\Ubuntu\home\lesley\projects\Personal\magic-mouse-tray\.ai\test-runs\2026-04-27-154930-T-V3-AF',
+    [switch]$AllDevices
 )
 
 $ErrorActionPreference = 'Continue'
@@ -33,31 +34,8 @@ if (-not (Test-IsAdmin)) {
 }
 
 if (-not (Test-Path $OutDir)) { New-Item -Path $OutDir -ItemType Directory -Force | Out-Null }
-$txtOut = Join-Path $OutDir 'bthport-discovery.txt'
-$jsonOut = Join-Path $OutDir 'bthport-discovery.json'
-
-# Try both case variants for the device subkey
-$candidates = @(
-    "HKLM:\SYSTEM\CurrentControlSet\Services\BTHPORT\Parameters\Devices\$Mac",
-    "HKLM:\SYSTEM\CurrentControlSet\Services\BTHPORT\Parameters\Devices\$($Mac.ToUpper())",
-    "HKLM:\SYSTEM\CurrentControlSet\Services\BTHPORT\Parameters\Keys\$Mac",
-    "HKLM:\SYSTEM\CurrentControlSet\Services\BTHPORT\Parameters\Keys\$($Mac.ToUpper())"
-)
-
-$deviceRoot = $null
-foreach ($c in $candidates) {
-    if (Test-Path $c) { $deviceRoot = $c; break }
-}
-if (-not $deviceRoot) {
-    Write-Host "[discover] ERROR: no BTHPORT device key found for $Mac" -ForegroundColor Red
-    exit 2
-}
 
 $lines = @()
-$lines += "[discover] Device root: $deviceRoot"
-$lines += "[discover] Captured: $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')"
-$lines += ""
-
 $entries = @()
 
 function Walk-Key {
@@ -118,10 +96,96 @@ function Walk-Key {
     }
 }
 
-Walk-Key -Path $deviceRoot
+function Find-DeviceRoot {
+    param([string]$DevMac)
+    $cands = @(
+        "HKLM:\SYSTEM\CurrentControlSet\Services\BTHPORT\Parameters\Devices\$DevMac",
+        "HKLM:\SYSTEM\CurrentControlSet\Services\BTHPORT\Parameters\Devices\$($DevMac.ToUpper())"
+    )
+    foreach ($c in $cands) { if (Test-Path $c) { return $c } }
+    return $null
+}
+
+function Discover-OneDevice {
+    param([string]$DevMac, [string]$OutFileBase)
+    $script:lines = @()
+    $script:entries = @()
+    $root = Find-DeviceRoot -DevMac $DevMac
+    if (-not $root) {
+        Write-Host "[discover] ERROR: no BTHPORT device key found for $DevMac" -ForegroundColor Red
+        return $false
+    }
+    $script:lines += "[discover] Device root: $root"
+    $script:lines += "[discover] Captured: $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')"
+    $script:lines += ""
+    Walk-Key -Path $root
+    Walk-Key -Path "HKLM:\SYSTEM\CurrentControlSet\Services\BTHPORT\Parameters\Keys\$DevMac" -Depth 0
+
+    $txtOut = "$OutFileBase.txt"
+    $jsonOut = "$OutFileBase.json"
+    $script:lines | Set-Content -Path $txtOut -Encoding UTF8
+    $script:entries | ConvertTo-Json -Depth 6 | Set-Content -Path $jsonOut -Encoding UTF8
+    Write-Host "[discover] $DevMac -> $txtOut ($($script:entries.Count) entries)"
+    return $true
+}
+
+if ($AllDevices) {
+    $siblings = Get-ChildItem "HKLM:\SYSTEM\CurrentControlSet\Services\BTHPORT\Parameters\Devices" -ErrorAction SilentlyContinue
+    Write-Host "[discover] AllDevices mode: $($siblings.Count) paired BT device(s) found"
+    $summary = @()
+    foreach ($sib in $siblings) {
+        $devMac = $sib.PSChildName
+        $base = Join-Path $OutDir "bthport-discovery-$devMac"
+        $ok = Discover-OneDevice -DevMac $devMac -OutFileBase $base
+        if ($ok) {
+            # also extract the FriendlyName/Name + VID/PID from the device key for the index
+            try {
+                $devKey = Get-Item $sib.PSPath
+                $nameBytes = $devKey.GetValue('Name', $null)
+                $name = if ($nameBytes -is [byte[]]) {
+                    ([System.Text.Encoding]::UTF8.GetString($nameBytes)).TrimEnd([char]0)
+                } else { '' }
+                $devVid = $devKey.GetValue('VID', $null)
+                $devPid = $devKey.GetValue('PID', $null)
+                $cachedHasBlob = $false
+                $cs = Join-Path $sib.PSPath 'CachedServices'
+                if (Test-Path $cs) {
+                    $csk = Get-Item $cs
+                    if ($csk.GetValueNames().Count -gt 0) { $cachedHasBlob = $true }
+                }
+                $summary += [pscustomobject]@{
+                    Mac = $devMac
+                    Name = $name
+                    VID = if ($null -ne $devVid) { '0x{0:X4}' -f $devVid } else { '' }
+                    PID = if ($null -ne $devPid) { '0x{0:X4}' -f $devPid } else { '' }
+                    HasCachedBlob = $cachedHasBlob
+                    OutFile = "bthport-discovery-$devMac.txt"
+                }
+            } catch {
+                Write-Host "  WARN: could not summarize $devMac : $_" -ForegroundColor Yellow
+            }
+        }
+    }
+    $idx = Join-Path $OutDir 'bthport-discovery-index.txt'
+    $summary | Format-Table -AutoSize | Out-String | Set-Content -Path $idx -Encoding UTF8
+    Write-Host ""
+    Write-Host "[discover] OK All-devices discovery complete -- index: $idx" -ForegroundColor Green
+    $summary | Format-Table -AutoSize
+    exit 0
+}
+
+# Single-device path (default, for backwards compat)
+$root = Find-DeviceRoot -DevMac $Mac
+if (-not $root) {
+    Write-Host "[discover] ERROR: no BTHPORT device key found for $Mac" -ForegroundColor Red
+    exit 2
+}
+$script:lines += "[discover] Device root: $root"
+$script:lines += "[discover] Captured: $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')"
+$script:lines += ""
+Walk-Key -Path $root
 Walk-Key -Path "HKLM:\SYSTEM\CurrentControlSet\Services\BTHPORT\Parameters\Keys\$Mac" -Depth 0
 
-# Also enumerate any SDP/HID-related top-level BT keys for context
 $lines += ""
 $lines += "=== Sibling devices (for comparison) ==="
 $siblings = Get-ChildItem "HKLM:\SYSTEM\CurrentControlSet\Services\BTHPORT\Parameters\Devices" -ErrorAction SilentlyContinue
@@ -137,21 +201,12 @@ foreach ($sib in $siblings) {
     }
 }
 
+$txtOut = Join-Path $OutDir 'bthport-discovery.txt'
+$jsonOut = Join-Path $OutDir 'bthport-discovery.json'
 $lines | Set-Content -Path $txtOut -Encoding UTF8
 $entries | ConvertTo-Json -Depth 6 | Set-Content -Path $jsonOut -Encoding UTF8
 
 Write-Host ""
-Write-Host "[discover] OK Discovery complete:" -ForegroundColor Green
-Write-Host "  Text dump:   $txtOut"
-Write-Host "  JSON entries: $jsonOut"
-Write-Host "  Any large binary values were saved as blob_*.bin in the same dir."
-Write-Host ""
+Write-Host "[discover] OK Discovery complete: $txtOut" -ForegroundColor Green
 Write-Host "[discover] Entry count: $($entries.Count)"
-$bigBlobs = $entries | Where-Object { $_.Size -gt 100 -and $_.Kind -eq 'Binary' }
-if ($bigBlobs) {
-    Write-Host "[discover] Candidate SDP/HID-cache blobs:" -ForegroundColor Cyan
-    $bigBlobs | ForEach-Object {
-        Write-Host "  $($_.Size) bytes  $($_.Path)\$($_.Name)"
-    }
-}
 exit 0
