@@ -1,9 +1,13 @@
 # M13 — Empirical Baseline & BTHPORT Descriptor Cache Investigation
 
-**Status:** plan v1.0 — pending pre-execution review (G1)
+**Status:** plan v1.4 — Phase 4-Omega discovery + Experiment A breakthrough + 65-min persistence monitor; CRITICAL: Phase 4-Omega restores State A only, does NOT solve mutual exclusion; Phase 4A required for PRD-184 battery-readout feature
 **Owner:** PRD-184
-**Estimated effort:** 1.5h prep + ~4h execution
+**Estimated effort:** 1.5h prep + ~4h execution (Phase 2 alone now ~2.5h with new axes)
 **Pre-flight gate:** see `.ai/playbooks/autonomous-agent-team.md` checklist sections A-E.
+**v1.0 → v1.1 (2026-04-27):** Phase 1 ran; reg-diff verification gate added; orchestrator + bundle script added; cleanup script B1 (COL01 health check) + B2 (RAWPDO `\\` pattern) bugs fixed.
+**v1.1 → v1.2 (2026-04-27):** G1 user sign-off — #1 (test-matrix axis additions: USB-C cells + sleep/wake + WM_MOUSEWHEEL) APPROVED, #2 (Phase 4 branch collapse: 4B dead per peer-review) APPROVED, #3 (kernel bug fix gate BLK-001/002, SF-003) DEFERRED to post-Phase-2 evaluation. Phase 2 test matrix expanded to 6 cells; Phase 4 reduced to 4A + 4C. See `.ai/test-runs/m13-phase0/phase1-report.md`.
+**v1.2 -> v1.3 (2026-04-27):** Cell 1 (T-V3-AF) executed end-to-end. Empirical Q7 trending YES via Phase 4A path. Scroll-broken root cause: COL01 HID descriptor lacks Wheel usage (0x38), not filter binding. Battery confirmed working without intervention. mm-accept-test AC-01 script bug discovered (queries wrong GUID -- false negative). Filter v2 additions backlogged. logman-focused-trace alternative to wpr GeneralProfile backlogged. btsnoop logging scheduled for Phase 4 entry. See `.ai/test-runs/2026-04-27-154930-T-V3-AF/cell1-report.md`.
+**v1.3 -> v1.4 (2026-04-27 evening):** Phase 3 cache decode complete; Experiment A breakthrough confirmed Disable+Enable BTHENUM recycle restores filter to active. 65-min persistence monitor showed unified mode stable in idle. CRITICAL CLARIFICATION: Phase 4-Omega only restores State A (scroll works, battery N/A) -- does NOT solve mutual exclusion of scroll vs battery. PRD-184's battery-readout feature requires Phase 4A (userland daemon) or Phase 4C (cache patch). Cells 2-6 deprioritized -- not blocking; defense-in-depth only.
 
 ## Why M13
 
@@ -39,6 +43,7 @@ Goal: remove orphan registry/PnP residue from MU + overnight experiments without
 
 Steps (each verified before next):
 
+0. **MOP gate — pre-flight (admin PS, Phase 0):** `mm-pause-windows-update.ps1` (7d) + `mm-driver-fingerprints` capture
 1. Pre-flight registry export → `D:\Users\Lesley\Documents\Backups\<ts>-pre-cleanup.reg`
 2. Remove dead `MagicMouseDriver` service key (no `.sys` exists, orphan)
 3. Remove stale USB MI_01 `LowerFilters=MagicMouse` (would Code-39 if mouse plugged via USB-C)
@@ -47,13 +52,18 @@ Steps (each verified before next):
 6. Remove orphan `oem*.inf` packages from our overnight experiments (the Windows audit at `.ai/cleanup-audit/windows-audit-2026-04-27.md` enumerates these)
 7. Verify scroll still works (move pointer, 2-finger gesture)
 8. Post-cleanup registry export → `D:\Users\Lesley\Documents\Backups\<ts>-post-cleanup.reg`
-9. `mm-snapshot-state.sh` for in-repo record
+9. **MOP gate — reg-diff verification:** `./scripts/mm-reg-diff.sh --auto` produces a markdown audit report at `.ai/test-runs/<phase>/reg-diff-<ts>.md` showing (a) sections added/removed, (b) value-level diffs with hex(7)/hex(1) decoded inline, (c) full diff totals. Report must show ONLY the expected mutations (MagicMouse* / RAWPDO sections in CCS+CS001) — any unexpected drift halts the phase.
+10. `mm-snapshot-state.sh` for in-repo record
 
-Exact command sequence prepared in companion script — see `scripts/mm-phase1-cleanup.ps1` (numbered with verification check after each step; halts on any verify failure).
+Exact command sequences:
+- Admin PS one-shot orchestrator (steps 0+2-4+6-7 with per-step verify): `scripts/mm-phase01-run.ps1`
+- WSL close-out bundle (steps 1, 8, 9, 10 — runs reg export + diff + snapshot in sequence): `scripts/mm-phase1-closeout.sh`
 
-**Phase-1 success criteria:** scroll works · `LowerFilters=applewirelessmouse` on BTHENUM HID device · COL01 enumerated and Started · no MU residue per Windows audit's safe-to-delete list · post-cleanup registry export saved.
+**Phase-1 success criteria:** scroll works · `LowerFilters=applewirelessmouse` on BTHENUM HID device · parent HID PDO (Class=Mouse, Status=OK, no COL suffix) enumerated · no MU residue per Windows audit's safe-to-delete list · post-cleanup registry export saved · **reg-diff report shows only expected mutations**.
 
-**Halt condition:** scroll stops working after any cleanup step → STOP, restore from pre-cleanup export, do not proceed.
+**Halt conditions:**
+- scroll stops working after any cleanup step → STOP, restore from pre-cleanup export, do not proceed.
+- reg-diff report shows unexpected sections added/removed or value-level changes outside the MagicMouse/RAWPDO/applewirelessmouse filter → STOP, investigate before declaring Phase 1 done.
 
 ### Phase 2 — Empirical baseline (both mice, both states, ~2h)
 
@@ -63,12 +73,18 @@ Goal: capture HID enumeration + battery readability + scroll behavior under all 
 
 | ID | Mouse | Driver state | Test sequence | Expected scroll | Expected battery |
 |---|---|---|---|---|---|
-| T-V3-AF | v3 (PID 0x0323) | AppleFilter (current) | test → unpair → repair → test → reboot → test | ✓ | ✗ (per overnight finding) |
-| T-V3-NF | v3 (PID 0x0323) | NoFilter | flip → test → unpair → repair → test → reboot → test | ✗ (per overnight finding) | ✓ (per overnight finding) |
-| T-V1-AF | v1 (PID 0x030D) | AppleFilter | pair → test → unpair → repair → test → reboot → test | ? | ? |
-| T-V1-NF | v1 (PID 0x030D) | NoFilter | flip → test → unpair → repair → test → reboot → test | ? | ? |
+| T-V3-AF | v3 (PID 0x0323) | AppleFilter (current) | test → unpair → repair → test → sleep/wake → test → reboot → test | ✓ | ✗ (per overnight finding) |
+| T-V3-NF | v3 (PID 0x0323) | NoFilter | flip → test → unpair → repair → test → sleep/wake → test → reboot → test | ✗ (per overnight finding) | ✓ (per overnight finding) |
+| T-V3-AF-USB | v3 (PID 0x0323) | AppleFilter + USB-C connected | plug USB-C → test → unplug → test → reboot → plug → test | ? | ? |
+| T-V3-NF-USB | v3 (PID 0x0323) | NoFilter + USB-C connected | flip → plug USB-C → test → unplug → test → reboot → plug → test | ? | ? |
+| T-V1-AF | v1 (PID 0x030D) | AppleFilter | pair → test → unpair → repair → test → sleep/wake → test → reboot → test | ? | ? |
+| T-V1-NF | v1 (PID 0x030D) | NoFilter | flip → test → unpair → repair → test → sleep/wake → test → reboot → test | ? | ? |
 
 The "?" cells are the empirical gaps M13 fills.
+
+**Sleep/wake sub-step rationale (G1 #1 axis):** S3 / Modern Standby does NOT re-run AddDevice; BTHPORT cache may behave differently on resume vs boot. Without this axis, "scroll works after reboot" tells us nothing about whether scroll survives a daily lid-close.
+
+**USB-C cells rationale (G1 #1 axis):** Magic Mouse 2024 charges via USB-C; USB and BT enumeration paths compete. Phase 1 cleanup removed a Code-39-causing orphan (`USB MI_01 LowerFilters="MagicMouse"`); these cells verify the hazard stays absent and surface any new USB+BT interaction failures.
 
 #### Per-test-cell capture
 
@@ -86,22 +102,35 @@ Per-test-cell capture data:
 - Procmon `.PML` (closed at cell end)
 - ETW `.etl` (closed at cell end)
 - DebugView log slice
+- **WM_MOUSEWHEEL event count + per-event timestamp during 3-second 2-finger gesture (G1 #1 quantitative metric — replaces human "scroll works" judgement; 5% intermittent drop rate would otherwise pass and ship broken)**
 - Quick subjective notes from human (scroll smooth? click registers? gesture continuous?)
 
 #### "Test" step definition
 
 At each "test" point in the sequence, the human:
 1. Moves the pointer corner-to-corner across the screen — verifies pointer responsiveness
-2. Performs 2-finger vertical scroll gesture for ≥3 seconds — verifies wheel events
+2. Performs 2-finger vertical scroll gesture for **exactly 3 seconds** — `mm-wheel-counter.ps1` (low-level mouse hook) captures every `WM_MOUSEWHEEL` event with timestamp; orchestrator emits `wheel-events.json` per cell-step
 3. Performs 2-finger horizontal swipe — verifies AC-Pan
 4. Clicks left + right
 5. Tray app should poll within 30s; screenshot/log the tooltip
+
+#### Sleep/wake sub-step definition (G1 #1)
+
+Between `repair → test` and `reboot → test` in every applicable cell:
+1. `powercfg /requestsoverride` recorded (baseline)
+2. `rundll32.exe powrprof.dll,SetSuspendState 0,1,0` (S3 sleep)
+3. Resume via mouse-click or keyboard
+4. Wait 30s for BT stack settle
+5. Run "Test" step above
+6. Compare HID enumeration + battery-readability + wheel count against the post-repair, pre-sleep state — divergence = data point
 
 Test orchestrator prompts the human with these instructions and records observations.
 
 #### Phase-2 success criteria
 
 All cells executed. All capture data archived. No data loss.
+
+**v1.3 amendment:** Cell 1 partial result -- scroll/battery behaviour decoupled from filter binding. The descriptor-level path (no Wheel usage in COL01) is the actual gate. Phase 3 (cache decode) is now higher-priority because it tells us whether the cached SDP TLV declares wheel and applewirelessmouse strips it, OR the cache itself doesn't declare it.
 
 #### Halt conditions
 
@@ -138,6 +167,10 @@ Steps:
 Both descriptors decoded, fixtures saved, comparison matrix produced. Q1, Q2, Q3 in success criteria answered.
 
 ### Phase 4 — Hypothesis test (varies by Phase 3 result)
+
+**G1 #2 outcome (2026-04-27):** Branch 4B (registry-patch with Apple's filter) is **DEAD per NLM peer-review REJECT** — three empirical citations: (a) Apple's filter repackages multi-touch into proprietary report layout; (b) Linux `hid-magicmouse.c` proves wheel synthesis is at input-event layer not HID-report layer; (c) MagicUtilities replaced HidBth as function driver, did NOT patch BTHPORT cache. Only **4A** (no kernel + userland gesture daemon) and **4C** (SDP-scanner filter + cache patch on `5ff866a`) remain.
+
+**G1 #3 outcome (2026-04-27, deferred):** Kernel reviewer findings BLK-001 (BRB Length not validated), BLK-002 (MDL `NormalPagePriority` no recovery), SF-003 (SDP TLV length-byte fixup offset bug) — fix priority re-evaluated **after Phase 2 ETW traces** confirm whether real BTHPORT BRBs trigger malformed conditions. If Phase 2 shows only well-formed BRBs, BSOD risk is theoretical; if Phase 2 surfaces malformed BRBs, fixes become a hard gate before any 4C install.
 
 Decision tree (pre-written so we don't drift):
 
@@ -184,7 +217,8 @@ Per Phase, the test orchestrator opens these channels at start and closes at end
 | Channel | Tool | Output |
 |---|---|---|
 | Filesystem state | `mm-snapshot-state.sh` | tarball at start + end of phase |
-| Registry diff | `reg.exe export` | full HKLM\SYSTEM at start + end |
+| Registry export | `mm-reg-export.sh` | full HKLM\SYSTEM at start + end |
+| **Registry diff (MOP gate)** | `mm-reg-diff.sh --auto` | `reg-diff-<ts>.md` audit report — required at end of every phase that mutates registry (Phase 1 cleanup, Phase 4 cache patch). Shows section adds/removes + value-level diffs with hex decoded inline. Filter `MagicMouse\|RAWPDO\|0323\|applewirelessmouse\|LowerFilters\|UpperFilters\|BTHPORT\|HidBth` by default. |
 | Process activity | `Procmon.exe` | `.PML` filtered to BTHPORT/HidBth/applewirelessmouse |
 | ETW kernel events | `wpr.exe` (Bluetooth, HidClass, Kernel-PnP) | `.etl` |
 | Driver kernel debug | DebugView | tail of `C:\mm3-debug.log` |
@@ -194,6 +228,14 @@ Per Phase, the test orchestrator opens these channels at start and closes at end
 | Subjective UX | human prompts in orchestrator | text notes |
 
 All artefacts archived under `.ai/test-runs/<ts>/<phase>/<cell>/`.
+
+## Per-phase close-out gate (applies to ALL phases)
+
+Every phase ends with the **5-block close-out ritual** defined in `.ai/playbooks/autonomous-agent-team.md` — Block 1 (verification artefacts) · Block 2 (continuity files: PSN-0001, this plan, playbook) · Block 3 (GitHub issues `#2`/`#3`/`#4` cross-referenced) · Block 4 (`/prd update-progress` against PRD-184) · Block 5 (atomic commit).
+
+`mm-phase1-closeout.sh` automates Block 1 and prints the Block 2-5 checklist as a non-skippable reminder. **A phase is not "done" until all five blocks are confirmed complete.**
+
+This gate is the empirical answer to "context loss across multi-session work" observed across the prior 6 sessions of PRD-184 — see PSN-0001 Session History.
 
 ## Pre-execution gates (G1)
 

@@ -4,3 +4,27 @@ obj/
 .vs/
 *.suo
 .idea/
+
+# M13 capture artefacts -- multi-GB binaries archived on disk only.
+# Small validation captures (procmon-filter-validation.PML/CSV, single-step
+# procmon.PML under 50 MB) ARE committed -- they're cell evidence.
+.ai/test-runs/**/*.etl
+.ai/test-runs/**/*.ETL
+.ai/test-runs/**/*.NGENPDB
+.ai/test-runs/**/procmon-pre-reboot-Bootlog*.pml
+.ai/test-runs/**/procmon-pre-reboot-Bootlog*.PML
+.ai/test-runs/**/procmon-post-reboot.PML
+.ai/test-runs/**/procmon-post-reboot*.pml
+
+# Claude Code worktree state -- internal, not project content
+.claude/
+
+# Agent-management state -- reviewed separately, not part of cell evidence commits
+.ai/learning/
+.ai/telemetry/
+
+# Procmon filter typo (superseded by single-dot version; leave for user delete)
+scripts/m13-procmon-filter..PMF
+
+# 7-Zip extraction artefacts from Inno Setup probe (PE sections, ~80 MB, transient)
+$tmp/

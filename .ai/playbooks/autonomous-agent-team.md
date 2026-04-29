@@ -1,6 +1,6 @@
 # Autonomous Agent Development Team — Playbook
 
-**Status:** v1.0 (2026-04-27, distilled from PRD-184 magic-mouse-tray work)
+**Status:** v1.8 (2026-04-28 PM, Session 12 +AP-22 don't ship 3rd-party trial driver / +AP-23 don't manipulate trial registry / D-S12-01 MU as reverse-eng reference only / D-S12-02 clean-room M12 KMDF / D-S12-03 MU uninstalled after capture / D-S12-04 v1-as-control strategy; Session 11 +AP-18 wrong-registry-path filter probe / +AP-19 single-error-code causal inference / +AP-20 screenshot layout described not data extracted / +AP-21 inferred state-intersection without concurrent measurement)
 **Scope:** how to run a multi-agent autonomous workflow that produces correct results the first time, instead of the iterative-discovery cycles we hit overnight.
 
 This is intended to be lifted out of `magic-mouse-tray/.ai/playbooks/` into a global location (e.g. `~/.claude/playbooks/` or `RILEY/.ai/playbooks/`) once it stabilises across one more autonomous session.
@@ -265,6 +265,131 @@ Before invoking `/peer-review` on architecture work, run a corpus-refresh step:
 **Symptom:** Driver installs without error but doesn't actually work.
 **Concrete instance:** Earlier in the project, `pnputil /add-driver` succeeded but the LowerFilters binding wasn't taking effect because PnP didn't call AddDevice. We discovered this empirically over multiple debug cycles.
 **Fix:** Acceptance test that probes the post-state with concrete checks (LowerFilters present, COL01/COL02 enumerated, battery readable). Don't trust install exit codes alone.
+
+### AP-12: Health checks pinned to assumed device topology, not empirical state
+**Symptom:** Pre-flight verification refuses to start a known-working system because it expects a device topology that no longer exists.
+**Concrete instance (M13 Phase 1):** `mm-phase1-cleanup.ps1` Verify-WorkingState looked for `*VID&0001004C_PID&0323&Col01*` Status=OK, but the post-applewirelessmouse topology has the working PDO at the parent HID node (no `&Col01` suffix), with a stale `&Col01` sibling at Status=Unknown. The check rejected a valid baseline and the cleanup ran zero times until we probed the actual state.
+**Fix:** Health checks must reflect *current* empirical state, not the topology that existed when the script was written. When a check fails, FIRST run a non-mutating PnP probe to confirm the device is actually broken vs the check is stale. Update the check to match reality.
+
+### AP-13: PowerShell `-like` pattern: `\\` is two literal backslashes
+**Symptom:** A `-like` filter that "should" match silently never matches; the script reports "already gone" for things that exist.
+**Concrete instance (M13 Phase 1, Bug B2):** `Where-Object { $_.InstanceId -like '{...}\\MagicMouseRawPdo*' }` — the `\\` inside a single-quoted string is two literal backslashes. Real `InstanceId` values use a single `\`. Step 3 of the cleanup script silently no-op'd; we caught it only by post-cleanup PnP probe + reg-diff confirming the orphan was still present.
+**Fix:** In PowerShell `-like` patterns, backslashes have NO special meaning — write `\` not `\\`. Validate every `-like` filter against a known-positive sample BEFORE relying on it. When a verifier reports "already gone", post-mutation probe must confirm — never trust the verifier alone.
+
+### AP-14: Reg-export without a verification gate
+**Symptom:** You take pre/post registry snapshots but never diff them, so silent no-ops (AP-13) and unintended drift go undetected until they cause downstream failures.
+**Concrete instance (M13 Phase 1):** Phase 1 plan v1.0 listed `mm-reg-export.sh` as "telemetry" but had no diff/verification step. The B2 bug only surfaced because the agent decided to run `diff` after-the-fact at the user's request. Without that, we'd have entered Phase 2 with the RAWPDO orphan still present.
+**Fix:** Reg-export ALWAYS pairs with a reg-diff gate at every mutation phase boundary. The gate produces a markdown audit report (sections + value-level changes, hex(7)/hex(1) decoded inline) and any unexpected drift halts the phase. See `scripts/mm-reg-diff.sh`.
+
+### AP-16: Acceptance test queries the wrong GUID for filter binding
+**Symptom:** AC-01 (Driver bound -- LowerFilters) reports FAIL even though `applewirelessmouse` is empirically bound and the kernel filter is loaded.
+**Concrete instance (M13 Cell 1):** `mm-accept-test.ps1` queries `HKLM\...\Enum\BTHENUM\{00001200-0000-1000-8000-00805F9B34FB}_VID&...` -- the SDP-service GUID, not the HID-class GUID. LowerFilters is set on the HID-class device `{00001124-...}` only. Result: 50+ minutes of misdiagnosis chasing "filter didn't bind on this boot" before live registry probe revealed the bug.
+**Fix:** Change the AC-01 GUID to `{00001124-0000-1000-8000-00805F9B34FB}`. Also: any acceptance test that queries a registry key by GUID should validate that the key class matches the test intent (here: filter bind tests must run against HID-class GUIDs, not BT-service GUIDs).
+
+### AP-17: Premature feature delivery claim without state-machine analysis
+**Symptom:** Agent declares "fix complete" or "Q7 confirmed YES" based on a single observation without working through the state-machine implications. User builds wrong mental model based on agent's claim.
+**Concrete instance (M13 Cell 1, post-Experiment A):** Agent declared Phase 4-Omega as the recommended PRD-184 fix path based on "Disable+Enable BTHENUM recycles to unified mode" -- without explicitly mapping that "unified mode" = State A = scroll works + battery N/A, which is the SAME as the user's current steady-state. User reasonably assumed "unified mode" meant "everything works" and started planning approval. Agent had to walk back and clarify Phase 4-Omega alone doesn't deliver PRD-184's primary feature (battery readout).
+**Fix:** Before claiming a fix path delivers a feature, build a state table mapping each possible state to (a) what the user observes, (b) which feature is delivered, (c) which feature is missing. Cross-check that the proposed fix moves the system into a state where ALL required features are delivered, not just the one the agent was investigating.
+
+### AP-18: Wrong registry path used to read filter chain (false "no filter" conclusion)
+**Symptom:** A filter probe reports "no LowerFilters present" on a device that empirically has the filter active. Subsequent reasoning chains build on the false premise.
+**Concrete instance (Session 11):** Earlier `bt-stack-snapshot.txt` queried filter chain via the wrong registry path and concluded `applewirelessmouse` was NOT bound to the v3 mouse stack. The `DEVPKEY_Device_LowerFilters` PnP property is the authoritative source — once we read it directly, the filter WAS bound to v1+v3 in BOTH Descriptor A (battery works) and Descriptor B (battery err=87) states. ~3 hours of "filter must have been stripped" reasoning was based on the bad probe. The filter-state question was never the right axis; the descriptor-state question was.
+**Fix:** When inspecting PnP / driver-stack state, prefer `Get-PnpDeviceProperty -KeyName DEVPKEY_Device_LowerFilters` (or `DEVPKEY_Device_UpperFilters`) over reading `Enum\…\Device Parameters\LowerFilters` registry values directly. Registry values can lag, be in a different key class than expected, or be set by INF AddReg without runtime effect (see AP-13). The DEVPKEY surface is what PnP itself uses at AddDevice time.
+
+### AP-19: Inferred a cause from a single error code without ruling out alternatives
+**Symptom:** Diagnostic message asserts a specific causal mechanism for an error code where the code alone cannot distinguish causes. Downstream reasoning treats the inference as fact.
+**Concrete instance (Session 11):** `MouseBatteryReader.cs` logs `FEATURE_BLOCKED ... (Apple driver traps Feature 0x47)` on any `HidD_GetFeature(0x47)` failure. The narrative was carried into PRD-184, PSN-0001 (H-008 CONFIRMED-PARTIAL), and design discussions. Empirically, err=87 in Descriptor B simply means **the device doesn't back the phantom 0x47 ReportID**. There is no trap; the descriptor declares a cap the device doesn't implement. The "Apple driver traps" framing turned a missing-implementation observation into a malicious-driver narrative and shaped weeks of Phase 4 architecture.
+**Fix:** Diagnostic log strings must distinguish *measured* facts from *inferred* causes. Format: `<observed-error> on <attempted-operation>` — never "<error> because <speculative-mechanism>". If a causal claim is in the message at all, prefix it `(inferred)` or `(hypothesis)`. PSN/PRD must do the same for hypotheses derived from a single error code: don't elevate to CONFIRMED until at least one alternative cause is empirically ruled out.
+
+### AP-20: Described screenshot layout instead of extracting field values
+**Symptom:** Agent reports back what a screenshot "shows" (panels, tabs, buttons) without quoting the actual values from the controls. User has to ask repeatedly for the data, burning a round-trip.
+**Concrete instance (Session 11):** When asked to read Device Manager / Properties dialogs from screenshots, the agent narrated layout ("the Details tab is selected, with a property dropdown and a value list") instead of recording the property values. Took mid-session correction to re-extract properly. Lesson: the user did not need a tour; they needed `LowerFilters: applewirelessmouse` in 1 line.
+**Fix:** When reading a screenshot, the report format is field-name → field-value, one per row. No prose about UI chrome, panels, tabs, or labels unless the user explicitly asks. If a value is illegible, say so and request a clearer image. Treat screenshots as data sources, not as documents to summarise.
+
+### AP-21: Claimed two device-state requirements work simultaneously based on inference, not measurement
+**Symptom:** Agent documents a state (e.g., "Mode A delivers both battery AND scroll") based on indirect inference (filter is on stack + analogy from a different device) rather than concurrent measurement of both signals. Architecture decisions get built on the false claim. User course-corrects: "we have never been in a state where both work."
+**Concrete instance (Session 11):** Mode A (Descriptor A) for v3 Magic Mouse was claimed to deliver scroll + battery simultaneously because (a) the filter was on the stack and (b) v1 mouse with the filter has both. Reality: only battery was measured during the 2026-04-27 06:04-19:43 OK-read window (96 successful reads); scroll was never confirmed in that window. The user's "scrolling does not work" reports from that day likely COINCIDED with that exact window. Modes A and B in `applewirelessmouse.sys` are mutually exclusive, not orthogonal. The claim cascaded into a recommended workaround (Option Z) that would have shipped a regression — restoring battery while breaking scroll.
+**Fix:** When documenting a state-machine intersection ("Mode X delivers both Y and Z"), require **both signals measured concurrently in the same window**. If only one is measured, mark the other as ASSUMED with a clear "needs empirical confirmation" callout. Architecture decisions cannot rest on assumed-both-work cells of a state matrix. When in doubt, ask the user "did you observe both working at the same time?" before recommending a path that depends on it.
+
+### AP-22: Shipping a third-party trial driver as production solution
+**Symptom:** Adopt a dependency (MagicUtilities driver) as the core production component without owning its maintenance surface or license terms.
+**Concrete instance (Session 12):** Early PRD-184 plan was to install MagicUtilities (trial-based, 30-day expiry), capture the INF, and use MU driver as production. This creates: (a) IP/EULA risk (MU is proprietary), (b) maintenance debt (trial expired, MU userland is unmaintained), (c) dependency on their binary format for any future tweaks, (d) customer-facing "you need trial software installed" setup complexity.
+**Fix:** When reverse-engineering a third-party tool, use it **as a reference for analysis only**, never as the installed production artifact. Build a clean-room replacement using the captured material (INF, behavior, PnP events) as the spec. This is the move from "install MU" to "use MU to design our own M12 KMDF driver" — much cheaper IP-wise and maintains long-term ownership.
+
+### AP-23: Manipulating trial registry markers to extend expiry
+**Symptom:** Attempt to work around a commercial product's trial expiration by patching registry timestamps or license keys.
+**Concrete instance (Session 12):** Avoided. MagicUtilities trial expires, and the natural impulse is to edit the registry marker to get more time. This is: (a) fragile (updates re-set the marker), (b) ethically questionable (circumventing intentional licensing), (c) legal risk (DMCA concerns in some jurisdictions for circumvention tools), (d) unnecessary (we don't need MU installed past the capture phase).
+**Fix:** Treat trial tools as **time-boxed references**, never as production dependencies. Once you have captured the binary artifacts and behavior, uninstall and move to clean-room implementation. The reference phase is short; don't plan to live on trial software.
+
+---
+
+## Per-phase close-out gate (non-skippable)
+
+Every phase that mutates state OR produces empirical findings ends with this 5-block ritual. **A phase is not "done" until all five blocks are complete.** Skipping any block means the next agent/session loses context — that is the failure mode the gate prevents.
+
+### Block 1 — Verification artefacts (mechanical, scripted)
+- [ ] `mm-reg-diff.sh --auto` produces a markdown audit at `.ai/test-runs/<phase>/reg-diff-<ts>.md` IF registry mutations occurred (Phase 1 cleanup, Phase 4 cache patch, etc.). Unexpected drift = halt.
+- [ ] `mm-snapshot-state.sh` captures filesystem / PnP topology / driver packages.
+- [ ] All orchestrator transcripts archived under `.ai/test-runs/<phase>/`.
+- [ ] **Peer-review (conditional)** — if the phase committed code that lands in any kernel-touching, PnP-touching, security-sensitive, or input-system-touching path, run `/peer-review` against the diff BEFORE declaring the phase done.
+
+#### Peer-review trigger checklist (Block 1.4)
+
+The phase **needs** peer-review if any committed file touches:
+- Registry mutations (PowerShell `Set-ItemProperty`/`Remove-ItemProperty` on `HKLM\SYSTEM`, raw `.reg` imports)
+- PnP topology mutations (`pnputil /add-driver`, `/remove-device`, `/install-driver`)
+- Kernel-mode driver code (`.c`/`.h` for `.sys` files, `.inf` files)
+- Win32 hooks (`SetWindowsHookEx`, `WH_*` constants, `MSLLHOOKSTRUCT`)
+- Service installation/modification (`sc.exe create/delete/config`, service registry keys)
+- Crypto / signing / authentication paths
+- Filter drivers (`LowerFilters`, `UpperFilters`, `class filter` registry)
+
+The phase **does NOT need** peer-review if commits only touch:
+- Markdown / YAML / TOML docs
+- Test orchestrators that only *read* state (HID probe, snapshot tool, log tails)
+- Post-hoc analysis tools (reg-diff, accept-test runners)
+- Comments, version bumps, changelog entries
+- PRD progress / decisions tables
+
+When in doubt, run it — `/peer-review` cost (~2-5 min + tokens) is dwarfed by the cost of a kernel BSOD, system input hang, or registry corruption that ships unreviewed.
+
+The peer-review verdict (APPROVE / CHANGES-NEEDED / REJECT) goes into the phase's status report. CHANGES-NEEDED at minimum requires the changes to land before Block 5's atomic commit; REJECT halts the phase.
+
+### Block 2 — Continuity files (judgment-required, manual)
+- [ ] **PSN file** (e.g. `PSN-0001-hid-battery-driver.yaml`):
+    * `last_updated` bumped to today (Calgary timestamp)
+    * `sessions_logged` incremented
+    * New row in Session History table — what happened, what changed
+    * Hypotheses table — any `H-NNN` newly CONFIRMED or REJECTED
+    * Decisions Made — new `D-NNN` entries with rationale
+    * Next Session Brief refreshed (current state, do-not-retry, next step)
+- [ ] **Plan file** (e.g. `m13-baseline-and-cache-test.md`):
+    * Version bump if step list, success criteria, or halt conditions changed
+    * Changelog appended in the Status block
+- [ ] **Playbook** (this file):
+    * New `AP-NN` captured if a novel failure mode was hit
+    * Version bump
+
+### Block 3 — Related issue / project tracking
+- [ ] Cross-reference each GitHub issue listed in the PSN's `linked_issues` with the phase finding.
+- [ ] Close issues that the phase resolved.
+- [ ] Comment with status on issues still open (link to phase report + commit hash).
+- [ ] If a finding spawns a new bug/risk, file a fresh issue and add to `linked_issues`.
+
+### Block 4 — Higher-level state
+- [ ] `/prd update-progress` against the linked PRD (e.g. PRD-184) to capture phase results.
+- [ ] (Optional) Tag the phase boundary commit (`git tag m13-phase1-done`).
+
+### Block 5 — Atomic commit
+- [ ] All Block 1–4 artefacts + continuity updates land in **one** commit.
+- [ ] Commit message: `<scope>: <phase> — <one-line finding>`, body references PSN/PRD/issues.
+- [ ] If commits fragmented across multiple, that's a process bug — note it in playbook for next round.
+
+### Why this is non-skippable
+
+The empirical pattern across PRD-184 sessions: every time an agent finished a phase but skipped one of these blocks, the next session paid a 30+ minute "what state are we in?" tax to reconstruct context. Six sessions deep, the cost compounds to days. The blocks are cheap (~10 min) at the time but enormous later.
+
+If a block is genuinely impossible (e.g. no GitHub access from this session), explicitly note in the PSN's Next Session Brief: "Block N skipped because <reason> — pick up next session."
 
 ---
 

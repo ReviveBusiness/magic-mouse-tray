@@ -153,10 +153,14 @@ function Add-Result {
 # Helper: Resolve BTHENUM device ID for our mouse (by VID/PID)
 # ---------------------------------------------------------------------------
 function Resolve-MouseDeviceId {
+    # Must return the HID-service GUID path ({00001124-...}) -- that is the
+    # node where LowerFilters binds.  The SDP/Device-Identification entry
+    # ({00001200-...}) is also present but has no LowerFilters; returning it
+    # causes AC-01 to always report a false FAIL.
     $devs = pnputil /enum-devices /connected 2>&1 | Out-String
     $blocks = $devs -split "(?=Instance ID:)"
     foreach ($b in $blocks) {
-        if ($b -match "Instance ID:\s+(BTHENUM\\[^\r\n]*$VendorPid[^\r\n]*)") {
+        if ($b -match "Instance ID:\s+(BTHENUM\\\{00001124-0000-1000-8000-00805[Ff]9[Bb]34[Ff][Bb][^\r\n]*$VendorPid[^\r\n]*)") {
             return $Matches[1].Trim()
         }
     }

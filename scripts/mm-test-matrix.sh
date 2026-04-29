@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# mm-test-matrix.sh - M13 Phase 2 test orchestrator.
+# mm-test-matrix.sh - M13 Phase 2 test orchestrator. Version: v1.2.0
 #
 # Walks a test cell through the standard sequence:
 #   pair -> test -> unpair -> repair -> test -> reboot -> test
@@ -14,15 +14,14 @@
 #
 # Output dir: .ai/test-runs/<YYYY-MM-DD-HHMMSS>-<cell-id>/<step>/
 #
-# This is a v1 orchestrator. ETW + Procmon captures are NOT yet wired in -
-# follow-up after reviewer feedback (see .ai/test-plans/m13-baseline-and-cache-test.md).
-# What it does today:
-#   - HID probe per step
-#   - mm-accept-test JSON per step
-#   - State snapshot per step
-#   - User-observation prompts (text notes saved per step)
-#   - DebugView log slice per step
-#   - Tray debug.log tail per step
+# v1.2 captures per step:
+#   - HID probe (mm-hid-probe.ps1)
+#   - mm-accept-test JSON
+#   - State snapshot (mm-snapshot-state.sh)
+#   - Tray debug.log + kernel debug log tails
+#   - Procmon .PML (cell-level: start at cell begin, stop at cell end)
+#   - ETW .etl via wpr.exe (cell-level; requires admin PS -- user is prompted)
+#   - WM_MOUSEWHEEL event count + per-event timestamps (test steps only, 3s window)
 
 set -euo pipefail
 
@@ -36,31 +35,37 @@ step="${2:-}"
 
 if [[ -z "$cell_id" ]]; then
     cat <<EOF
-mm-test-matrix.sh - M13 Phase 2 test orchestrator
+mm-test-matrix.sh - M13 Phase 2 test orchestrator (plan v1.2)
 
 Usage: $0 <cell-id> [step]
 
 Cell IDs:
-  T-V3-AF   v3 mouse, AppleFilter mode (current default)
-  T-V3-NF   v3 mouse, NoFilter mode (use mm-state-flip first)
-  T-V1-AF   v1 mouse, AppleFilter mode
-  T-V1-NF   v1 mouse, NoFilter mode
+  T-V3-AF       v3 mouse, AppleFilter mode (current default)
+  T-V3-NF       v3 mouse, NoFilter mode (use mm-state-flip first)
+  T-V3-AF-USB   v3 mouse, AppleFilter + USB-C cable connected during test
+  T-V3-NF-USB   v3 mouse, NoFilter + USB-C cable connected during test
+  T-V1-AF       v1 mouse, AppleFilter mode
+  T-V1-NF       v1 mouse, NoFilter mode
 
 Steps (omit to run interactively):
   pair-initial   Initial pair via Bluetooth Settings
-  test-1         Test sequence: pointer + 2-finger scroll + AC-Pan + click + tray
+  test-1         Test sequence: pointer + 2-finger scroll (3s) + AC-Pan + click + tray
   unpair         Remove from Bluetooth Settings
   repair         Re-pair via Bluetooth Settings (long-press button on bottom)
   test-2         Test sequence (post-repair)
+  sleep-wake     S3 suspend → resume → 30s settle → test (G1 #1 axis)
+  test-2b        Test sequence (post-sleep-wake)
   reboot         Reboot Windows host
   test-3         Test sequence (post-reboot)
+  usb-plug       (USB cells only) plug USB-C cable
+  usb-unplug     (USB cells only) unplug USB-C cable
 
 Output: .ai/test-runs/<ts>-<cell-id>/<step>/
 EOF
     exit 0
 fi
 
-valid_cells="T-V3-AF T-V3-NF T-V1-AF T-V1-NF"
+valid_cells="T-V3-AF T-V3-NF T-V3-AF-USB T-V3-NF-USB T-V1-AF T-V1-NF"
 if [[ ! " $valid_cells " =~ \ $cell_id\  ]]; then
     echo "[mm-test-matrix] ERROR: invalid cell-id '$cell_id'. Valid: $valid_cells" >&2
     exit 2
@@ -127,9 +132,139 @@ capture_log_tails() {
         tail -50 "$TRAY_LOG" > "$step_dir/tray-debug-tail.log" 2>/dev/null || true
     fi
     if [[ -f "$KERNEL_LOG" ]]; then
-        grep "MagicMouse" "$KERNEL_LOG" 2>/dev/null | tail -100 > "$step_dir/kernel-debug-tail.log" || true
+        # Advance a per-cell byte offset so each sub-step captures only NEW
+        # kernel log lines since the previous sub-step.  Without this, every
+        # sub-step grabs the same trailing 100 lines (agent-b audit finding).
+        local offset_file="$run_dir/.kernel-log-offset"
+        local prev_offset=1
+        if [[ -f "$offset_file" ]]; then
+            prev_offset=$(cat "$offset_file" 2>/dev/null || echo 1)
+            # Ensure offset is a valid positive integer; reset on corruption.
+            if ! [[ "$prev_offset" =~ ^[0-9]+$ ]] || [[ "$prev_offset" -lt 1 ]]; then
+                prev_offset=1
+            fi
+        fi
+        # tail -c +N reads from byte N onward (1-based); then filter for our
+        # driver messages and keep up to 200 lines per step.
+        tail -c "+${prev_offset}" "$KERNEL_LOG" 2>/dev/null \
+            | grep "MagicMouse" \
+            | tail -200 \
+            > "$step_dir/kernel-debug-tail.log" || true
+        # Record new end-of-file offset for next sub-step.
+        local new_offset
+        new_offset=$(wc -c < "$KERNEL_LOG" 2>/dev/null || echo "$prev_offset")
+        # Advance by 1 so next tail -c +N starts after the last byte we read.
+        echo $(( new_offset + 1 )) > "$offset_file"
     fi
     echo "[capture]   tray + kernel log tails"
+}
+
+# Procmon path (confirmed available on host)
+PROCMON_EXE="C:\\Users\\Lesley\\AppData\\Local\\Microsoft\\WindowsApps\\Procmon.exe"
+
+# Procmon needs admin to capture kernel drivers (bthport.sys, HidBth.sys,
+# applewirelessmouse.sys). The orchestrator runs from non-admin WSL, so we
+# prompt the user to invoke from their admin PS -- same pattern as start_wpr.
+# A non-admin Start-Process would launch Procmon but capture only user-mode
+# events, missing the kernel driver activity Phase 2 is designed to trace.
+start_procmon() {
+    local run_dir_win
+    run_dir_win=$(wslpath -w "$run_dir")
+    local pml_path="${run_dir_win}\\procmon.PML"
+    cat <<EOF
+
+==== Procmon capture ====
+Procmon requires an ADMIN PowerShell session to capture kernel drivers
+(bthport.sys, HidBth.sys, applewirelessmouse.sys). From your admin PS, run:
+
+    Start-Process -FilePath '${PROCMON_EXE}' -ArgumentList '/BackingFile','${pml_path}','/Quiet','/Minimized','/AcceptEula' -WindowStyle Minimized
+
+Press ENTER once Procmon is running (you will see its tray icon or minimized window).
+EOF
+    read -r -p "" _
+    echo "[capture]   -> Procmon recording started, output: ${pml_path}"
+}
+
+stop_procmon() {
+    cat <<EOF
+
+==== Stop Procmon capture ====
+From your admin PowerShell, run:
+
+    & '${PROCMON_EXE}' /Terminate
+
+Press ENTER once Procmon has terminated (its tray icon disappears).
+EOF
+    read -r -p "" _
+    echo "[capture]   -> Procmon terminated, .PML saved to run dir"
+}
+
+# wpr.exe path (in-box Windows tool)
+WPR_EXE="C:\\Windows\\System32\\wpr.exe"
+
+start_wpr() {
+    local run_dir_win
+    run_dir_win=$(wslpath -w "$run_dir")
+    local wprp_win
+    wprp_win=$(wslpath -w "$REPO_ROOT/scripts/m13.wprp")
+    cat <<EOF
+
+==== ETW capture ====
+wpr.exe requires an ADMIN PowerShell session. From your admin PowerShell, run:
+    wpr -start "${wprp_win}!CustomProfile" -filemode
+
+(Falls back to GeneralProfile if m13.wprp is unavailable -- but GeneralProfile
+captures no BT/HID/PnP events; always prefer the focused profile.)
+
+Press ENTER once wpr has started (you will see "Recording is now on." or similar).
+EOF
+    read -r -p "" _
+    echo "[capture]   -> ETW recording started"
+}
+
+stop_wpr() {
+    local run_dir_win
+    run_dir_win=$(wslpath -w "$run_dir")
+    local etl_path="${run_dir_win}\\etw-trace.etl"
+    cat <<EOF
+
+==== Stop ETW capture ====
+From your admin PowerShell, run:
+    wpr -stop ${etl_path}
+
+This will take ~30 seconds to finalize the trace. Press ENTER once wpr has finished
+(you will see "Recording has been saved." or the PS prompt returns).
+EOF
+    read -r -p "" _
+    echo "[capture]   -> ETW trace saved to ${etl_path}"
+}
+
+capture_wheel_events() {
+    local step_dir="$1"
+    local step_name="$2"
+    # Only run for test steps (step name contains "test")
+    if [[ "$step_name" != *"test"* ]]; then
+        return
+    fi
+    local wheel_json_win
+    wheel_json_win="$(wslpath -w "${step_dir}/wheel-events.json")"
+    local ps_script_win
+    ps_script_win="$(wslpath -w "${REPO_ROOT}/scripts/mm-wheel-counter.ps1")"
+    cat <<EOF
+
+==== Wheel-event capture ====
+Start your 3-second 2-finger scroll gesture NOW. Capturing for 3s.
+EOF
+    powershell.exe -NoProfile -ExecutionPolicy Bypass \
+        -File "$ps_script_win" -DurationSec 3 -OutputJson "$wheel_json_win" || true
+    if [[ -f "${step_dir}/wheel-events.json" ]]; then
+        python3 -c "
+import sys, json
+d = json.load(open('${step_dir}/wheel-events.json'))
+print('  -> ' + str(d['event_count']) + ' wheel events captured')
+" 2>/dev/null || true
+    fi
+    echo "[capture]   -> ${step_dir}/wheel-events.json"
 }
 
 prompt_user_observations() {
@@ -183,6 +318,7 @@ run_test_step() {
     capture_accept_test      "$step_dir"
     capture_state_snapshot   "$step_dir"
     capture_log_tails        "$step_dir"
+    capture_wheel_events     "$step_dir" "$step_name"
     prompt_user_observations "$step_dir" "$step_name"
     echo "==== Step complete: $step_name ===="
 }
@@ -206,7 +342,32 @@ run_action_step() {
     echo "==== Action complete: $step_name ===="
 }
 
+# G1 #1 axis: S3 sleep + wake transition.
+# rundll32 SetSuspendState requires admin PS; we prompt the user to invoke from
+# their existing admin shell rather than UAC-prompting from WSL.
+run_sleep_wake_step() {
+    local step_dir; step_dir=$(make_step_dir "sleep-wake")
+    echo "==== Sleep/wake step ===="
+    echo
+    echo "From your admin PowerShell, run:"
+    echo "    rundll32.exe powrprof.dll,SetSuspendState 0,1,0"
+    echo
+    echo "Wait ~10 seconds for S3, then wake the host (mouse click or keypress)."
+    echo "After wake, wait 30 seconds for the BT stack to re-settle before pressing ENTER."
+    echo
+    read -r -p "Press ENTER once awake + 30s settle complete: " _
+    capture_state_snapshot "$step_dir"
+    capture_log_tails      "$step_dir"
+    echo "sleep-wake completed at $(date '+%Y-%m-%d %H:%M:%S')" > "$step_dir/note.txt"
+    echo "==== Sleep/wake complete ===="
+}
+
 run_full_sequence() {
+    # Start cell-level captures (Procmon + ETW) before any step runs.
+    # Procmon launches silently; wpr requires admin PS so the user is prompted.
+    start_procmon
+    start_wpr
+
     case "$cell_id" in
         T-V3-AF)
             echo "Cell T-V3-AF: v3 mouse, AppleFilter mode (current default state)"
@@ -214,6 +375,8 @@ run_full_sequence() {
             run_action_step "unpair" "On the Windows host, open Bluetooth Settings -> Magic Mouse -> ... -> Remove device. Wait for the device to disappear from the list."
             run_action_step "repair" "Long-press the button on the bottom of the Magic Mouse until the orange light shows. Add the mouse back via Windows Bluetooth Settings."
             run_test_step "test-2-post-repair"
+            run_sleep_wake_step
+            run_test_step "test-2b-post-sleep-wake"
             run_action_step "reboot" "Reboot Windows. After reboot, log back in, wait for the mouse to reconnect (~30 sec), then re-run this script with step=test-3."
             ;;
         T-V3-NF)
@@ -228,7 +391,26 @@ run_full_sequence() {
             run_action_step "unpair" "Bluetooth Settings -> Magic Mouse -> Remove device."
             run_action_step "repair" "Re-pair via long-press + Bluetooth Settings."
             run_test_step "test-2-post-repair"
+            run_sleep_wake_step
+            run_test_step "test-2b-post-sleep-wake"
             run_action_step "reboot" "Reboot. Re-run with step=test-3 after."
+            ;;
+        T-V3-AF-USB | T-V3-NF-USB)
+            # USB-C cell variant: tests USB+BT path interaction + Code-39 hazard.
+            local mode="${cell_id#T-V3-}"
+            echo "Cell $cell_id: v3 mouse, $mode + USB-C connected"
+            if [[ "$cell_id" == "T-V3-NF-USB" ]]; then
+                echo "Pre-step: flipping to NoFilter mode..."
+                "$REPO_ROOT/scripts/mm-dev.sh" full 2>/dev/null || true
+                printf 'FLIP:NoFilter|%s\r\n' "$(date +%s%N)" > /mnt/c/mm-dev-queue/request.txt
+                schtasks.exe /run /tn 'MM-Dev-Cycle' >/dev/null 2>&1 || true
+                sleep 8
+            fi
+            run_action_step "usb-plug" "Plug the USB-C charging cable into the Magic Mouse and into a USB port on the host. Wait 10 seconds for USB enumeration."
+            run_test_step "test-1-usb-plugged"
+            run_action_step "usb-unplug" "Unplug the USB-C cable. Wait 5 seconds."
+            run_test_step "test-2-usb-unplugged"
+            run_action_step "reboot" "Reboot. Re-run with step=test-3 after; PLUG USB-C cable BACK IN before logging in if you want post-reboot USB state."
             ;;
         T-V1-AF | T-V1-NF)
             echo "Cell $cell_id: v1 (AA-battery) Magic Mouse"
@@ -253,9 +435,16 @@ run_full_sequence() {
             run_action_step "unpair" "Remove v1 from Bluetooth Settings."
             run_action_step "repair" "Re-pair v1."
             run_test_step "test-2-post-repair"
+            run_sleep_wake_step
+            run_test_step "test-2b-post-sleep-wake"
             run_action_step "reboot" "Reboot. Re-run with step=test-3 after."
             ;;
     esac
+
+    # Stop cell-level captures.
+    stop_procmon
+    stop_wpr
+
     echo "==== Cell $cell_id sequence complete (or paused for reboot) ===="
     echo "Run dir: $run_dir"
     echo
@@ -271,12 +460,15 @@ if [[ -z "$step" ]]; then
     run_full_sequence
 else
     case "$step" in
-        test-1|test-2|test-3|test-1-initial|test-1-noflag|test-2-post-repair|test-3-post-reboot)
+        test-1|test-2|test-2b|test-3|test-1-initial|test-1-noflag|test-1-usb-plugged|test-2-post-repair|test-2-usb-unplugged|test-2b-post-sleep-wake|test-3-post-reboot)
             run_test_step "$step"
             ;;
-        unpair)  run_action_step "unpair" "Remove the mouse from Bluetooth Settings." ;;
-        repair)  run_action_step "repair" "Re-pair the mouse." ;;
-        reboot)  run_action_step "reboot" "Reboot the host." ;;
+        unpair)      run_action_step "unpair"     "Remove the mouse from Bluetooth Settings." ;;
+        repair)      run_action_step "repair"     "Re-pair the mouse." ;;
+        reboot)      run_action_step "reboot"     "Reboot the host." ;;
+        usb-plug)    run_action_step "usb-plug"   "Plug the USB-C cable into the Magic Mouse." ;;
+        usb-unplug)  run_action_step "usb-unplug" "Unplug the USB-C cable from the Magic Mouse." ;;
+        sleep-wake)  run_sleep_wake_step ;;
         clean)
             echo "Removing run marker for cell $cell_id (next run starts fresh dir)"
             rm -f "$run_marker"
