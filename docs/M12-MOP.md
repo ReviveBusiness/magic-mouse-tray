@@ -1,10 +1,10 @@
 # M12 Method of Procedure (MOP)
 
-**Status:** v1.6 — DRAFT pending user approval (v1.5 + three final additions folded in)
+**Status:** v1.7 — DRAFT pending user approval (v1.6 + empirical layout correction)
 **Date:** 2026-04-28
-**Linked design:** `docs/M12-DESIGN-SPEC.md` v1.6
-**Linked test plan:** `docs/M12-TEST-PLAN.md` v1.1
-**Linked PRD:** PRD-184 v1.31
+**Linked design:** `docs/M12-DESIGN-SPEC.md` v1.7
+**Linked test plan:** `docs/M12-TEST-PLAN.md` v1.2
+**Linked PRD:** PRD-184 v1.32
 **Linked NLM pass-1:** `docs/M12-DESIGN-PEER-REVIEW-NOTEBOOKLM-2026-04-28.md`
 **Linked NLM pass-2:** `docs/M12-DESIGN-PEER-REVIEW-NOTEBOOKLM-PASS2-2026-04-28.md`
 **Linked NLM pass-3:** `docs/M12-DESIGN-PEER-REVIEW-NOTEBOOKLM-PASS3-2026-04-28.md`
@@ -13,6 +13,8 @@
 **Related rules:** `~/.claude/projects/-home-lesley-projects/memory/feedback_backup_before_destructive_commands.md` (AP-24 — non-negotiable backup gate).
 
 ## Revision history
+
+- **v1.7 (2026-04-28):** Aligned to design spec v1.7 (empirical layout correction). (a) VG-14 REPLACED: old self-tuning verification gate (wait 5 min for LEARNING mode, check WPP for "self-tuning detected offset N") deleted. New VG-14: col02 descriptor verification -- after install, confirm col02 (UP:0xFF00 U:0x0014 RID=0x90 InLen=3) is visible via HidP_GetCaps, and HidD_GetInputReport(0x90) returns valid percent in buf[2]. (b) VG-4 RETIRED: BATTERY_OFFSET empirical confirmation gate removed; no offset to confirm. (c) VG-2 REVISED: v3 battery now via HidD_GetInputReport(0x90) on col02, not Feature 0x47. (d) Sign-off checklist updated: VG-4 removed, VG-14 text updated. (e) Registry tunables section updated: BATTERY_OFFSET, FirstBootPolicy, MAX_STALE_MS, LearningModeFramesRequired, LearningModeMaxDurationSec, BatteryByteOffset, ColdShadowThresholdMs all removed (shadow buffer eliminated). (f) VG-12 RETIRED: auto-reinit-on-wake shadow-invalidation test no longer applicable; shadow buffer removed. (g) VG-13 RETIRED: battery polling fallback test no longer applicable; tray polls natively. Design revision logged; PRD reference bumped.
 
 - **v1.6 (2026-04-28):** Aligned to design spec v1.6. Added: (a) VG-14: self-tuning verification -- install on fresh machine, wait 5 min of mouse usage, check WPP log for "self-tuning detected offset N" entry, verify Feature 0x47 returns plausible battery percentage. (b) Sign-off checklist item PRIVACY-1: Privacy Policy reviewed and current. (c) AV/EDR known-issue documented in docs/KNOWN-ISSUES.md (no MOP gate required; documentation only). Test plan linked version bumped v1.0 -> v1.1.
 - **v1.5 (2026-04-28):** Aligned to design spec v1.5. Added: (a) CRITICAL testsigning prerequisite block at top of BLUF (Section 1) — upstream issue #1 analysis shows this is the most common install blocker. (b) VG-12: auto-reinit-on-wake test — sleep cycle, confirm shadow refresh after wake. (c) VG-13: battery-polling-fallback test — force shadow stale by disconnect, query Feature 0x47, confirm GET_REPORT issued. (d) BUILD-5 (v1.5): PREfast gate — verify build output shows "0 Code Analysis warnings". (e) BUILD-6 (v1.5): SDV gate — verify sdv-report.xml shows "0 defects" before signing. (f) Pre-build line-endings check (git ls-files --eol). PowerSaver defaults updated: SuspendOnDisplayOff=1, SuspendOnACUnplug=1. Sign-off checklist expanded with v1.5 gates.
@@ -529,21 +531,17 @@ if ($v3LfReg -notmatch "MagicMouseM12") {
 
 Script lists all `LowerFilters` MULTI_SZ values under v1/v3 BTHENUM device tree; flags any not matching `MagicMouseM12` (e.g., orphan `applewirelessmouse` references on sibling Device Parameters keys). Cleanup is operator-prompted, not automatic.
 
-### 7e. Initial registry tunables (EXPANDED v1.4)
+### 7e. Initial registry tunables (UPDATED v1.7 -- shadow buffer tunables removed)
 
 ```pwsh
-# Defaults are baked into the driver but explicit registration documents intent.
-# BATTERY_OFFSET default = 1 (first byte of 46-byte payload).
-# FirstBootPolicy default = 0 (STATUS_DEVICE_NOT_READY).
-# MAX_STALE_MS default = 0 (v1.3 final — disabled).
-# DebugLevel default = 0 (errors only; set to 4 only during VG-4 empirical-offset capture).
+# v1.7: BATTERY_OFFSET, FirstBootPolicy, MAX_STALE_MS, BatteryByteOffset,
+# LearningModeFramesRequired, LearningModeMaxDurationSec, ColdShadowThresholdMs
+# are ALL REMOVED (shadow buffer eliminated; battery is native col02 RID=0x90).
+# DebugLevel default = 0 (errors only).
 $svcParams = "HKLM:\SYSTEM\CurrentControlSet\Services\MagicMouseM12\Parameters"
 if (-not (Test-Path $svcParams)) {
     New-Item -Path $svcParams -Force | Out-Null
 }
-Set-ItemProperty -Path $svcParams -Name BATTERY_OFFSET -Value 1 -Type DWord
-Set-ItemProperty -Path $svcParams -Name FirstBootPolicy -Value 0 -Type DWord
-Set-ItemProperty -Path $svcParams -Name MAX_STALE_MS -Value 0 -Type DWord
 Set-ItemProperty -Path $svcParams -Name DebugLevel -Value 0 -Type DWord
 
 # Per-device CRD-style config (v1.4 — Sec 17.4 + Sec 24.3)
@@ -657,40 +655,38 @@ bash -c "diff <(grep -v '^Windows' $BackupRoot/HKLM-SYSTEM-pre-M12.reg) <(grep -
 
 ## 9. Validation gates (success criteria)
 
-### VG-0: Cached SDP descriptor matches applewirelessmouse-baseline (UPDATED v1.2)
+### VG-0: Descriptor passthrough -- col01 + col02 visible (UPDATED v1.7)
 
-v1.2 design does not mutate the descriptor; instead it expects the device's published descriptor (Input=47, Feature=2, LinkColl=2). VG-0 verifies the cached SDP descriptor is the correct one before any further validation.
+v1.7 design produces a descriptor with BOTH col01 (Mouse TLC) and col02 (vendor battery TLC UP:0xFF00 U:0x0014). VG-0 verifies both TLCs are enumerated on v3 after M12 install.
 
 ```pwsh
 $v1HidPdo = (Get-PnpDevice | Where-Object { $_.InstanceId -like "HID\*VID&0001004C_PID&030D*" -and $_.Status -eq "OK" }).InstanceId
 $v3HidPdo = (Get-PnpDevice | Where-Object { $_.InstanceId -like "HID\*VID&0001004C_PID&0323*" -and $_.Status -eq "OK" }).InstanceId
 
-& "$PSScriptRoot\..\scripts\mm-hid-descriptor-dump.ps1" -InstanceId $v1HidPdo
 & "$PSScriptRoot\..\scripts\mm-hid-descriptor-dump.ps1" -InstanceId $v3HidPdo
 
-# Expected for both v1 and v3 (applewirelessmouse-baseline / "Mode B"):
-#   InputReportByteLength = 47   (RID=0x27 vendor blob defines max)
-#   FeatureReportByteLength = 2  (RID=0x47 battery)
-#   LinkCollections = 2          (App + Physical/Pointer)
-#   InputValueCaps includes RID=0x02 (X, Y, Pan, Wheel) AND RID=0x27 (vendor blob)
-#   FeatureValueCaps = 1 (RID=0x47 battery)
+# Expected for v3 (M12 descriptor passthrough):
+#   LinkCollections = 2 (minimum: col01 Mouse + col02 Vendor battery)
+#   col01: UsagePage=0x0001 Usage=0x0002 (Mouse)
+#   col02: UsagePage=0xFF00 Usage=0x0014 (Vendor battery)
+#   col02 Input Report ID = 0x90, Input Report length = 3
 ```
 
-**Gate VG-0 (v1.3 dual-state):** PASS condition is EITHER:
-- (i) both mice show applewirelessmouse-baseline caps (Input=47, Feature=2, LinkColl=2). M12's BRB rewriter took the fast-path (cache already had Descriptor B from prior `applewirelessmouse`). Proceed to VG-1.
-- (ii) both mice show split caps (Descriptor A: COL01 Input=8 + COL02 Vendor) AND `Get-WinEvent` for the M12 ETW provider OR M12's debug log shows a `BRB_REWRITE_OK` event for each device (M12 actively rewrote the SDP TLV during this session's pairing/SDP exchange). Proceed to VG-1.
-
 ```pwsh
-# v1.3 — check M12 BRB rewriter telemetry
+# v1.7 -- check M12 BRB rewriter telemetry (same event IDs as v1.3)
 Get-WinEvent -ProviderName "M12-Driver" -MaxEvents 50 -ErrorAction SilentlyContinue |
     Where-Object { $_.Id -in 100,101,102 } |  # 100=BRB_REWRITE_OK, 101=BRB_REWRITE_SKIPPED, 102=BRB_REWRITE_FAILED
     Format-Table TimeCreated, Id, Message
 ```
 
+**Gate VG-0 (v1.7):** PASS condition is EITHER:
+- (i) v3 shows col01 + col02 both visible via HidP_GetCaps (LinkColl=2+, col02 has UsagePage=0xFF00 Usage=0x0014). M12 BRB rewriter took the fast-path or is not needed (BTHPORT cache already correct). Proceed to VG-1.
+- (ii) v3 shows col02 AND M12 debug log shows `BRB_REWRITE_OK` event (M12 actively rewrote during this pairing/SDP exchange). Proceed to VG-1.
+
 FAIL conditions:
-- Caps show Descriptor A AND no BRB_REWRITE_OK event: stale BTHPORT cache from pre-M12 era. Run Section 7c-pre Path A (cache wipe) or Path B (unpair/repair) to force fresh SDP — M12 BRB rewriter then injects Descriptor B.
-- Caps show Mode A (Input=8 single-TLC, Feature=2, LinkColl=5): residual MU/Mode-A injection. Run Section 7c-pre, re-bind, retry.
-- Caps show other variant: device firmware drift. Capture `mm-hid-descriptor-dump.ps1` output, halt, triage.
+- col02 missing AND no BRB_REWRITE_OK event: stale BTHPORT cache from pre-M12 era. Run Section 7c-pre Path A (cache wipe) or Path B (unpair/repair) to force fresh SDP.
+- col02 missing AND BRB_REWRITE_FAILED event: BRB rewriter failed to inject descriptor; check WPP log for failure reason.
+- col02 visible but UsagePage/Usage wrong: firmware variant mismatch. Capture descriptor dump, halt, triage.
 
 ### VG-1: v1 regression baseline (v1.3 — native Feature 0x47 pass-through)
 
@@ -708,14 +704,18 @@ Get-Content "$env:APPDATA\MagicMouseTray\debug.log" -Tail 50 |
 
 **Gate VG-1:** v1 produces `OK battery=N% (Feature 0x47)` within 30 seconds, AND the percentage matches the same value the tray reported BEFORE M12 install (compare against `debug.log.pre` in `$BackupRoot`). PASS = M12 didn't regress v1's working baseline. FAIL = halt; either INF binding misrouted v1 IRPs, or queue forwarding dropped them, or the PID branch logic is wrong.
 
-### VG-2: v3 target outcome
+### VG-2: v3 target outcome (UPDATED v1.7 -- col02 RID=0x90 path)
+
+v1.7: v3 battery is read via HidD_GetInputReport(0x90) on col02 (split-vendor path), NOT via Feature 0x47.
 
 ```pwsh
 Get-Content "$env:APPDATA\MagicMouseTray\debug.log" -Tail 50 |
-    Select-String "pid&0323.*battery=.*\(Feature 0x47\)"
+    Select-String "pid&0323.*battery=.*\(split\)"
+# Expected: "OK ... pid&0323 ... battery=NN% (split)"
+# The "(split)" tag indicates the tray found col02 and used HidD_GetInputReport(0x90).
 ```
 
-**Gate VG-2:** v3 produces `OK battery=N% (Feature 0x47)` within 60 seconds.
+**Gate VG-2 (v1.7):** v3 produces `OK battery=N% (split)` within 60 seconds. The `(split)` tag confirms col02 is visible and HidD_GetInputReport(0x90) returned buf[2] as valid percent. FAIL = col02 missing or report 0x90 failed -- run VG-0 first.
 
 ### VG-3: Scroll on both mice
 
@@ -726,45 +726,9 @@ Get-Content "$env:APPDATA\MagicMouseTray\debug.log" -Tail 50 |
 
 **Gate VG-3:** Both mice scroll fluidly. Quantitative: `WM_MOUSEWHEEL` event count >= 30 in a 3-second 2-finger gesture. v1.2 note: scroll is native pass-through (RID=0x02 unmodified) so VG-3 mostly proves the filter doesn't drop or corrupt input — it shouldn't, since M12 doesn't touch RID=0x02 IRPs.
 
-### VG-4: Empirical battery offset confirmation (NEW v1.2)
+### VG-4: RETIRED in v1.7
 
-The `BATTERY_OFFSET` default is a hypothesis (offset 1 in the 46-byte payload). VG-4 confirms or corrects it.
-
-```pwsh
-# Pre-condition: charge or discharge mouse to a known battery level (read from a SECOND
-# host or the MU 3.1.5.x trial app pre-expiry — anything that doesn't depend on M12).
-$known_pct = 80   # operator-supplied
-
-# Capture LogShadowBuffer entries from debug.log (M12 logs cached payload hex on every
-# Feature 0x47 query). These look like:
-#   [M12] Shadow.Payload[0..45]: 32 41 00 ... <hex>
-Get-Content "$env:APPDATA\MagicMouseTray\debug.log" -Tail 200 |
-    Select-String "Shadow.Payload" | Select-Object -First 5
-
-# Operator: extract the hex bytes from the most-recent line. For each byte position N
-# (0..45), check whether the value plausibly matches $known_pct via the formula
-# (raw - 1) * 100 / 64 where raw in [1..65]. The byte position with a matching value
-# is the BATTERY_OFFSET.
-#
-# Run a second capture at a different battery level (e.g., charge to 100% or
-# discharge to 20%) to confirm the offset. Same byte position must change in the
-# expected direction.
-```
-
-**Gate VG-4:** debug.log Shadow.Payload at a known battery level contains a byte that translates (per the formula) to within ±5% of the known level, and a SECOND capture at a different known level confirms the SAME byte position changes accordingly.
-
-If default `BATTERY_OFFSET=1` matches: no action.
-
-If a different offset matches:
-
-```pwsh
-$svcParams = "HKLM:\SYSTEM\CurrentControlSet\Services\M12\Parameters"
-Set-ItemProperty -Path $svcParams -Name BATTERY_OFFSET -Value <correct_offset> -Type DWord
-pnputil /disable-device "$v3Inst"; pnputil /enable-device "$v3Inst"
-# Re-run VG-2 to confirm tray now shows correct percentage.
-```
-
-If no byte position matches: `TranslateBatteryRaw()` formula likely non-linear; capture a wider battery sweep, log the raw -> %known mapping, decide on a lookup table for Phase 3.
+VG-4 (empirical BATTERY_OFFSET confirmation) is retired. In v1.7, battery is at buf[2] of RID=0x90 on col02 directly -- no offset to determine, no formula to confirm. VG-2 (`OK battery=N% (split)`) is the battery validation gate.
 
 ### VG-5: Pool tag verification (NEW v1.2)
 
@@ -792,18 +756,18 @@ After reboot, induce a BT disconnect (e.g., `Get-PnpDevice -InstanceId $v3Inst |
 
 ### VG-7: 24-hour soak (BT sleep/wake cycles)
 
-After VG-1, VG-2, VG-3, VG-4, VG-5, VG-6 pass, leave the system running with both mice idle. Mouse goes to sleep after ~2 minutes of inactivity (BT disconnect). Tray polls every 2 hours when battery > 50%.
+After VG-1, VG-2, VG-3, VG-5, VG-6 pass (VG-4 retired in v1.7), leave the system running with both mice idle.
 
 ```pwsh
 # After 24 hours:
 Get-Content "$env:APPDATA\MagicMouseTray\debug.log" -Tail 200 |
-    Select-String "FEATURE_BLOCKED|OPEN_FAILED|err="
-# Expected: zero matches (or only transient ones during sleep/wake)
+    Select-String "OPEN_FAILED|err="
+# Expected: zero matches (or only transient ones during sleep/wake boundary)
 
 Get-Content "$env:APPDATA\MagicMouseTray\debug.log" -Tail 200 |
-    Select-String "OK.*battery=.*\(Feature 0x47\)" |
+    Select-String "OK.*battery=.*\(split\)" |
     Measure-Object | Select-Object Count
-# Expected: >= 12 successful reads
+# Expected: >= 12 successful reads (v3 col02 split path)
 ```
 
 Specific BT sleep/wake validation:
@@ -935,77 +899,41 @@ Select-String -Path wake-decoded.txt -Pattern "shadow invalidated|PrimeShadowBuf
 
 **Gate VG-12:** WPP log shows `shadow invalidated` on wake. Battery read (tray log `OK battery=N%`) succeeds within 60s of wake. No BSOD during sleep/wake cycle.
 
-### VG-13: Battery polling fallback for cold shadow buffer (NEW v1.5 — fallback feature D-S12-42)
+### VG-12: RETIRED in v1.7
 
-Validates that the `ColdShadowThresholdMs` (60s default) path issues GET_REPORT and populates shadow before completing Feature 0x47.
+VG-12 (auto-reinit-on-wake shadow invalidation test) is retired. The shadow buffer is removed in v1.7. Wake recovery is handled natively by the tray's adaptive polling on col02 RID=0x90.
 
-```pwsh
-# Step 1: verify mouse connected but shadow cold (force it by PnP disable+enable)
-pnputil /disable-device $v3Inst
-Start-Sleep -Seconds 2
-pnputil /enable-device $v3Inst
-# After enable, shadow.Valid=FALSE (EvtDeviceD0Entry invalidates it)
-# Do NOT move the mouse -- avoid organic RID=0x27 frames
+### VG-13: RETIRED in v1.7
 
-# Step 2: set DebugLevel=3 to capture shadow activity
-Set-ItemProperty -Path $svcParams -Name DebugLevel -Value 3 -Type DWord
-
-# Step 3: immediately query Feature 0x47 (before 60s threshold elapses)
-$elapsed = Measure-Command {
-    & scripts\mm-hid-feature-read.ps1 -InstanceId $v3Inst -ReportId 0x47
-}
-
-# Step 4: check WPP log
-Get-Content "$env:APPDATA\MagicMouseTray\debug.log" -Tail 20 |
-    Select-String "PrimeShadowBuffer|ColdShadowThreshold|shadow cold"
-```
-
-**Gate VG-13:** When shadow is cold at the time of Feature 0x47 query:
-- WPP log shows `shadow cold` + `PrimeShadowBufferSync` call.
-- Either: PrimeShadow succeeds within 500ms timeout and tray receives `OK battery=N%` in the same poll; OR: PrimeShadow times out and tray receives `STATUS_DEVICE_NOT_READY` (acceptable -- mouse may not be responsive within 500ms of reconnect).
-- Zero BSOD. No deadlock (5-second watchdog on the sync call).
-
-Reset: `Set-ItemProperty -Path $svcParams -Name DebugLevel -Value 0 -Type DWord`
+VG-13 (battery polling fallback for cold shadow buffer) is retired. The shadow buffer and ColdShadowThresholdMs are removed in v1.7. Battery reads go natively to col02 RID=0x90; no kernel cold-start fallback needed.
 
 ---
 
-### VG-14: Self-tuning battery offset detection (NEW v1.6 -- self-tuning feature D-S12-52)
+### VG-14: col02 descriptor verification (REPLACED v1.7 -- D-S12-55)
 
-Validates that on a fresh install (BatteryByteOffset absent or 0xFFFFFFFF), the driver enters LEARNING mode, captures frames, selects the offset, writes to CRD config, and logs the result.
+Replaces the self-tuning verification gate. Validates that after M12 install:
+1. col02 (UP:0xFF00 U:0x0014 RID=0x90 InLen=3) is visible via HidP_GetCaps on v3.
+2. HidD_GetInputReport(0x90) on col02 returns a valid percent in buf[2].
 
 ```pwsh
-# Step 1: ensure fresh LEARNING mode by removing BatteryByteOffset from CRD config
-$crdPath = "HKLM:\SYSTEM\CurrentControlSet\Services\MagicMouseM12\Devices\<HardwareKey>"
-Remove-ItemProperty -Path $crdPath -Name BatteryByteOffset -ErrorAction SilentlyContinue
+# Step 1: enumerate v3 HID children to find col02 handle
+# The tray's col02 probe uses HidD_GetHidGuid + SetupDi path matching for UP:FF00 U:0014
+# Use mm-hid-descriptor-dump.ps1 to confirm TLC layout
+$v3HidPdo = (Get-PnpDevice | Where-Object { $_.InstanceId -like "HID\*VID&0001004C_PID&0323*" -and $_.Status -eq "OK" }).InstanceId
+& "$PSScriptRoot\..\scripts\mm-hid-descriptor-dump.ps1" -InstanceId $v3HidPdo
 
-# Step 2: set DebugLevel=3 to capture LEARNING events
-Set-ItemProperty -Path $svcParams -Name DebugLevel -Value 3 -Type DWord
-
-# Step 3: PnP cycle to trigger EvtDriverDeviceAdd (reads BatteryByteOffset, enters LEARNING)
-pnputil /disable-device $v3Inst
-Start-Sleep -Seconds 2
-pnputil /enable-device $v3Inst
-
-# Step 4: use the mouse normally for 5 minutes
-# (or use the test harness to inject synthetic RID=0x27 frames if hardware is not available)
-Write-Host "Use the mouse for 5 minutes, then check the log..."
-Start-Sleep -Seconds 300
-
-# Step 5: check WPP log for self-tuning decision
-Get-Content "$env:APPDATA\MagicMouseTray\debug.log" -Tail 30 |
-    Select-String "self-tuning detected|LearningMode|BatteryByteOffset"
-
-# Step 6: verify CRD config was written
-Get-ItemProperty -Path $crdPath -Name BatteryByteOffset
+# Step 2: check that tray found col02 and is reading via split path
+Get-Content "$env:APPDATA\MagicMouseTray\debug.log" -Tail 50 |
+    Select-String "HIDP_CAPS.*col02|DETECT.*col02.*split-vendor|OK.*col02.*battery=|InputReport=0x90"
 ```
 
-**Gate VG-14:** After 5 minutes of normal mouse use (or 100 RID=0x27 synthetic frames):
-- WPP log shows `self-tuning detected offset N` where N is in [0..45].
-- CRD registry key `BatteryByteOffset` is present at the detected offset value.
-- Subsequent Feature 0x47 query returns plausible battery percentage (not `STATUS_DEVICE_NOT_READY` and not 0% / 100% stuck).
-- If zero candidates detected: WPP shows warning + fallback to offset 0; tray shows N/A until VG-4 manual override applied (acceptable degradation path).
+**Gate VG-14 (v1.7):**
+- `HIDP_CAPS` log shows col02 with `InLen=3 FeatLen=0 TLC=UP:FF00/U:0014`.
+- `DETECT` log shows `col02 split-vendor InputReport=0x90`.
+- `OK` log shows `col02 battery=N% (split)` where N is in [1..99].
+- HidD_GetInputReport(0x90) did not return err= or OPEN_FAILED.
 
-Reset: `Set-ItemProperty -Path $svcParams -Name DebugLevel -Value 0 -Type DWord`
+FAIL = col02 not visible: run VG-0 first (BRB descriptor rewrite may not have fired; trigger cache wipe or unpair+repair).
 
 ---
 
@@ -1108,27 +1036,27 @@ Should be stable or trending — sustained growth = leak.
 [ ] 7a.1 (v1.4):  no competing INF with DriverVer >= 01/01/2027
 [ ] 7a.2 (v1.4):  no stale MagicMouseM12 service
 [ ] 7a.3 (v1.4):  no stale MagicMouseDriver INF in DriverStore
-[ ] 7e:           registry tunables BATTERY_OFFSET + FirstBootPolicy + MAX_STALE_MS + DebugLevel set
+[ ] 7e (v1.7):    registry tunables DebugLevel set (BATTERY_OFFSET, FirstBootPolicy, MAX_STALE_MS REMOVED -- shadow buffer eliminated)
 [ ] 7e (v1.4):    per-device Watchdog + PowerSaver subkeys created for all 3 PIDs
 [ ] 7e (v1.5):    PowerSaver defaults verified: SuspendOnDisplayOff=1, SuspendOnACUnplug=1
 [ ] INSTALL-1:    MagicMouseM12 LowerFilters bound to v1 + v3, service RUNNING
 [ ] 7d.1 (v1.4):  registry binding cross-check (reg query) confirms M12 wins rank
 [ ] 7d.2 (v1.4):  orphan-filter walk reports clean BTHENUM tree
-[ ] VG-0:         HIDP_GetCaps shows applewirelessmouse-baseline (Input=47, Feature=2, LinkColl=2)
+[ ] VG-0 (v1.7):  col01 + col02 both visible (col02: UP:0xFF00 U:0x0014 RID=0x90 InLen=3)
 [ ] VG-1:         v1 produces OK battery (Feature 0x47) within 30s
-[ ] VG-2:         v3 produces OK battery (Feature 0x47) within 60s
+[ ] VG-2 (v1.7):  v3 produces OK battery=N% (split) via col02 RID=0x90 within 60s
 [ ] VG-3:         scroll fluid on both mice
-[ ] VG-4:         BATTERY_OFFSET confirmed via debug.log diff at known battery levels
+[ ] VG-4:         RETIRED (v1.7) -- BATTERY_OFFSET empirical gate removed; no offset to confirm
 [ ] VG-5:         pool tag 'M12 ' verifiable in WinDbg !poolused
 [ ] VG-6:         no Driver Verifier violations under flags 0x9bb during forced disable
-[ ] VG-7:         24-hour soak with BT sleep/wake cycles, >= 12 OK reads, zero err= entries, zero BSOD
+[ ] VG-7:         24-hour soak with BT sleep/wake cycles, >= 12 OK reads (split), zero err= entries, zero BSOD
 [ ] VG-8 (v1.4):  power-saver functional test (sleep/sign-out/shutdown/manual + wake on click)
 [ ] VG-9 (v1.4):  battery-saving 24-hr A/B (treatment <= 50% control drift)
 [ ] VG-10 (v1.4): multi-mouse simultaneous read-out (v1+v3 independent)
 [ ] VG-11 (v1.4): Driver Verifier 0x49bb soak: 1000 IOCTL + 100 pair/unpair = 0 violations
-[ ] VG-12 (v1.5): auto-reinit-on-wake: shadow invalidated + battery read OK within 60s post-wake
-[ ] VG-13 (v1.5): battery-polling-fallback: cold shadow triggers GET_REPORT; no deadlock
-[ ] VG-14 (v1.6): self-tuning offset: WPP log shows "self-tuning detected offset N" within 5 min of use; Feature 0x47 returns plausible percentage
+[ ] VG-12 (v1.7): RETIRED -- shadow buffer removed; wake recovery handled natively by tray
+[ ] VG-13 (v1.7): RETIRED -- cold shadow fallback removed; tray polls col02 RID=0x90 natively
+[ ] VG-14 (v1.7): col02 descriptor verification: HIDP_CAPS shows col02 UP:FF00/U:0014 InLen=3; HidD_GetInputReport(0x90) returns valid % in buf[2]
 [ ] PRIVACY-1 (v1.6): docs/PRIVACY-POLICY.md reviewed and current; no network connections added since last review
 [ ] HEALTH-10a:   no BSOD events in System log
 [ ] HEALTH-10d:   service state RUNNING throughout
@@ -1154,7 +1082,7 @@ WHQL submission OUT of scope.
 | Verify bind | `Get-PnpDeviceProperty -InstanceId <id> -KeyName DEVPKEY_Device_LowerFilters` |
 | Service status | `sc.exe query MagicMouseM12` |
 | Tray log tail | `Get-Content $env:APPDATA\MagicMouseTray\debug.log -Tail 50` |
-| Set battery offset | `Set-ItemProperty -Path HKLM:\SYSTEM\CurrentControlSet\Services\MagicMouseM12\Parameters -Name BATTERY_OFFSET -Value N -Type DWord` |
+| Set DebugLevel | `Set-ItemProperty -Path HKLM:\SYSTEM\CurrentControlSet\Services\MagicMouseM12\Parameters -Name DebugLevel -Value 2 -Type DWord` |
 | Pool tag enumerate (WinDbg) | `!poolused 4 'M12 '` |
 | Driver Verifier (basic) | `verifier /flags 0x9bb /driver MagicMouseDriver.sys` |
 | Driver Verifier (v1.4 ship) | `verifier /flags 0x49bb /driver MagicMouseDriver.sys` |
@@ -1163,7 +1091,7 @@ WHQL submission OUT of scope.
 | Reset signing test mode | `bcdedit /set testsigning off` (reboot) |
 | WPP capture start | `logman start M12 -p {8D3C1A92-B04E-4F18-9A23-7E5D4F892C12} -o capture.etl -ets` |
 | WPP capture stop + decode | `logman stop M12 -ets; tracefmt capture.etl -p <tmf-dir> -o decoded.txt` |
-| Set DebugLevel for offset workflow | `Set-ItemProperty -Path HKLM:\SYSTEM\CurrentControlSet\Services\MagicMouseM12\Parameters -Name DebugLevel -Value 4 -Type DWord` |
+| Check col02 TLC visible | `& scripts\mm-hid-descriptor-dump.ps1 -InstanceId $v3HidPdo` |
 | Manual suspend (CLI) | `mm-suspend.exe` (sends IOCTL_M12_SUSPEND) |
 | Orphan filter walk | `& scripts\mm-orphan-filter-walk.ps1` |
 | Registry binding cross-check | `reg query "HKLM\SYSTEM\CurrentControlSet\Enum\<Inst>\Device Parameters" /v LowerFilters` |

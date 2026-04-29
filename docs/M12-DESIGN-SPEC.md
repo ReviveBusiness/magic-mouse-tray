@@ -1,9 +1,9 @@
 # M12 Design Specification
 
-**Status:** v1.6 — DRAFT pending user approval (v1.5 + three final additions folded in)
+**Status:** v1.7 — DRAFT pending user approval (v1.6 + empirical layout correction)
 **License:** MIT (Copyright (c) 2026 Lesley Murfin / Revive Business Solutions)
 **Date:** 2026-04-28
-**Linked PRD:** PRD-184 v1.31
+**Linked PRD:** PRD-184 v1.32
 **Linked PSN:** PSN-0001 v1.9
 **Linked NLM pass-1:** `docs/M12-DESIGN-PEER-REVIEW-NOTEBOOKLM-2026-04-28.md`
 **Linked NLM pass-2:** `docs/M12-DESIGN-PEER-REVIEW-NOTEBOOKLM-PASS2-2026-04-28.md`
@@ -12,6 +12,8 @@
 **Approval gate:** PR ai/m12-design-prd-mop must be approved by user before any code is written.
 
 ## Revision history
+
+- **v1.7 (2026-04-28, empirical layout correction):** Empirical correction applied based on tray debug.log 2026-04-27 and `MouseBatteryReader.cs` source proving the actual firmware battery layout. (a) Self-tuning RID=0x27 machinery DELETED: Section 6c (LEARNING mode, LEARNING_STATE struct, BatteryByteOffset auto-detect, LearningModeFramesRequired/MaxDurationSec CRD keys) removed entirely. The RID=0x27 46-byte vendor blob and `(raw - 1) * 100 / 64` translation formula were based on incorrect inference from MU's filter; empirical evidence shows they are not used for battery at all. (b) Battery layout corrected: native firmware exposes battery via col02 vendor TLC (UP:0xFF00 / U:0x0014), Input Report ID 0x90, 3 bytes [reportId, flags, percentage]. Battery percent = buf[2] directly -- no translation. (c) M12 architectural pivot: M12 is now pure descriptor passthrough. It does NOT intercept Feature 0x47 IRPs, does NOT maintain a shadow buffer, does NOT translate. It ensures col02 (UP:0xFF00 U:0x0014 RID=0x90 3-byte) remains visible to userland -- the TLC that applewirelessmouse strips. Tray reads via HidD_GetInputReport(0x90) on col02 directly. (d) LOC estimate revised from 100-200 to ~30 LOC pure descriptor passthrough. (e) CRD config simplified: BatteryByteOffset, BatteryScale, BatteryLookupTable, BatteryReportID, BatteryReportType, BatteryReportLength, ShadowBufferSize dropped. Retained: HardwareKey, DeviceName, ScrollPassthrough, FeatureFlags, WatchdogIntervalSec, StallThresholdSec, PowerSaver subkey. (f) Empirical evidence: 96 successful tray battery reads on 2026-04-27 (49% to 47%, monotonic drain); debug.log line 2026-04-27 17:43:44 `OK path=...col02 battery=44% (split)`; `MouseBatteryReader.cs` constants UP_VENDOR_BATTERY=0xFF00, BatteryReportId=0x90, buf[2] extraction. D-S12-55/56/57/58. NLM pass-7 SKIPPED (corpus gap unchanged; this is a correction of prior inference, not new architecture).
 
 - **v1.6 (2026-04-28, final additions iteration):** Three final additions folded in. (a) Section 6c: Self-tuning battery offset detection -- on first install (BatteryByteOffset unset or 0xFF), driver enters LEARNING mode, captures up to 100 RID=0x27 frames over 5 minutes, identifies the byte position whose values cluster in [1..65] with low variance, writes result to CRD config, exits LEARNING mode. Removes manual DebugLevel=4 step for typical case. CRD additions: BatteryByteOffset REG_DWORD (0xFFFFFFFF = auto-learn), LearningModeFramesRequired (default 100), LearningModeMaxDurationSec (default 300). LEARNING_STATE struct added to DEVICE_CONTEXT. ~50 LOC additional. Decision D-S12-52. (b) docs/PRIVACY-POLICY.md: M12 collects nothing; all logging local-only; no network; no telemetry. Table of log channels (WPP/ETW + DebugLevel=4 + self-tuning state), all user-controlled or in-memory only. How to disable. Companion tray app noted as separate PRD. MIT license noted. Linked from README and KNOWN-ISSUES. Decision D-S12-53. (c) KNOWN-ISSUES.md: AV/EDR flag entry added -- kernel filter driver flagged by Defender/CrowdStrike/SentinelOne; workaround: whitelist M12.sys + INF in Defender/EDR; verify signature; corporate IT path. Safety rationale (open-source, MIT, no network, no persistence beyond service registry, test-signed). Decision D-S12-54. NLM pass-6 SKIPPED per playbook v1.8 cap (no architectural changes -- documentation additions only).
 - **v1.5 (2026-04-28, supplement fold-in iteration):** Two supplement briefs folded in that v1.4 did not have access to. (a) `M12-V14-SUPPLEMENT-USER-DECISIONS.md` — auto-reinit on wake (Section 5 addition: `EvtDeviceD0Entry` resets shadow staleness flag + optionally re-issues GET_REPORT for RID=0x27 if mouse responsive; IN v1 scope); battery polling fallback (Section 6 addition: if `last_rid27_timestamp > 60s`, issue explicit BTHID GET_REPORT for RID=0x27 before completing Feature 0x47 query; IN v1 scope); PREfast static analyzer GATING for ship (Section 20); Static Driver Verifier GATING for ship (Section 20); power-saver aggressive defaults SuspendOnDisplayOff=1 + SuspendOnACUnplug=1 (Section 17 defaults table updated); click handling explicitly v2 milestone (Section 16); watchdog 30s/120s confirmed documented. MIT license added to metadata. (b) `M12-V14-UPSTREAM-ISSUES-LESSONS.md` — `.gitattributes` CRLF enforcement for driver source tree (Section 20 addition; driver/.gitattributes content in docs/M12-PHASE-3-PREP.md); KNOWN-ISSUES.md with 6 entries created (docs/KNOWN-ISSUES.md); INSTALL.md testsigning section noted (MOP Section 3a already covers this). NLM pass-5 SKIPPED — per playbook v1.8 cap, v1.5 is the final design ship; corpus-gap REJECT-downgrade will not change with another pass. v1.5 changelog table below.
@@ -124,16 +126,35 @@ NLM pass-5 is skipped per playbook v1.8 cap. The v1.4 pass-4 verdict already app
 
 NLM pass-6 is skipped per playbook v1.8 cap. v1.6 additions are documentation-only (one new code section ~50 LOC, one new doc file, one appended entry) -- no new architectural surfaces, no IRP paths, no kernel-mode mutation. Corpus-gap REJECT-downgrade is permanent at this point per playbook v1.8.
 
+### v1.7 changelog (empirical correction -> section)
+
+| Change | Section addressed | Resolution |
+|---|---|---|
+| DELETE Section 6c (self-tuning offset detection) | Sec 6c (REMOVED) | LEARNING mode, LEARNING_STATE struct, BatteryByteOffset auto-detect, LearningModeFramesRequired, LearningModeMaxDurationSec all removed. Was based on incorrect inference from MU filter that RID=0x27 46-byte blob carried battery. D-S12-56. |
+| DELETE shadow buffer + Feature 0x47 short-circuit | Sec 7 (REPLACED) | M12 no longer intercepts Feature 0x47 IRPs or maintains a shadow buffer. The RID=0x27 tap path also removed. Battery is delivered natively by the device via col02 RID=0x90. D-S12-55. |
+| DELETE TranslateBatteryRaw formula | Sec 6 (REPLACED) | `(raw - 1) * 100 / 64` formula removed. Battery = buf[2] directly (already 0-100, no translation). D-S12-55. |
+| DELETE BATTERY_OFFSET, BatteryByteOffset CRD fields | Sec 7, Sec 10, CRD config | No offset to tune. Battery is always at buf[2] of RID=0x90. D-S12-56. |
+| ADD Section 5b: col02 native vendor battery TLC | Sec 5b (NEW) | M12 must produce descriptor with col01 (Mouse TLC, Wheel+Pan synthesized) AND col02 (UP:0xFF00 U:0x0014, RID=0x90 Input, 3 bytes [reportId, flags, percentage]) visible to userland. This is the TLC applewirelessmouse strips. D-S12-55. |
+| REPLACE Section 6: battery delivery is passthrough | Sec 6 (REWRITTEN) | M12 does NOT translate, does NOT shadow-buffer, does NOT intercept Feature 0x47. Tray reads via HidD_GetInputReport(0x90) on col02 directly. D-S12-55. |
+| REVISE LOC estimate | Sec 1 BLUF | 100-200 LOC -> ~30 LOC pure descriptor passthrough. D-S12-57. |
+| SIMPLIFY CRD config fields | Sec 10 DEVICE_CONTEXT | Drop: BatteryByteOffset, BatteryScale, BatteryLookupTable, BatteryReportID, BatteryReportType, BatteryReportLength, ShadowBufferSize, LearningModeFramesRequired, LearningModeMaxDurationSec. Retain: HardwareKey, DeviceName, ScrollPassthrough, FeatureFlags, WatchdogIntervalSec, StallThresholdSec, PowerSaver subkey. |
+| ADD empirical evidence reference | Sec 5b, Sec 6 | Tray debug.log 2026-04-27 17:43:44 + MouseBatteryReader.cs (UP_VENDOR_BATTERY, BatteryReportId=0x90, buf[2]). D-S12-58. |
+
+### v1.7 design ship rationale (NLM pass-7 SKIPPED)
+
+NLM pass-7 is skipped per playbook v1.8 cap and per mission constraints. The corpus gap (no empirical battery layout evidence) is what caused the prior incorrect inference. The empirical correction brief `M12-V16-EMPIRICAL-LAYOUT-CORRECTION.md` is the authoritative source; no peer review can override 96 confirmed tray reads against live hardware.
+
 ---
 
 ## 1. BLUF
 
-M12 is a pure-kernel KMDF lower filter driver, built clean-room from public references, that binds to Apple Magic Mouse v1 (PIDs 0x030D, 0x0310) and v3 (PID 0x0323) BTHENUM HID devices. M12's architectural baseline is Apple's own `applewirelessmouse.sys` (open-source provenance, 76 KB, no BCrypt, no userland service). The **delta vs applewirelessmouse** is two IRP-path interventions:
+M12 is a pure-kernel KMDF lower filter driver, built clean-room from public references, that binds to Apple Magic Mouse v1 (PIDs 0x030D, 0x0310) and v3 (PID 0x0323) BTHENUM HID devices. M12's architectural baseline is Apple's own `applewirelessmouse.sys` (open-source provenance, 76 KB, no BCrypt, no userland service). The **delta vs applewirelessmouse** is one purpose:
 
-1. **For v3 only (PID 0x0323):** when HidClass forwards `IOCTL_HID_GET_FEATURE` for ReportID 0x47, M12 short-circuits and completes inline with `[0x47, percentage]` derived from a shadow buffer of the latest RID=0x27 vendor input report (46-byte raw payload, refreshed on the BT interrupt channel ~10/sec while the mouse is in use). v1 (PIDs 0x030D, 0x0310) Feature 0x47 IRPs pass-through to native firmware unchanged — preserves v1's working PRD-184 M2 baseline.
-2. **Fresh-pair fallback (any PID):** if the BTHPORT cached SDP descriptor lacks Feature 0x47 (the device's native multi-TLC Descriptor A — present when no `applewirelessmouse` previously mutated the cache), M12's `IOCTL_INTERNAL_BTH_SUBMIT_BRB` completion routine rewrites the SDP HIDDescriptorList TLV to inject the unified Descriptor B (which declares Feature 0x47). When the cache already serves Descriptor B (the common post-applewirelessmouse case), no rewriting occurs.
+**Descriptor passthrough:** `applewirelessmouse.sys` rewrites the native multi-TLC device descriptor (Descriptor A: col01 Mouse TLC + col02 vendor battery TLC) into a collapsed single-TLC descriptor that strips col02. This makes scroll work but destroys battery visibility. M12's sole job is to produce a descriptor where BOTH collections remain visible to userland:
+- **col01**: Mouse TLC (UP:0x0001 / Usage:0x0002), with synthesized Wheel (0x38), AC Pan (0x0238), and Resolution Multipliers -- same as applewirelessmouse produces.
+- **col02**: Native vendor battery TLC (UP:0xFF00 / Usage:0x0014), Input Report ID 0x90, 3 bytes [reportId, flags, percentage]. This is the TLC applewirelessmouse strips. M12 preserves it.
 
-Translation formula `(raw - 1) * 100 / 64` for raw in [1..65]; clamped at boundaries. Battery byte offset within the 46-byte payload is registry-tunable (`BATTERY_OFFSET`, default 1) with debug logging to support empirical post-install validation. Shadow staleness threshold `MAX_STALE_MS` registry-tunable (default 10000 ms): older = STATUS_DEVICE_NOT_READY. No Mode A high-resolution scroll synthesis. No Resolution Multiplier feature reports. No active-poll. No userland service, no license gate, no trial expiry. Estimated 100-200 LOC of M12-specific code beyond an applewirelessmouse-equivalent KMDF skeleton (revised up from <100 in v1.2 to account for BRB SDP TLV rewriter); total binary 20-40 KB. Replaces both `applewirelessmouse.sys` (Apple/tealtadpole) and `MagicMouse.sys` (Magic Utilities) on the v1+v3 mouse stacks.
+Empirical evidence (tray debug.log 2026-04-27, 96 confirmed reads): the device's native battery is at RID=0x90 buf[2] directly as a 0-100 percent value. No translation formula. No shadow buffer. No Feature 0x47 IRP interception. The BRB-level SDP TLV rewriter (v1.3+) remains for the fresh-pair fallback case where the BTHPORT cache has Descriptor A without col02. Estimated **~30 LOC** of M12-specific code beyond an applewirelessmouse-equivalent KMDF skeleton; total binary 20-40 KB. No Mode A high-resolution scroll synthesis. No active-poll. No userland service, no license gate, no trial expiry. Replaces both `applewirelessmouse.sys` (Apple/tealtadpole) and `MagicMouse.sys` (Magic Utilities) on the v1+v3 mouse stacks.
 
 ---
 
@@ -204,30 +225,26 @@ The filter is a lower filter under HidClass and underneath HidBth. `WdfFdoInitSe
 There are exactly THREE distinct data flows in M12. Each gets explicit handling.
 
 **Flow 1 — Native input pass-through (the hot path, NO M12 code in the IRP path):**
-1. Device emits RID=0x02 (mouse/scroll, 5 payload bytes) or RID=0x27 (vendor blob, 46 payload bytes) on BT interrupt channel.
-2. HidBth packages it; HidClass dispatches `IOCTL_HID_READ_REPORT` down the stack.
-3. M12's default-queue dispatcher inspects IOCTL code:
-   - For `IOCTL_HID_READ_REPORT`: forward to lower IoTarget WITH a completion routine attached (`OnReadComplete`).
-   - The completion routine inspects the buffer's first byte (Report ID) AFTER the IRP completes upstream. For RID=0x27, copy the 46-byte payload + timestamp into the device-context shadow buffer (under spinlock). For all other RIDs, no action. Always allow the IRP to complete upstream unmolested — never modify the buffer, never re-complete, never absorb. This is a passive tap, not a translation.
-4. HidClass parses the input report against the (Mode B / Descriptor B) descriptor and dispatches to mouhid / RawInput as native.
+1. Device emits RID=0x02 (mouse/scroll, 5 payload bytes) or RID=0x90 (vendor battery, 3 bytes) on BT interrupt channel via col01/col02 respectively.
+2. HidBth packages it; HidClass dispatches input to the appropriate TLC handle.
+3. M12's default-queue dispatcher: `IOCTL_HID_READ_REPORT` and all other HID IOCTLs are forwarded to the lower IoTarget unchanged, no completion routine, no tap. M12 is entirely absent from the native input path.
+4. HidClass parses the input report against the enumerated descriptor and dispatches to mouhid / RawInput natively.
 
-This flow exercises NONE of M12's IRP synthesis logic. M12 acts solely as a passive eavesdropper on the input stream. CRIT-1 (double-complete) cannot occur because M12 never completes the read IRP; the IoTarget completes it.
+M12 exercises ZERO IRP synthesis in this flow. CRIT-1 (double-complete) cannot occur because M12 never intercepts or completes read IRPs.
 
-**Flow 2 — Feature 0x47 GET_REPORT (the only synthesised IRP):**
-1. Tray app calls `HidD_GetFeature(handle, 0x47, ...)`.
-2. HidClass validates ReportID against the parsed descriptor (Descriptor B declares Feature 0x47 — the `85 47 ... B1 A2` block at offsets 87-98 of the 116-byte descriptor — so HidClass forwards). HidClass dispatches `IOCTL_HID_GET_FEATURE` down the stack as `IRP_MJ_INTERNAL_DEVICE_CONTROL`, METHOD_NEITHER.
-3. M12's `EvtIoInternalDeviceControl` (sequential queue) inspects:
-   - Retrieve `HID_XFER_PACKET *pkt` via `WdfRequestGetParameters(req, &params)` then `pkt = (HID_XFER_PACKET *)params.Parameters.Others.Arg1` (the METHOD_NEITHER path; MAJ-3 fix).
-   - Validate `pkt != NULL && pkt->reportBufferLen >= 2 && pkt->reportId == 0x47`.
-   - Read shadow buffer under spinlock; if buffer is empty (no RID=0x27 received yet) and policy is "wait for input", complete with `STATUS_DEVICE_NOT_READY`.
-   - Else: extract `raw = shadow_buffer[BATTERY_OFFSET]`. Apply `pct = TranslateBatteryRaw(raw)`. Write `pkt->reportBuffer[0] = 0x47; pkt->reportBuffer[1] = pct;`. `WdfRequestSetInformation(req, 2)`. `WdfRequestComplete(req, STATUS_SUCCESS)`.
-4. Important: **M12 NEVER forwards the Feature 0x47 IRP to the device.** This is the short-circuit recommendation from HID-protocol validation — eliminates err=87 round-trip, eliminates cancellation race, and avoids the active-poll pattern entirely.
+**Flow 2 — Battery read by tray (NO M12 involvement):**
+1. Tray app calls `HidD_GetInputReport(handle_col02, buf, 3)` where `handle_col02` is the HID handle for the col02 TLC (UP:0xFF00 U:0x0014).
+2. HidClass forwards to device. Device returns [0x90, flags, pct]. Tray reads `buf[2]` as the percent.
+3. M12 is not in this IRP path. No interception, no completion routine, no synthesis.
 
-For PIDs 0x030D / 0x0310 (v1): M12 still serves Feature 0x47 from the shadow buffer using the same algorithm. v1's native firmware also backs Feature 0x47 directly, but having M12 short-circuit it ensures behavioural symmetry between v1 and v3 — both deliver the SAME `[0x47, pct]` from the SAME translation path. v1 regression risk reduced because the v1 vendor blob ALSO populates the shadow buffer (RID=0x27 is a v1 report too, declared in the same applewirelessmouse descriptor for both PIDs).
+**Flow 3 — BRB SDP descriptor rewrite (fresh-pair fallback only):**
+1. On fresh pair (BTHPORT cache has Descriptor A -- no col02), M12's BRB completion routine fires during the SDP exchange (see Sec 3b').
+2. M12 rewrites the SDP HIDDescriptorList TLV to inject a descriptor where both col01 and col02 are visible.
+3. After a successful rewrite, BTHPORT caches the corrected descriptor; subsequent boots use the cached version (no rewrite needed).
 
-**Flow 3 — All other IRPs (pass-through):**
-1. M12's default queue forwards every other IRP type unchanged (no completion routine) via `WdfRequestForwardToIoQueue` -> default forwarding via `WdfRequestSend` to the lower IoTarget.
-2. Specifically pass-through (no inspection): all `IOCTL_HID_*` codes other than READ_REPORT and GET_FEATURE; `IOCTL_INTERNAL_BTH_SUBMIT_BRB` (M12 does NOT mutate descriptors at the BRB level — see 3b' below); PnP IRPs handled by the framework default; power IRPs handled by HidClass as policy owner.
+**Flow 4 — All other IRPs (pass-through):**
+1. M12's default queue forwards every other IRP type unchanged to the lower IoTarget.
+2. Specifically pass-through: `IOCTL_HID_GET_FEATURE` (v1 Feature 0x47 flows to native firmware unchanged); all PnP IRPs; all power IRPs.
 
 **3b'. BRB-level descriptor mutation as fallback (restored in v1.3 per NLM pass-2 NEW-2):**
 
@@ -318,7 +335,7 @@ VG-0 fail condition: cache contains Descriptor A AND M12 BRB rewriter has NOT lo
 
 ### 3c. Why pure kernel (no userland)
 
-H-013 confirmed empirically (Session 12) that Magic Utilities splits descriptor mutation (kernel) from translation + battery (userland service, license-gated). With trial-expired userland the kernel filter alone produces broken scroll and hidden battery. M12 collapses the split: Feature 0x47 synthesis is a single short-circuit in the kernel, no userland dependency, no license check, no trial expiry. Phase 1 A2 extended analysis re-confirmed: the OS-capability flag at MU offset 0x1405d7400 is NOT a license gate — the actual license logic is in obfuscated code reachable only via IOCTLs from MU's userland service. M12 omits this entirely; translation runs unconditionally.
+H-013 confirmed empirically (Session 12) that Magic Utilities splits descriptor mutation (kernel) from translation + battery (userland service, license-gated). With trial-expired userland the kernel filter alone produces broken scroll and hidden battery. M12 collapses the split: descriptor passthrough is a single kernel-level operation (~30 LOC), and battery I/O is native device firmware responding to HID protocol on col02 -- no userland dependency, no license check, no trial expiry. Phase 1 A2 extended analysis re-confirmed: the OS-capability flag at MU offset 0x1405d7400 is NOT a license gate -- the actual license logic is in obfuscated code reachable only via IOCTLs from MU's userland service. M12 omits this entirely; descriptor passthrough runs unconditionally.
 
 ---
 
@@ -468,361 +485,155 @@ Total: 116 bytes. RID=0x02 on-wire = 6 bytes (1 RID + 5 payload). RID=0x27 on-wi
 - **RID=0x27 vendor blob is declared as Input.** This is what surfaces the 46-byte vendor payload to the HID input stream so M12 can tap it via `IOCTL_HID_READ_REPORT` completion. Without this RID in the descriptor, the device would still send the 0x27 frame but HidClass might filter or drop it.
 - **No Resolution Multiplier features.** M12 does not implement Mode A high-resolution scroll. This is a deliberate tradeoff vs MU: simpler, smaller, no scroll synthesis, but standard scroll precision instead of 120-units-per-detent.
 
-### 5b. Descriptor validation gate
+### 5b. Required descriptor output: col01 + col02 (v1.7 -- empirical correction)
 
-Pre-install: hidparser.exe (EWDK) parses the 116-byte literal and confirms:
-- TLC: UsagePage=0x0001 Usage=0x0002 (Mouse)
-- Report lengths: Input=47 (max, RID=0x27), Output=0, Feature=2
-- Counts: LinkColl=2 (App + Physical), InpBC=1 (Button 1-2), InpVC=4 (X, Y, Pan, Wheel) + 1 (RID=0x27 vendor strength), FeatVC=1 (battery)
+**This is the critical M12 correctness requirement.** After M12 is on the stack and the device is enumerated, `HidP_GetCaps` on the resulting HID device handles must show TWO top-level collections:
+
+**col01 -- Mouse TLC** (same as applewirelessmouse produces):
+- UsagePage: 0x0001 (Generic Desktop)
+- Usage: 0x0002 (Mouse)
+- Contains: RID=0x02 Input (X/Y/Buttons/Pan/Wheel), with synthesized Wheel (0x38) and AC Pan (0x0238)
+
+**col02 -- Native vendor battery TLC** (what applewirelessmouse strips; M12 PRESERVES this):
+- UsagePage: 0xFF00 (Vendor-defined)
+- Usage: 0x0014 (Vendor battery)
+- Input Report ID: 0x90
+- Input Report length: 3 bytes
+- Byte layout: [0x90=reportId, flags, percentage]
+- Battery extraction: `pct = buf[2]` -- already 0-100, no translation
+
+**Empirical basis** (D-S12-58): tray debug.log 2026-04-27 17:43:44 shows:
+```
+[2026-04-27 17:43:44] HIDP_CAPS path=...col02... InLen=3 FeatLen=0 TLC=UP:FF00/U:0014
+[2026-04-27 17:43:44] DETECT path=...col02 split-vendor InputReport=0x90
+[2026-04-27 17:43:44] OK path=...col02 battery=44% (split)
+```
+
+`MouseBatteryReader.cs` source confirms:
+```csharp
+const ushort UP_VENDOR_BATTERY  = 0xFF00;
+const ushort USG_VENDOR_BATTERY = 0x0014;
+const byte   BatteryReportId    = 0x90;
+// buf[0] = BatteryReportId; if (HidD_GetInputReport(handle, buf, 3)) pct = buf[2];
+```
+
+96 successful reads on 2026-04-27 (49% to 47%, monotonic drain) confirm this layout is correct.
+
+**col03 (optional, future):** vendor blob for click handling / gestures. Not part of v1; not mutated by M12.
+
+### 5c. Descriptor validation gate
+
+Pre-install: hidparser.exe (EWDK) parses the reference descriptor literal and confirms:
+- col01 TLC: UsagePage=0x0001 Usage=0x0002 (Mouse)
+- col02 TLC: UsagePage=0xFF00 Usage=0x0014 (Vendor battery)
+- col02 Input Report ID=0x90, Input Report length=3
+- LinkCollections=2 (minimum)
 
 Mismatch = halt before signtool.
 
-### 5c. Auto-reinit on wake (v1.5 — IN v1 scope per user decision D-S12-41)
+### 5d. Auto-reinit on wake (v1.5 -- D-S12-41, revised for v1.7 descriptor-passthrough)
 
 M12 registers `EvtDeviceD0Entry` as part of the KMDF power state machine. On every D0 entry (system resume, Bluetooth reconnect after sleep):
 
-1. Reset shadow buffer staleness flag: `KSPIN_LOCK` acquired; `Shadow.Valid = FALSE`; spinlock released. This ensures the next Feature 0x47 query returns `STATUS_DEVICE_NOT_READY` (or the FirstBootPolicy value) until fresh RID=0x27 data arrives — avoids serving pre-sleep stale data as if it were current.
-2. If mouse appears responsive (BTHPORT connection state indicates link-up), optionally issue one explicit GET_REPORT for RID=0x27 to prime the shadow buffer. This is a best-effort fire-and-forget: if the GET_REPORT fails (mouse still waking up), shadow stays invalid and the next organic RID=0x27 frame from user input populates it naturally.
+1. Log the D0 entry event via WPP for diagnostics.
+2. Power saver: reset `DeviceState` to `M12_DEVICE_STATE_ACTIVE` so power-saver logic can re-evaluate the current power context.
+
+Note: in v1.7, there is no shadow buffer to invalidate and no RID=0x27 to prime. Battery is read by the tray directly via `HidD_GetInputReport(0x90)` on col02. The tray's adaptive polling handles the wake transition naturally.
 
 ```c
 EVT_WDF_DEVICE_D0_ENTRY EvtDeviceD0Entry;
 
 NTSTATUS EvtDeviceD0Entry(WDFDEVICE Device, WDF_POWER_DEVICE_STATE PreviousState) {
     PDEVICE_CONTEXT dctx = DeviceGetContext(Device);
-    KIRQL oldIrql;
 
-    // Reset shadow buffer staleness flag
-    KeAcquireSpinLock(&dctx->ShadowLock, &oldIrql);
-    dctx->Shadow.Valid = FALSE;
-    KeReleaseSpinLock(&dctx->ShadowLock, oldIrql);
-
-    DoTraceMessage(TRACE_POWER, "EvtDeviceD0Entry: shadow invalidated, PreviousState=%d", PreviousState);
-
-    // Optionally prime shadow by issuing GET_REPORT for RID=0x27
-    // Best-effort: failure is silent; organic RID=0x27 from user input populates it
-    M12_TryPrimeShadowBuffer(Device);
+    DoTraceMessage(TRACE_POWER, "EvtDeviceD0Entry: PreviousState=%d", PreviousState);
+    dctx->DeviceState = M12_DEVICE_STATE_ACTIVE;
 
     return STATUS_SUCCESS;
 }
 ```
 
-The `M12_TryPrimeShadowBuffer` helper issues an async `BTHID_GET_REPORT` on the IoTarget with a short timeout (200ms). If it returns within the timeout, the completion routine populates the shadow buffer. If it times out or fails, shadow remains invalid until the next user-generated RID=0x27 frame. Estimated ~50 LOC for `EvtDeviceD0Entry` + `M12_TryPrimeShadowBuffer`.
+Estimated ~10 LOC for `EvtDeviceD0Entry` in v1.7 (significantly reduced from v1.5 ~50 LOC which included shadow-buffer reset + M12_TryPrimeShadowBuffer).
 
 ---
 
-## 6. Translation algorithm: NONE for input flows
+## 6. Battery delivery: descriptor passthrough only (v1.7 -- empirical correction)
 
-M12 does NOT translate RID=0x02 (mouse/scroll) or RID=0x12/0x29 (touch — not used). All native input flows pass through unmodified. The only translation in M12 is the 1-byte battery byte:
+**M12 does NOT translate battery. M12 does NOT maintain a shadow buffer. M12 does NOT intercept Feature 0x47 IRPs.** This entire approach was replaced in v1.7 based on empirical evidence.
 
-```c
-UCHAR TranslateBatteryRaw(UCHAR raw) {
-    // Hypothesised formula per HID-protocol-validation review.
-    // Descriptor declares RID=0x27 Logical Min=1, Max=65.
-    // Empirical confirmation needed post-install.
-    if (raw < 1)  return 0;
-    if (raw > 65) return 100;
-    return (UCHAR)(((ULONG)raw - 1) * 100 / 64);
+Empirical reality: the device's native firmware exposes battery on col02 (UP:0xFF00 / U:0x0014) as Input Report ID 0x90. The 3-byte payload is [reportId=0x90, flags, percentage]. Percentage is already 0-100 -- no translation formula needed.
+
+The tray reads battery by calling `HidD_GetInputReport(handle, buf, 3)` on col02 directly:
+
+```csharp
+buf[0] = BatteryReportId;  // 0x90
+if (HidD_GetInputReport(handle, buf, buf.Length))
+{
+    if (buf[0] != BatteryReportId) return -1;
+    int pct = buf[2];  // direct percent, 0-100
 }
 ```
 
-Examples: raw=1 -> 0%; raw=33 -> 50%; raw=65 -> 100%.
+M12's only battery-related job is to ensure col02 is visible in the enumerated descriptor (Section 5b). Once the descriptor is correct, all I/O is handled natively by the device and HidClass -- M12 has no code in any battery I/O path.
 
-This is intentionally a small standalone function so that if empirical capture shows non-linearity (lookup table needed), only this function changes — no structural rewrite.
+### 6b. Battery polling fallback for cold periods (v1.5 -- D-S12-42, unchanged)
 
-The byte offset within the 46-byte payload is not yet known empirically (RID=0x27 empirical review BLOCKED). M12 reads `shadow_buffer[BATTERY_OFFSET]` where `BATTERY_OFFSET` is read from registry at `EvtDeviceAdd` time:
+The battery polling fallback documented in prior versions (60s cold threshold, `M12_PrimeShadowBufferSync`) was designed for the shadow-buffer architecture that no longer exists. In the v1.7 descriptor-passthrough architecture, the tray calls `HidD_GetInputReport(0x90)` on col02 directly; the polling interval and retry logic live entirely in tray userland. No kernel-mode fallback needed.
 
-```
-HKLM\SYSTEM\CurrentControlSet\Services\M12\Parameters
-    BATTERY_OFFSET (REG_DWORD, default = 1)
-```
+**v1.5 decision D-S12-42 is superseded by D-S12-55.** The driver has no role in battery I/O timing.
 
-Default of 1 = first byte of the 46-byte payload (i.e., shadow_buffer[1] if RID byte is at offset 0). Operator can update via `reg add` and `pnputil /disable-device + /enable-device` cycle without recompile.
+### 6c. REMOVED: Self-tuning battery offset detection (was v1.6 D-S12-52 -- DELETED in v1.7)
 
-### 6b. Battery polling fallback for cold shadow buffer (v1.5 — IN v1 scope per user decision D-S12-42)
-
-If `now() - last_rid27_timestamp > 60s` when a Feature 0x47 query arrives, the shadow buffer is considered cold. Rather than immediately returning `STATUS_DEVICE_NOT_READY` (which the tray treats as N/A), M12 first issues an explicit BTHID GET_REPORT for RID=0x27 to wake the mouse and prime the shadow buffer.
-
-Rationale:
-- Mitigates first-boot race: on cold start the mouse hasn't sent any RID=0x27 frames yet; polling immediately returns N/A without this fallback.
-- Mitigates extended-disconnect scenario: mouse was off for hours; shadow is stale; first tray poll should produce a real value without waiting for user input.
-- 60s threshold chosen to avoid triggering on normal idle (mouse emits 0x27 ~10/sec during use; a 60s gap means it has genuinely gone inactive or was just powered on).
-
-```c
-// In HandleGetFeature47 (v3 path, after PID branch check):
-LONGLONG now_ms = KeQueryTimeIncrement();  // simplified; actual uses KeQuerySystemTime
-LONGLONG age_ms = (now_ms - dctx->Shadow.Timestamp.QuadPart) / 10000;
-
-if (!dctx->Shadow.Valid || age_ms > 60000) {
-    // Shadow cold -- issue GET_REPORT for RID=0x27 synchronously (short timeout)
-    NTSTATUS primeStatus = M12_PrimeShadowBufferSync(Device, 500 /* ms timeout */);
-    if (!NT_SUCCESS(primeStatus)) {
-        // Mouse unresponsive -- return NOT_READY; tray retries on next poll interval
-        WdfRequestComplete(req, STATUS_DEVICE_NOT_READY);
-        return STATUS_DEVICE_NOT_READY;
-    }
-    // Shadow now valid; fall through to translation
-}
-```
-
-The `M12_PrimeShadowBufferSync` helper is a synchronous variant with a 500ms timeout. It serialises with the shadow spinlock identically to the normal OnReadComplete completion routine. Estimated ~80 LOC for this path.
-
-`COLD_SHADOW_THRESHOLD_MS` is registry-tunable at `HKLM\SYSTEM\CurrentControlSet\Services\MagicMouseM12\Parameters\ColdShadowThresholdMs` (REG_DWORD, default 60000 = 60s).
-
-### 6c. Self-tuning battery offset detection (v1.6 -- IN v1 scope per user decision D-S12-52)
-
-On `EvtDriverDeviceAdd`, M12 reads `BatteryByteOffset` from CRD config:
-- If unset (key absent), OR set to magic sentinel value `0xFFFFFFFF`: enter LEARNING mode.
-- If set to valid value in [0..45]: enter NORMAL mode (skip learning).
-
-This removes the manual DebugLevel=4 step for the typical case: user installs, M12 self-detects the offset, battery just works. Manual override always available via registry.
-
-#### LEARNING_STATE struct (added to DEVICE_CONTEXT):
-
-```c
-typedef struct _LEARNING_STATE {
-    BOOLEAN  LearningActive;
-    UINT32   FramesCaptured;
-    UINT8    ByteUniqueValues[46][66]; // bitmap: byte_position -> set of values seen
-    UINT8    ByteUniqueCount[46];      // count of unique values per byte position
-    LARGE_INTEGER FirstCaptureTime;    // KeQuerySystemTime at first frame
-} LEARNING_STATE;
-```
-
-#### Learning mode algorithm:
-
-1. `LearningActive = TRUE` at `EvtDriverDeviceAdd` when BatteryByteOffset is absent or 0xFFFFFFFF.
-2. On every RID=0x27 input report received (in the OnReadComplete tap path):
-   - For each byte position `b` in [0..45]:
-     - Set `ByteUniqueValues[b][payload[b]] = 1`.
-     - Recount `ByteUniqueCount[b]` from bitmap popcount.
-   - Increment `FramesCaptured`.
-3. After `LearningModeFramesRequired` captured frames OR `LearningModeMaxDurationSec` elapsed:
-   - Find candidate bytes meeting ALL of:
-     - All values seen so far fall in [1..65] (matches Logical Min/Max declared for battery).
-     - Low variance: `ByteUniqueCount[b] <= 5`.
-     - Position not in the 0x47-area false-positive range (skip bytes that show constant 0x47).
-   - If exactly one candidate: write `BatteryByteOffset` to CRD config; exit LEARNING mode; log via WPP INFO.
-   - If multiple candidates: write best candidate (lowest `ByteUniqueCount`, most plausible position) + flag ambiguous via WPP WARNING; exit LEARNING mode.
-   - If zero candidates: fall back to `BATTERY_OFFSET = 0` (first byte); log WPP WARNING; note user can verify via DebugLevel=4 manual workflow.
-4. Exit LEARNING mode; future Feature 0x47 reads use the detected or default offset.
-
-#### CRD config additions:
-
-```
-HKLM\SYSTEM\CurrentControlSet\Services\MagicMouseM12\Devices\<HardwareKey>\
-    BatteryByteOffset      REG_DWORD  (absent or 0xFFFFFFFF = auto-learn; [0..45] = fixed)
-    LearningModeFramesRequired  REG_DWORD  (default 100; how many frames before deciding)
-    LearningModeMaxDurationSec  REG_DWORD  (default 300; cap learning time in seconds)
-```
-
-`BATTERY_OFFSET` (the existing per-Parameters tunable) continues to function as an explicit override that bypasses learning entirely. Reading order: if `BatteryByteOffset` in CRD is a valid [0..45] value, use it; else use learning (or `BATTERY_OFFSET` parameter if set as a legacy override).
-
-Estimated ~50 LOC for the LEARNING_STATE management path. The bitmap approach (46 * 66 bytes = ~3 KB per device, stack-allocated in DEVICE_CONTEXT) avoids dynamic allocation in the hot path.
+Section 6c (LEARNING mode, LEARNING_STATE struct, BatteryByteOffset auto-detect, LearningModeFramesRequired, LearningModeMaxDurationSec) is entirely removed. It was based on the incorrect inference that RID=0x27 (46-byte vendor blob) carried battery data. Empirical evidence shows RID=0x27 is not the battery report; the actual battery is on col02 RID=0x90 3-byte. No offset to detect, no learning needed. D-S12-56.
 
 ---
 
-## 7. Battery synthesis: short-circuit Feature 0x47 from shadow buffer
+## 7. Battery I/O path: no M12 code (v1.7 -- empirical correction)
 
-### 7a. Shadow buffer (the only state)
+**M12 has no code in any battery I/O path.** The shadow buffer, Feature 0x47 short-circuit, RID=0x27 tap, TranslateBatteryRaw function, BATTERY_OFFSET tunable, and MAX_STALE_MS tunable are all removed.
 
-```c
-typedef struct _SHADOW_BUFFER {
-    UCHAR        Payload[46];    // RID=0x27 vendor data (excluding RID byte)
-    LARGE_INTEGER Timestamp;     // KeQuerySystemTime when last updated
-    BOOLEAN      Valid;          // TRUE once first RID=0x27 received
-} SHADOW_BUFFER, *PSHADOW_BUFFER;
-```
+Battery delivery works as follows after M12 corrects the descriptor:
 
-Allocated in DEVICE_CONTEXT, initialised zero in EvtDeviceAdd, accessed under `KSPIN_LOCK` (`ShadowLock`). 46 bytes (not the full 47) because the RID byte (0x27) is identical for every frame and not stored.
+1. Device firmware sends native battery data as Input Report 0x90 on col02 (UP:0xFF00 U:0x0014).
+2. HidClass receives it and makes it available on the col02 device handle.
+3. Tray userland calls `HidD_GetInputReport(handle_col02, buf, 3)`. Returns [0x90, flags, percentage]. `pct = buf[2]`. Done.
+4. M12 is not in this path at all at I/O time.
 
-### 7b. Tap from RID=0x27 input (Flow 1, completion routine)
+### 7a. Removed: shadow buffer
 
-```c
-// Registered as completion routine for IOCTL_HID_READ_REPORT IRPs forwarded to IoTarget.
-EVT_WDF_REQUEST_COMPLETION_ROUTINE OnReadComplete;
+`SHADOW_BUFFER` struct (46-byte payload + timestamp + valid flag) and `ShadowLock` KSPIN_LOCK are removed from DEVICE_CONTEXT. Not needed.
 
-VOID OnReadComplete(WDFREQUEST Request, WDFIOTARGET Target,
-                    PWDF_REQUEST_COMPLETION_PARAMS Params, WDFCONTEXT Ctx) {
-    PDEVICE_CONTEXT dctx = (PDEVICE_CONTEXT)Ctx;
-    NTSTATUS s = Params->IoStatus.Status;
-    if (!NT_SUCCESS(s)) return;  // upstream sees failure unchanged
+### 7b. Removed: RID=0x27 tap completion routine
 
-    // METHOD_NEITHER for IOCTL_HID_READ_REPORT — buffer in HID_XFER_PACKET.
-    HID_XFER_PACKET *pkt = (HID_XFER_PACKET *)Params->Parameters.Others.Arg1;
-    if (pkt == NULL || pkt->reportBuffer == NULL) return;
+`OnReadComplete` and the `IOCTL_HID_READ_REPORT` forwarding + tap logic are removed. Not needed.
 
-    // Buffer layout: [0]=RID, [1..N]=payload.
-    if (pkt->reportBuffer[0] != 0x27) return;
-    if (pkt->reportBufferLen < 47) return;  // need RID + 46 payload bytes
+### 7c. Removed: Feature 0x47 short-circuit
 
-    KIRQL irql;
-    KeAcquireSpinLock(&dctx->ShadowLock, &irql);
-    RtlCopyMemory(dctx->Shadow.Payload, &pkt->reportBuffer[1], 46);
-    KeQuerySystemTime(&dctx->Shadow.Timestamp);
-    dctx->Shadow.Valid = TRUE;
-    KeReleaseSpinLock(&dctx->ShadowLock, irql);
+`HandleGetFeature47`, `TranslateBatteryRaw`, the sequential IOCTL queue for Feature 0x47, and the PID branch are all removed. v3 battery is on col02 RID=0x90 -- not behind Feature 0x47. v1 battery (Feature 0x47) continues to work via native firmware path unchanged (M12 does not intercept it).
 
-    // No mutation of upstream IRP. IoTarget already completed it.
-}
-```
+### 7d. v1 battery path (unchanged)
 
-Notes:
-- Completion routine never modifies the IRP buffer that flows upstream. The framework handles upstream completion. M12 only reads.
-- Verification: senior CRIT-1 (UAF / double-complete) does not apply — M12 doesn't complete here.
-- F13 (BT disconnect mid-IRP): if Status indicates failure or Cancel, we early-out and let the framework's upstream completion proceed. EvtIoStop handles in-flight IRPs (Sec 8).
-
-### 7c. Feature 0x47 short-circuit (Flow 2)
-
-```c
-NTSTATUS HandleGetFeature47(WDFREQUEST req, PDEVICE_CONTEXT dctx) {
-    WDF_REQUEST_PARAMETERS params;
-    WDF_REQUEST_PARAMETERS_INIT(&params);
-    WdfRequestGetParameters(req, &params);
-
-    // METHOD_NEITHER: HID_XFER_PACKET in Type3InputBuffer (Arg1).
-    HID_XFER_PACKET *pkt = (HID_XFER_PACKET *)params.Parameters.Others.Arg1;
-    if (pkt == NULL || pkt->reportBuffer == NULL || pkt->reportBufferLen < 2) {
-        WdfRequestComplete(req, STATUS_INVALID_PARAMETER);
-        return STATUS_INVALID_PARAMETER;
-    }
-    if (pkt->reportId != 0x47) {
-        // Wrong RID — forward downstream (defensive; HidClass should never send other RIDs here).
-        return ForwardRequest(req, dctx);
-    }
-
-    UCHAR raw;
-    BOOLEAN valid;
-    LARGE_INTEGER ts;
-    KIRQL irql;
-    KeAcquireSpinLock(&dctx->ShadowLock, &irql);
-    valid = dctx->Shadow.Valid;
-    raw = dctx->Shadow.Payload[dctx->BatteryOffset];
-    ts = dctx->Shadow.Timestamp;
-    KeReleaseSpinLock(&dctx->ShadowLock, irql);
-
-    // Debug log: cached payload first 46 bytes hex (every Feature 0x47 query)
-    // for empirical post-install offset/formula validation.
-    LogShadowBuffer(dctx);
-
-    if (!valid) {
-        // First-boot, no RID=0x27 received yet.
-        // Default policy: STATUS_DEVICE_NOT_READY -> tray shows N/A.
-        // Registry-tunable: FirstBootPolicy=0 (NOT_READY) | 1 (return [0x47, 0x00])
-        if (dctx->FirstBootPolicy == 1) {
-            pkt->reportBuffer[0] = 0x47;
-            pkt->reportBuffer[1] = 0;
-            WdfRequestSetInformation(req, 2);
-            WdfRequestComplete(req, STATUS_SUCCESS);
-            return STATUS_SUCCESS;
-        }
-        WdfRequestComplete(req, STATUS_DEVICE_NOT_READY);
-        return STATUS_DEVICE_NOT_READY;
-    }
-
-    UCHAR pct = TranslateBatteryRaw(raw);
-    pkt->reportBuffer[0] = 0x47;
-    pkt->reportBuffer[1] = pct;
-    WdfRequestSetInformation(req, 2);
-    WdfRequestComplete(req, STATUS_SUCCESS);
-    return STATUS_SUCCESS;
-}
-```
-
-Notes:
-- Inline complete. NEVER forward to IoTarget. CRIT-2 (sync-send deadlock) does not apply.
-- METHOD_NEITHER buffer retrieval per MAJ-3.
-- Shadow buffer staleness check: optional. Default policy is "always serve cache regardless of age" because (a) v3 emits RID=0x27 ~10/sec when in use; cache stays warm, and (b) when mouse is idle for >30s the user probably isn't watching the tray either. A future tunable `MAX_STALE_MS` could return STATUS_DEVICE_NOT_READY if `now - ts > MAX_STALE_MS`; out of scope for v1.2 default.
-
-### 7d. PID branch for Feature 0x47 (restored in v1.3 per NLM pass-2 NEW-1)
-
-v1 and v3 use DIFFERENT paths. v1 firmware natively backs Feature 0x47 — that's the working PRD-184 M2 baseline (existing tray code reads v1 battery via `HidD_GetFeature(0x47)` against native firmware, returns the actual battery percentage). Routing v1 through M12's shadow-buffer short-circuit risks regression because (a) v1 may not emit RID=0x27 frames at all in normal operation (v1 firmware has a working 0x47, no need to push 0x27), and (b) even if v1 emits 0x27, the byte layout may differ from v3.
-
-```c
-NTSTATUS HandleGetFeature47(WDFREQUEST req, PDEVICE_CONTEXT dctx) {
-    WDF_REQUEST_PARAMETERS params;
-    WDF_REQUEST_PARAMETERS_INIT(&params);
-    WdfRequestGetParameters(req, &params);
-
-    HID_XFER_PACKET *pkt = (HID_XFER_PACKET *)params.Parameters.Others.Arg1;
-    if (pkt == NULL || pkt->reportBuffer == NULL || pkt->reportBufferLen < 2) {
-        WdfRequestComplete(req, STATUS_INVALID_PARAMETER);
-        return STATUS_INVALID_PARAMETER;
-    }
-    if (pkt->reportId != 0x47) {
-        return ForwardRequest(req, dctx);
-    }
-
-    // PID branch — v1.3
-    if (dctx->Pid == 0x030D || dctx->Pid == 0x0310) {
-        // v1 firmware natively backs Feature 0x47 — pass-through.
-        // Preserves PRD-184 M2 working baseline.
-        return ForwardRequest(req, dctx);
-    }
-
-    if (dctx->Pid != 0x0323) {
-        // Defensive — INF should not have matched any other PID.
-        WdfRequestComplete(req, STATUS_DEVICE_CONFIGURATION_ERROR);
-        return STATUS_DEVICE_CONFIGURATION_ERROR;
-    }
-
-    // v3 short-circuit (rest of HandleGetFeature47 from Section 7c)
-    // ... shadow buffer read + STATUS_DEVICE_NOT_READY check (with MAX_STALE_MS) +
-    //     TranslateBatteryRaw + WdfRequestComplete(req, STATUS_SUCCESS) ...
-}
-```
-
-The shadow buffer is STILL populated for both v1 and v3 by the OnReadComplete tap (Section 7b) — that's a passive read-only side-effect with no IRP cost — but only v3's Feature 0x47 reads from it. v1 ignores the shadow entirely and lets the native firmware path serve the IRP. If empirical evidence later shows v1's RID=0x27 layout matches v3's and short-circuiting v1 has a benefit (e.g., unified behaviour during sleep/wake), the v1 path can be flipped to short-circuit by changing the PID branch — no other structural change.
-
-### 7e. Shadow staleness threshold (v1.3, default REVISED per NLM pass-3)
-
-`MAX_STALE_MS` registry tunable at `\Registry\Machine\System\CurrentControlSet\Services\M12\Parameters\MAX_STALE_MS` (REG_DWORD, **default 0 = disabled**). v3 short-circuit checks:
-
-```c
-if (dctx->MaxStaleMs != 0) {
-    LONGLONG age_ms = (now.QuadPart - ts.QuadPart) / 10000;
-    if (age_ms > dctx->MaxStaleMs) {
-        WdfRequestComplete(req, STATUS_DEVICE_NOT_READY);
-        return STATUS_DEVICE_NOT_READY;
-    }
-}
-```
-
-**Default DISABLED rationale (NLM pass-3 fix):** v3 mouse goes to sleep after ~2 minutes of inactivity (BT disconnect, no further RID=0x27 frames pushed). Tray polls every 2 hours when battery > 50%. A 10-sec staleness threshold would cause the tray to see NOT_READY almost every poll because the mouse hasn't sent fresh data. The user would see "N/A" instead of the last known battery percentage — significantly worse UX than serving slightly-stale-but-accurate-as-of-last-input data.
-
-The mouse only stops sending RID=0x27 because it is asleep; battery percentage cannot have changed materially in that window. The cached value remains authoritative.
-
-**Operator can opt-in to staleness check** by setting `MAX_STALE_MS` to a non-zero value (recommended: 7200000 = 2 hours, matching tray's max poll interval). Reserved for cases where empirical data shows the cache becoming corrupted across long sleep windows.
-
-**Pairs with OQ-D (advisory):** if VG-7 soak reveals persistent N/A windows >5min on v3 cold-start (no input has happened since boot/wake to populate shadow), consider implementing the soft async active-poll. Without an active wake, the passive shadow buffer cannot resolve its own emptiness on cold-start. v1.3 ships without active-poll; cold-start N/A is accepted until first user input.
+v1 (PIDs 0x030D, 0x0310) firmware natively backs Feature 0x47 -- the PRD-184 M2 working baseline. M12 does not intercept these IRPs. They flow through M12's default queue unchanged to native firmware. v1 battery remains working exactly as before M12 installation.
 
 ---
 
-## 8. WDF queue layout
+## 8. WDF queue layout (v1.7 simplified)
 
 | Queue | Dispatch | What it handles |
 |-------|----------|-----------------|
-| Default queue | parallel | All IRPs by default; forwards to specialised queues by IOCTL major function code |
-| Sequential IOCTL queue | sequential | `IOCTL_HID_GET_FEATURE` ONLY — Feature 0x47 short-circuit |
-| Parallel input queue | parallel | `IOCTL_HID_READ_REPORT` — input report stream (forward + tap on completion) |
+| Default queue | parallel | All IRPs; forwards IOCTL_INTERNAL_BTH_SUBMIT_BRB to BRB queue for descriptor-rewrite check; all others pass through |
+| BRB queue | parallel | `IOCTL_INTERNAL_BTH_SUBMIT_BRB` -- BRB completion routine for fresh-pair descriptor rewrite (Sec 3b') |
 
-`WdfIoQueueCreate` is called twice. Forwarding from default queue to specialised queues uses `WdfDeviceConfigureRequestDispatching` keyed on `IRP_MJ_INTERNAL_DEVICE_CONTROL` major code.
+`WdfIoQueueCreate` is called once (BRB queue). The Feature 0x47 sequential queue and the RID=0x27 parallel read queue are removed (v1.7 -- no shadow buffer, no Feature 0x47 intercept). All non-BRB IRPs use default forwarding via the default queue.
 
-### 8a. EvtIoStop registered on both specialised queues (CRIT-3 fix)
+### 8a. EvtIoStop registered on BRB queue (CRIT-3 fix, v1.7 simplified)
 
 ```c
-VOID EvtIoStop_Sequential(WDFQUEUE q, WDFREQUEST req, ULONG flags) {
+VOID EvtIoStop_Brb(WDFQUEUE q, WDFREQUEST req, ULONG flags) {
     UNREFERENCED_PARAMETER(q);
     UNREFERENCED_PARAMETER(flags);
-    // Feature 0x47 handler is short and PASSIVE_LEVEL — drains quickly.
-    // Acknowledge without requeue.
-    WdfRequestStopAcknowledge(req, FALSE);
-}
-
-VOID EvtIoStop_Parallel(WDFQUEUE q, WDFREQUEST req, ULONG flags) {
-    UNREFERENCED_PARAMETER(q);
-    UNREFERENCED_PARAMETER(flags);
-    // Read IRPs were forwarded with completion routine; framework cancels
-    // the IoTarget request on stop. Acknowledge.
+    // BRB completion routine forwards to IoTarget with completion routine.
+    // Framework cancels the IoTarget request on stop. Acknowledge.
     WdfRequestStopAcknowledge(req, FALSE);
 }
 ```
@@ -865,18 +676,10 @@ NTSTATUS CreateQueues(_In_ WDFDEVICE Device);
 EVT_WDF_DEVICE_SELF_MANAGED_IO_SUSPEND  EvtDeviceSelfManagedIoSuspend;
 EVT_WDF_DEVICE_SELF_MANAGED_IO_RESTART  EvtDeviceSelfManagedIoRestart;
 
-// IoctlHandlers.c
-EVT_WDF_IO_QUEUE_IO_INTERNAL_DEVICE_CONTROL EvtIoInternalDeviceControl_Sequential;
-EVT_WDF_IO_QUEUE_IO_INTERNAL_DEVICE_CONTROL EvtIoInternalDeviceControl_Parallel;
-EVT_WDF_IO_QUEUE_IO_STOP                    EvtIoStop_Sequential;
-EVT_WDF_IO_QUEUE_IO_STOP                    EvtIoStop_Parallel;
-NTSTATUS HandleGetFeature47(_In_ WDFREQUEST Req, _In_ PDEVICE_CONTEXT Ctx);
+// IoctlHandlers.c (v1.7 simplified -- no Feature 0x47 intercept, no RID=0x27 tap)
+EVT_WDF_IO_QUEUE_IO_INTERNAL_DEVICE_CONTROL EvtIoInternalDeviceControl_Brb;
+EVT_WDF_IO_QUEUE_IO_STOP                    EvtIoStop_Brb;
 NTSTATUS ForwardRequest(_In_ WDFREQUEST Req, _In_ PDEVICE_CONTEXT Ctx);
-EVT_WDF_REQUEST_COMPLETION_ROUTINE OnReadComplete;
-
-// Battery.c
-UCHAR TranslateBatteryRaw(_In_ UCHAR Raw);
-VOID  LogShadowBuffer(_In_ PDEVICE_CONTEXT Ctx);
 
 // BrbDescriptor.c (v1.3 — fresh-pair fallback)
 EVT_WDF_REQUEST_COMPLETION_ROUTINE OnBrbSubmitComplete;
@@ -922,7 +725,7 @@ All non-paged allocations use `POOL_FLAG_NON_PAGED` (not `POOL_FLAG_NON_PAGED_EX
 
 ## 10. Data structures
 
-### 10a. DEVICE_CONTEXT
+### 10a. DEVICE_CONTEXT (v1.7 simplified -- shadow buffer and learning state removed)
 
 ```c
 typedef struct _DEVICE_CONTEXT {
@@ -930,37 +733,29 @@ typedef struct _DEVICE_CONTEXT {
 
     WDFDEVICE      Device;
     WDFIOTARGET    IoTarget;            // == WdfDeviceGetIoTarget(Device); set in EvtDeviceAdd
-    WDFQUEUE       IoctlQueue;          // sequential
-    WDFQUEUE       ReadQueue;           // parallel
+    WDFQUEUE       BrbQueue;            // parallel -- BRB descriptor rewriter (Sec 3b')
 
     USHORT         Vid;
     USHORT         Pid;                 // 0x030D / 0x0310 / 0x0323
-    UNICODE_STRING InstanceId;          // v1.4 — for WPP per-device correlation (Sec 19.5)
-
-    // Battery shadow (the only mutable state). Per-DEVICE_CONTEXT, NOT global, so multi-mouse safe (Sec 19.2).
-    KSPIN_LOCK     ShadowLock;
-    SHADOW_BUFFER  Shadow;
+    UNICODE_STRING InstanceId;          // v1.4 -- for WPP per-device correlation (Sec 19.5)
 
     // Tunables (read once from registry at AddDevice; defaults if absent)
-    ULONG          BatteryOffset;       // default 1
-    ULONG          FirstBootPolicy;     // 0=NOT_READY (default), 1=return 0%
-    ULONG          MaxStaleMs;          // default 0 = no staleness check (v1.3 final per NLM pass-3 — 10s default UX-regressed when mouse asleep)
-    ULONG          DebugLevel;          // v1.4 — 0..4, see Sec 25
-    ULONG          WatchdogIntervalSec; // v1.4 — default 30; 0 = disabled (Sec 24)
-    ULONG          StallThresholdSec;   // v1.4 — default 120 (Sec 24)
+    ULONG          DebugLevel;          // v1.4 -- 0..4, see Sec 25
+    ULONG          WatchdogIntervalSec; // v1.4 -- default 30; 0 = disabled (Sec 24)
+    ULONG          StallThresholdSec;   // v1.4 -- default 120 (Sec 24)
 
     // BRB rewriter telemetry (v1.3)
     BOOLEAN        DescriptorBRewritten;  // set TRUE after first successful BRB SDP rewrite
                                           // VG-0 reads this to distinguish fresh-pair from stale-cache
 
-    // Power saver (v1.4 — Sec 17)
-    ULONG          DeviceState;          // M12_DEVICE_STATE_ACTIVE / SUSPENDED
+    // Power saver (v1.4 -- Sec 17)
+    ULONG          DeviceState;           // M12_DEVICE_STATE_ACTIVE / SUSPENDED
     PO_SETTING_REGISTRATION DisplayCallback;
     PO_SETTING_REGISTRATION AcDcCallback;
     PO_SETTING_REGISTRATION AwayModeCallback;
     POWER_SAVER_CONFIG      PowerSaverConfig;  // loaded from CRD subkey at AddDevice
 
-    // Watchdog (v1.4 — Sec 24)
+    // Watchdog (v1.4 -- Sec 24)
     WDFTIMER       WatchdogTimer;
 } DEVICE_CONTEXT, *PDEVICE_CONTEXT;
 WDF_DECLARE_CONTEXT_TYPE_WITH_NAME(DEVICE_CONTEXT, GetDeviceContext)
@@ -968,6 +763,10 @@ WDF_DECLARE_CONTEXT_TYPE_WITH_NAME(DEVICE_CONTEXT, GetDeviceContext)
 #define M12_DEVICE_CONTEXT_SIG          0x4D31322D  // 'M12-' little-endian
 #define M12_DEVICE_STATE_ACTIVE         0
 #define M12_DEVICE_STATE_SUSPENDED      1
+
+// REMOVED in v1.7: SHADOW_BUFFER struct, ShadowLock, BatteryOffset, FirstBootPolicy,
+// MaxStaleMs, IoctlQueue, ReadQueue -- no shadow buffer in descriptor-passthrough architecture.
+// REMOVED in v1.7: LEARNING_STATE struct -- self-tuning removed per D-S12-56.
 ```
 
 ```c
@@ -984,73 +783,55 @@ typedef struct _POWER_SAVER_CONFIG {
 } POWER_SAVER_CONFIG, *PPOWER_SAVER_CONFIG;
 ```
 
-### 10b. SHADOW_BUFFER
+### 10b. SHADOW_BUFFER (REMOVED in v1.7)
 
-```c
-typedef struct _SHADOW_BUFFER {
-    UCHAR         Payload[46];
-    LARGE_INTEGER Timestamp;
-    BOOLEAN       Valid;
-} SHADOW_BUFFER, *PSHADOW_BUFFER;
-```
+`SHADOW_BUFFER` and `LEARNING_STATE` structs are removed. M12 v1.7 has no battery I/O state; battery is delivered natively by the device via col02 RID=0x90.
 
-No REQUEST_CONTEXT needed in v1.2 — M12 does not stash per-IRP state.
+No REQUEST_CONTEXT needed -- M12 does not stash per-IRP state.
 
 ---
 
 ## 11. Failure modes
 
+Note: F1 (wrong battery offset), F2 (first-boot NOT_READY), F4 (RID=0x27 not in descriptor), F5 (shadow race), F9 (Feature 0x47 concurrency), F10 (shadow lost on re-enum), F14 (sequential queue stall), F16 (BATTERY_OFFSET out of bounds), F17 (shadow never populates), F18-F21 (shadow/Feature 0x47 timing failures) are all REMOVED in v1.7. These failure modes only applied to the shadow-buffer/Feature-0x47-intercept architecture, which is replaced by descriptor passthrough. Battery I/O is now handled natively.
+
 | # | Failure | Symptom | Mitigation |
 |---|---------|---------|------------|
-| F1 | RID=0x27 byte offset wrong | Battery reads return wrong percentage | `BATTERY_OFFSET` registry-tunable (Sec 7); LogShadowBuffer logs cached bytes on every Feature 0x47 query — operator runs ETW/HCI sniff at known battery levels, computes offset, updates registry, re-binds. No code change. |
-| F2 | First-boot Feature 0x47 before any RID=0x27 received | `STATUS_DEVICE_NOT_READY`, tray N/A briefly | Default policy returns NOT_READY; tray retries on next adaptive interval. Registry-tunable `FirstBootPolicy=1` forces `[0x47, 0x00]` if tray cannot tolerate retries. |
-| F3 | v1 regression: M12 modifies v1's working Feature 0x47 | v1 tray shows N/A or wrong % after install | Same path for v1 and v3 (Sec 7d); v1 vendor blob populates shadow same as v3. Registry tunable allows v1-specific BATTERY_OFFSET if needed. Validation gate VG-1 (MOP) — v1 must produce `OK battery=N% (Feature 0x47)` BEFORE v3 testing. v1 regression halts rollout. |
-| F4 | RID=0x27 not declared in cached SDP descriptor | Shadow buffer never populates | applewirelessmouse-published descriptor declares RID=0x27 (verified, Sec 5). If an old/non-matching firmware variant doesn't, M12 logs and falls back to FirstBootPolicy=1. |
-| F5 | Shadow read while completion routine writes (race) | Torn 46-byte read | KSPIN_LOCK on every read/write. Standard. |
-| F6 | Memory pressure: HID_XFER_PACKET buffer NULL | IOCTL fails | Defensive NULL/length check; complete with STATUS_INVALID_PARAMETER. HidClass retries or surfaces upstream. |
-| F7 | Descriptor parse fails post-install | HidClass FDO doesn't bind | Pre-install: `hidparser.exe` validates the 116-byte descriptor pre-signtool. M12 doesn't actually serve the descriptor — applewirelessmouse-style cached SDP does — but the validation confirms the bytes M12's code reasons about match the device's published descriptor. |
+| F3 (v1.7 revised) | v1 regression: M12 disrupts v1's working Feature 0x47 path | v1 tray shows N/A or wrong % after install | M12 does NOT intercept Feature 0x47 IRPs in v1.7. All Feature 0x47 IRPs pass through M12's default queue to native firmware unchanged. If v1 shows regression, check LowerFilters binding and BRB descriptor rewrite log. VG-1 (MOP) remains: v1 must produce `OK battery=N% (Feature 0x47)` within 30s. |
+| F6 | Memory pressure: HID_XFER_PACKET buffer NULL | IOCTL fails | Defensive NULL/length check on all BRB-rewriter IRP handling; complete with STATUS_INVALID_PARAMETER. |
+| F7 | Descriptor passthrough fails -- col02 not visible after install | Tray col02 probe finds no col02 device handle | BRB rewriter VG-0 check; if col02 missing, trigger Section 7c-pre cache wipe or unpair+repair. M12 logs BRB_REWRITE events via WPP. |
 | F8 | Driver sees PID outside {0x030D, 0x0310, 0x0323} | Spurious DEVICE_CONTEXT | INF won't match. Defensive PID check at EvtDeviceAdd; return STATUS_DEVICE_CONFIGURATION_ERROR if INF was over-ridden manually. |
-| F9 | Concurrent Feature 0x47 callers | Double-complete? Lost update? | Sequential IOCTL queue serialises. Spinlock is read-only side. No risk. |
-| F10 | DSM property-write triggers re-enumeration mid-session | EvtDeviceRemove + Add cycle; shadow lost | Acceptable — shadow re-warms within 100ms once first RID=0x27 arrives. Brief NOT_READY visible. |
 | F11 | PnP rank: M12 INF outranked by Apple's `applewirelessmouse` or MU's `magicmouse.inf` | Old driver wins | MOP step INSTALL-1: `pnputil /enum-drivers` enumeration BEFORE install; if competing INFs present, MOP halts and asks user; AP-24 backup-verify gate before any `/delete-driver`. |
 | F12 | WDF version skew: KMDF 1.33 vs older target | Driver fails to load, error 31 | KMDF version pinned in vcxproj to 1.15 (matches MU + applewirelessmouse + OS minimum). |
-| F13 | BTHPORT SDP cache trap (less critical in v1.2) | M12 expects descriptor X but cache serves descriptor Y | v1.2 doesn't mutate descriptor; whatever HidBth has cached IS what HidClass parses. VG-0 verifies caps Input=47/Feature=2/LinkColl=2. If caps mismatch (e.g., a competing filter previously injected something else): unpair + re-pair. |
-| F14 | Sequential queue stalls on long-running IRP | UI stutter | v1.2 Feature 0x47 handler is inline and fast (single spinlock + memcpy + arithmetic). No downstream send. F14 risk eliminated. |
-| F15 | EvtIoStop not called (CRIT-3) | BSOD on BT disconnect | EvtIoStop registered on both queues + EvtDeviceSelfManagedIoSuspend (Sec 8). Driver Verifier gates this. |
-| F16 | Registry BATTERY_OFFSET set to 46 (out of bounds) | Reads past payload[45] | Validate at registry-read time: clamp to [0..45]; default if out-of-range. |
-| F17 | Cached SDP descriptor doesn't include RID=0x27 (very old applewirelessmouse pre-firmware) | Shadow buffer never receives 0x27 frames | LogShadowBuffer always logs "Shadow.Valid=FALSE" -> operator notices in debug.log; MOP VG-0 fails caps check. Mitigation: re-pair via Path B with fresh SDP. |
-| F18 (v1.4) | BT disconnect mid-Feature-0x47 query | IRP arrives at M12 while target offline | M12 completes from cached shadow buffer (not a failure). EvtIoStop already wired (CRIT-3 fix); for the in-flight Feature 0x47 IRP, M12 has not yet forwarded it (short-circuit), so no target dependency. WPP log records "F18-DISCONNECT-DURING-QUERY". |
-| F19 (v1.4) | BT reconnect — first RID=0x27 after stale shadow | Shadow has data from prior session | First post-reconnect `OnReadComplete` fires, overwrites payload + bumps timestamp. Shadow becomes fresh. Operator workflow: tray polls within 60s of mouse activity, sees fresh value. Failure mode benign. |
-| F20 (v1.4) | Long disconnect (>5 min) — shadow buffer marked stale | Feature 0x47 returns last cached value | If `MAX_STALE_MS != 0` and `(now - Shadow.Timestamp) > MAX_STALE_MS`, return STATUS_DEVICE_NOT_READY. WPP `STALE_SHADOW_RETURN` event emitted. v1.3 default `MAX_STALE_MS=0` (disabled) per NLM pass-3; operator opts in to non-zero only with empirical justification. |
-| F21 (v1.4) | Reconnect race — Feature 0x47 query arrives BEFORE first post-reconnect RID=0x27 | Risk of returning stale value | Acceptable per HID 1.11 §7 ("data may be stale"). Return last-cached value. WPP log records "F21-RECONNECT-RACE-STALE-SERVED". If MAX_STALE_MS configured, staleness check (F20) catches very old values. Tray's adaptive polling re-queries within seconds; user sees corrected value on next poll. |
+| F13 | BTHPORT SDP cache trap | Fresh pair scenario: BTHPORT cache has Descriptor A (no col02); HidClass enumerates without battery TLC | M12 BRB rewriter fires during SDP exchange and injects corrected descriptor. VG-0 verifies col02 visible post-install. If BRB rewriter logs BRB_REWRITE_FAILED: unpair + re-pair. |
+| F15 | EvtIoStop not called (CRIT-3) | BSOD on BT disconnect | EvtIoStop registered on BRB queue + EvtDeviceSelfManagedIoSuspend (Sec 8). Driver Verifier gates this. |
 | F22 (v1.4) | Vendor suspend command bytes unknown | Power-saver activates but mouse doesn't enter low-power state | Fallback: M12 issues `WdfIoTargetClose` on the lower target (forces BT disconnect). Less battery-efficient than vendor suspend but functional. CRD config `SuspendCommandBytes` empty -> use BT-disconnect fallback. Once OQ-F resolved, populate `SuspendCommandBytes` via registry. |
 | F23 (v1.4) | Competing INF (e.g., MagicMouseFix fork) ships DriverVer >= 01/01/2027 | M12 loses PnP rank tie | MOP pre-install detection (Sec 7a, brief Issue 9) lists candidate INFs; flags any with DriverVer >= M12's. Operator warned + can choose: bump M12 DriverVer next release, or accept competing driver. No silent failure. |
 | F24 (v1.4) | Orphan service entry persists after uninstall | `MagicMouseM12` service in HKLM with STOPPED + missing binary | MOP rollback Sec 8b explicit `sc.exe delete MagicMouseM12` after `pnputil /delete-driver`. Pre-install Sec 7a detects + cleans stale entries. WPP log records nothing (service not loaded); detection is registry-side. |
 | F25 (v1.4) | Sticky `LowerFilters` reference on disconnected sibling devices | Apple keyboard's BTHENUM still references `applewirelessmouse` after M12 install | MOP post-install `mm-orphan-filter-walk.ps1` (Sec 7d) walks the BTHENUM tree, flags orphan references. Cleanup script removes `applewirelessmouse` from sibling Device Parameters keys. Non-fatal; cosmetic registry hygiene. |
 | F26 (v1.4) | Sign-out event does not reach kernel filter | Power-saver's "SuspendOnSignOut=1" never fires | Kernel KMDF filter cannot directly subscribe to user-session events. Resolution: tray app subscribes to `WTS_SESSION_LOGOFF` via `WTSRegisterSessionNotification`, then sends `IOCTL_M12_SUSPEND` to M12. If tray not running at sign-out, fallback: SCM session-end signal via `RegisterServiceCtrlHandlerEx` (driver service receives `SERVICE_CONTROL_SESSIONCHANGE`). |
-| F27 (v1.4) | Watchdog false-positive on long idle | WARNING log spam when mouse legitimately idle for >120s | Watchdog only fires WARNING (not ERROR). Configurable `StallThresholdSec` in CRD (default 120). Operator can raise to 600+ if false-positives observed. Watchdog never triggers IRP cancellation or recovery — purely diagnostic. |
+| F27 (v1.4) | Watchdog false-positive on long idle | WARNING log spam when mouse legitimately idle for >120s | Watchdog only fires WARNING (not ERROR). Configurable `StallThresholdSec` in CRD (default 120). Operator can raise to 600+ if false-positives observed. Watchdog never triggers IRP cancellation or recovery -- purely diagnostic. |
 
 ---
 
 ## 12. Open questions
 
-OQ-A through OQ-E from v1.1 are simplified or removed in v1.2:
+OQ-A through OQ-E (v1.2/v1.3 era) were about RID=0x27 byte offset, translation formula, shadow staleness, and active-poll. All are **CLOSED in v1.7**: battery is on col02 RID=0x90 buf[2] directly. No offset, no formula, no shadow.
 
-- **OQ-1 (v1.1) v3 input 0x12 padding bytes:** REMOVED — M12 doesn't parse 0x12.
-- **OQ-2 (v1.1) cache hit ratio for active-poll:** REMOVED — no active-poll.
-- **OQ-3 (v1.1) tray expects 1-byte vs 2-byte Feature 0x47 response:** RESOLVED — tray reads `buf[1]` for pct in unified path (descriptor declares 1-byte field; on-wire 2-byte report). Confirmed in HID-protocol-validation review.
-- **OQ-4 (v1.1) PID 0x0310 binding:** UNCHANGED — log on first AddDevice for visibility.
-- **OQ-5 (v1.1) Resolution Multiplier features:** REMOVED — not in v1.2 descriptor.
+- **OQ-1 (v1.1):** REMOVED.
+- **OQ-2 (v1.1):** REMOVED.
+- **OQ-3 (v1.1):** RESOLVED.
+- **OQ-4 (v1.1):** UNCHANGED -- log PID 0x0310 binding on first AddDevice for visibility.
+- **OQ-5 (v1.1):** REMOVED.
+- **OQ-A:** CLOSED in v1.7 -- battery layout empirically confirmed (col02 RID=0x90 buf[2]).
+- **OQ-B:** CLOSED in v1.7 -- no translation formula; direct percent.
+- **OQ-C:** CLOSED in v1.7 -- no shadow buffer; no staleness concern.
+- **OQ-D:** CLOSED in v1.7 -- no cold-start issue; tray calls HidD_GetInputReport(0x90) on col02 natively; OS handles retry.
+- **OQ-E:** CLOSED in v1.7 -- no short-circuit path; v1 Feature 0x47 passes through to native firmware unchanged.
 
-New open questions in v1.2:
+Remaining open question:
 
-- **OQ-A:** Battery byte offset within RID=0x27 46-byte payload. Phase 1 RID=0x27 empirical capture was BLOCKED (ETW didn't preserve payloads). Default `BATTERY_OFFSET=1` (first byte after RID); confirm post-install via debug.log diff at known battery levels (target: spec a 100%-vs-20% diff session as a Phase 3 validation step in PRD).
-- **OQ-B:** Translation formula linearity. Hypothesis `(raw - 1) * 100 / 64`. If post-install logs show non-linear distribution (e.g., raw clusters at discrete values like 1, 13, 25, 37, 49, 65), replace `TranslateBatteryRaw` with a lookup table. No structural change required.
-- **OQ-C:** Shadow staleness. v1.3 introduces `MAX_STALE_MS` registry tunable (default 10000 ms). If 24-hr soak (VG-7) shows users seeing N/A frequently when mouse is briefly idle, raise threshold or set to 0 (no check) at `Parameters` subkey.
-- **OQ-D:** Soft active-poll for cold-start (advisory, future work). If VG-7 reveals persistent N/A windows >5min on v3 cold-start, consider an async (non-blocking) downstream `IOCTL_HID_GET_INPUT_REPORT` for ReportID 0x90 issued from EvtDeviceAdd to wake the firmware. Must be careful not to re-introduce CRIT-2 deadlock — async pattern with held request reference + short timeout. Out of scope for v1.3.
-- **OQ-E:** v1 short-circuit re-evaluation. v1.3 ships v1 as pass-through. If post-install soak shows v1 also benefits from short-circuit (e.g., during BT reconnect when v1 firmware stalls on Feature 0x47), the PID branch in Section 7d can be flipped to short-circuit v1 too. Empirical decision; out of scope for design.
-
-- **OQ-F (v1.4 — power-saver vendor suspend command):** what bytes does Magic Utilities send to put the Magic Mouse into low-power state? Three resolution paths:
+- **OQ-F (v1.4 -- power-saver vendor suspend command):** what bytes does Magic Utilities send to put the Magic Mouse into low-power state? Three resolution paths:
   1. Ghidra of `MagicMouse.sys` (look for `HidD_SetOutputReport` or `IOCTL_HID_WRITE_REPORT` patterns post-power-event-callback; likely in obfuscated region).
   2. HCI sniff during MU manual-suspend test (requires paid MU license, reproducible).
   3. Trial-and-error candidate command bytes (0x40, 0x80, etc. on common output report IDs); observe BT controller log for state change.
@@ -1745,16 +1526,17 @@ HKLM\SYSTEM\CurrentControlSet\Services\MagicMouseM12\Parameters
 | DebugLevel | What's logged | WPP filter |
 |---|---|---|
 | 0 | Errors only (driver init failure, IOCTL invalid, BSOD-class issues) | ERROR (1) |
-| 1 | + Warnings (BT disconnect, stale shadow buffer, DV-flagged conditions) | WARNING (2) |
-| 2 | + Info (PnP events, IOCTL success, suspend/wake events) | INFO (3) |
-| 3 | + Verbose (every Feature 0x47 read, shadow buffer updates) | VERBOSE (4) |
-| 4 | + Hex dumps (full 46-byte RID=0x27 payloads on each Feature 0x47 read — required for empirical BATTERY_OFFSET resolution) | VERBOSE + custom hex flag |
+| 1 | + Warnings (BT disconnect, BRB rewrite failures, DV-flagged conditions) | WARNING (2) |
+| 2 | + Info (PnP events, IOCTL success, suspend/wake events, BRB rewrite success) | INFO (3) |
+| 3 | + Verbose (BRB descriptor inspection events, power state transitions) | VERBOSE (4) |
+
+Note: DebugLevel 4 (hex dumps of RID=0x27 payloads for empirical BATTERY_OFFSET resolution) is REMOVED in v1.7. Battery is on col02 RID=0x90 buf[2] directly; no offset to investigate.
 
 ### 25.2 Default + workflow
 
 - **Production default**: `DebugLevel = 0` (errors only).
-- **Empirical BATTERY_OFFSET workflow** (MOP VG-4): set `DebugLevel = 4` for the duration of the offset-confirmation capture. Reset to 0 (or 2 for normal operation visibility) after.
 - **Triage mode**: `DebugLevel = 2` recommended for incident investigation. PnP events + IOCTL outcomes give enough signal to root-cause most issues without flooding the log.
+- **BRB rewrite diagnosis**: `DebugLevel = 3` shows descriptor inspection events -- useful if VG-0 fails (col02 not visible after install).
 
 ### 25.3 Log volume
 
@@ -1762,12 +1544,9 @@ HKLM\SYSTEM\CurrentControlSet\Services\MagicMouseM12\Parameters
 |---|---|
 | 0 | <1 KB (idle errors only) |
 | 1 | <10 KB |
-| 2 | ~100 KB |
-| 3 | ~5 MB (every Feature 0x47 read = 1 line) |
-| 4 | ~20 MB (hex dump every Feature 0x47 read) |
-
-`DebugLevel = 4` should NEVER be left on in production — disk fill risk.
+| 2 | ~10 KB (PnP + power events) |
+| 3 | ~50 KB (BRB descriptor inspection) |
 
 ### 25.4 Read-once semantics
 
-DebugLevel is read in `EvtDeviceAdd` and stored in `DEVICE_CONTEXT`. Changing the registry value requires PnP cycle (`pnputil /disable-device + /enable-device`) for the new value to take effect. Documented in MOP VG-4 workflow.
+DebugLevel is read in `EvtDeviceAdd` and stored in `DEVICE_CONTEXT`. Changing the registry value requires PnP cycle (`pnputil /disable-device + /enable-device`) for the new value to take effect.
