@@ -1,20 +1,29 @@
-; MagicMouseDriver.inf
+; MagicMouseDriver.inf  (M13)
 ; SPDX-License-Identifier: MIT
 ;
 ; Installs MagicMouseDriver.sys as a LOWER FILTER on the Apple Magic Mouse 2024
-; BTHENUM device, sitting beneath HidBth. Uses the Include/Needs pattern from
-; applewirelessmouse.inf (Apple's reference) to delegate the function driver
-; role to hidbth.inf — the v1 INF mistakenly took the function driver role
-; itself, which prevented HidBth from binding (mouse non-functional over BT).
+; BTHENUM HID PDO, sitting between BTHENUM and HidBth.
+;
+; Mechanism (M13): intercepts IOCTL_BTH_SDP_SERVICE_SEARCH_ATTRIBUTE (0x410210)
+; in a completion routine and rewrites SDP attribute 0x0206 (HIDDescriptorList)
+; with Descriptor C: RID=0x02 scroll mouse + RID=0x90 vendor battery.
+; Confirmed correct by Ghidra RE of Apple's applewirelessmouse.sys (2026-04-30).
+;
+; M12 used IOCTL_INTERNAL_BTH_SUBMIT_BRB (0x410003) — wrong IOCTL. Fixed in M13.
 ;
 ; Hardware ID: BTHENUM\{00001124-0000-1000-8000-00805F9B34FB}_VID&0001004C_PID&0323
-; (Magic Mouse 2024, Bluetooth HID, confirmed from baseline 2026-04-26)
+; (Magic Mouse 2024, Bluetooth HID, PID 0x0323)
 ;
-; Install:
+; Install (elevated):
 ;   pnputil /add-driver MagicMouseDriver.inf /install
+;   (uninstall Apple driver first: pnputil /delete-driver applewirelessmouse.inf /uninstall)
 ;
 ; Uninstall:
 ;   pnputil /delete-driver oem<N>.inf /uninstall /force
+;
+; Verify after re-pair:
+;   Get-ItemProperty "HKLM:\SYSTEM\CurrentControlSet\Services\MagicMouseDriver\Diag"
+;   SdpPatchSuccess > 0 confirms descriptor injection is working.
 
 [Version]
 Signature   = "$WINDOWS NT$"
@@ -54,11 +63,14 @@ Include = input.inf
 Needs   = HID_Inst.NT.HW
 
 [MagicMouseDriver_AddReg]
-; M12 stands alone as the only lower filter on the v3 BTHENUM stack:
-;   - SDP descriptor injection (Mode B → Mode A, vendor RID=0x90 battery)
-;   - RID=0x12 multi-touch → RID=0x01 mouse+wheel report translation
-;     (synthesizes scroll wheel deltas from touch surface Y motion)
+; M13 as sole lower filter on the v3 BTHENUM stack.
+; Intercepts IOCTL 0x410210, rewrites SDP attribute 0x0206 with Descriptor C.
+; Do NOT install alongside applewirelessmouse — whichever is highest in the
+; filter list wins; both trying to inject causes undefined descriptor output.
 HKR,,"LowerFilters",0x00010000,"MagicMouseDriver"
+
+; Default configuration: EnableInjection=1 (can be set to 0 to passthrough for testing)
+HKLM,"SYSTEM\CurrentControlSet\Services\MagicMouseDriver\Parameters","EnableInjection",0x00010001,1
 
 ; ---- Services: pull in HidBth's services + add our filter service (no SPSVCINST_ASSOCSERVICE) ----
 
@@ -89,6 +101,6 @@ MagicMouseDriver.sys = 1,,
 
 [Strings]
 ManufacturerName = "Magic Mouse Driver"
-DeviceDesc       = "Apple Magic Mouse 2024 (M12 lower filter)"
-ServiceDesc      = "Magic Mouse Driver (scroll + battery coexistence)"
+DeviceDesc       = "Apple Magic Mouse 2024 (M13 SDP filter)"
+ServiceDesc      = "Magic Mouse Driver M13 (SDP descriptor injection)"
 DiskName         = "Magic Mouse Driver Installation Disk"
