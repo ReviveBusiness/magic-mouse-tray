@@ -392,17 +392,12 @@ VOID InputHandler_AclCompletion(_In_ WDFREQUEST Request, _In_ WDFIOTARGET Target
             ULONG newBufUsed = 0;
             if (PatchSdpHidDescriptor(data, bufSize, descOffset, descLen, &newBufUsed))
             {
-                // Update BRB BufferSize so HidBth sees the patched transfer length.
-                // Guard: only write back if BRB is long enough (BLK-001 — already
-                // validated above, but re-check idiomatically at the write site).
-                ULONG patchedSize = newBufUsed;
-                if (brbLen >= MM_BRB_ACL_BUFFER_SIZE_OFFSET + sizeof(ULONG))
-                {
-                    *(ULONG *)((PUCHAR)brb + MM_BRB_ACL_BUFFER_SIZE_OFFSET) = patchedSize;
-                    irp->IoStatus.Information = patchedSize;
-                    DbgPrint("MagicMouse: Descriptor injected, new transfer size = %lu bytes\n",
-                             patchedSize);
-                }
+                // brbLen >= MM_BRB_ACL_BUFFER_SIZE_OFFSET + sizeof(ULONG) is implied
+                // by the outer brbLen >= 0x98 gate (offset 0x84 + 4 = 0x88 < 0x98).
+                *(ULONG *)((PUCHAR)brb + MM_BRB_ACL_BUFFER_SIZE_OFFSET) = newBufUsed;
+                irp->IoStatus.Information = newBufUsed;
+                DbgPrint("MagicMouse: Descriptor injected, new transfer size = %lu bytes\n",
+                         newBufUsed);
             }
         }
     }

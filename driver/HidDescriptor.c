@@ -8,14 +8,15 @@
 //     3 buttons + X/Y + vertical wheel
 //     InputReportByteLength = 4  ([buttons, X, Y, WheelV])
 //     Full report buffer: [0x01, buttons, X, Y, WheelV]
-//     Owned exclusively by mouhid.sys. TranslateTouch() emits this.
+//     Owned exclusively by mouhid.sys. Populated by raw bytes from the
+//     mouse on the interrupt channel after the descriptor is injected.
 //
 //   TLC2 (Report ID 0x02) — Consumer Control (0x0C/0x01)
 //     AC Pan (0x0238) — horizontal scroll only
 //     InputReportByteLength = 1  ([WheelH])
 //     Full report buffer: [0x02, WheelH]
-//     Opened shared by the Windows HID consumer driver. TranslateTouch()
-//     emits this for horizontal scroll.
+//     Opened shared by the Windows HID consumer driver. Receives horizontal
+//     scroll bytes directly from the mouse via the interrupt channel.
 //     NOTE: AC Pan MUST be in a separate Consumer TLC. Mouse TLCs are
 //     opened exclusive by mouhid; Consumer TLCs are shared. Windows does
 //     not permit mixing usage pages with conflicting access modes in one TLC.

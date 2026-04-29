@@ -1,6 +1,5 @@
 // SPDX-License-Identifier: MIT
 #include "Driver.h"
-#include "HidDescriptor.h"
 #include "InputHandler.h"
 
 NTSTATUS
