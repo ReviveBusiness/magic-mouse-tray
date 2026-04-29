@@ -26,6 +26,41 @@
 #include <wdf.h>
 
 // ---------------------------------------------------------------------------
+// Bluetooth profile driver interface (BTHDDI) — manual declarations to avoid
+// pulling in <bthddi.h>, which would conflict with our manual BRB_L2CA_*
+// #defines below. Layout taken verbatim from
+//   F:\Program Files\Windows Kits\10\Include\10.0.26100.0\km\bthddi.h
+// (10.0.26100.0 SDK).
+// ---------------------------------------------------------------------------
+
+typedef struct _BRB *PBRB;
+
+typedef PBRB (*PFNBTH_ALLOCATE_BRB)(USHORT brbType, ULONG tag);
+typedef VOID (*PFNBTH_FREE_BRB)(PBRB pBrb);
+typedef VOID (*PFNBTH_INITIALIZE_BRB)(PBRB pBrb, USHORT brbType);
+typedef VOID (*PFNBTH_REUSE_BRB)(PBRB pBrb, USHORT brbType);
+typedef BOOLEAN (*PFNBTH_IS_BLUETOOTH_VERSION_AVAILABLE)(UCHAR Major, UCHAR Minor);
+
+typedef struct _BTH_PROFILE_DRIVER_INTERFACE
+{
+    INTERFACE Interface;
+    PFNBTH_ALLOCATE_BRB BthAllocateBrb;
+    PFNBTH_FREE_BRB BthFreeBrb;
+    PFNBTH_INITIALIZE_BRB BthInitializeBrb;
+    PFNBTH_REUSE_BRB BthReuseBrb;
+    PFNBTH_IS_BLUETOOTH_VERSION_AVAILABLE IsBluetoothVersionAvailable;
+} BTH_PROFILE_DRIVER_INTERFACE, *PBTH_PROFILE_DRIVER_INTERFACE;
+
+// {94A59AA8-4383-4286-AA4F-34A160F40004}
+EXTERN_C const GUID GUID_BTHDDI_PROFILE_DRIVER_INTERFACE_LOCAL;
+
+#define BTHDDI_PROFILE_DRIVER_INTERFACE_VERSION_FOR_QI 0x0200
+#define ACL_TRANSFER_DIRECTION_OUT 0x00000000UL
+#define MM_POOL_TAG '21M '   // 'M12 ' little-endian
+
+typedef ULONGLONG BTH_ADDR;
+
+// ---------------------------------------------------------------------------
 // Bluetooth BRB submit IOCTL
 // ---------------------------------------------------------------------------
 
@@ -149,15 +184,47 @@ typedef struct _DEVICE_CONTEXT
     ULONG ChannelCount;
 
     // Touch-surface scroll synthesis state.
-    // Magic Mouse 2024 reports scroll input via RID=0x12 multi-touch frames
-    // carrying per-finger Y positions in 8-byte touch blocks at offset 14+.
-    // We compute the average Y across all reported touches, compare to the
-    // previous frame's average, and emit the delta as a synthetic mouse-wheel
-    // event in a rewritten RID=0x01 report. HasLastTouch resets to FALSE on
-    // a frame with zero touches (finger lifted) so the next touch-down does
-    // not produce a spurious wheel jump from stale state.
     INT32   LastAvgTouchY;
     BOOLEAN HasLastTouch;
+
+    // BTHDDI profile driver interface — used to allocate outgoing BRBs for
+    // SET_REPORT injection. Queried during EvtDeviceAdd from the lower IO
+    // target. BthIfaceValid==TRUE iff the QI succeeded.
+    BTH_PROFILE_DRIVER_INTERFACE BthIface;
+    BOOLEAN                      BthIfaceValid;
+
+    // Remote BT MAC, captured from the first incoming BRB we observe. Needed
+    // to populate BRB_L2CA_ACL_TRANSFER.BtAddress when we send our own BRB.
+    BTH_ADDR RemoteBtAddr;
+    BOOLEAN  RemoteBtAddrCaptured;
+
+    // One-shot guard: send the multi-touch enable Feature Report only once
+    // per connection. Set inside the spinlock right before submission so a
+    // simultaneous OPEN_CHANNEL completion on another core can't double-send.
+    BOOLEAN MtRequestSent;
+
+    // BTHDDI SET_REPORT lifecycle diagnostics. Each stage advances a counter
+    // so user-mode can see exactly how far the SET_REPORT path got:
+    //   1 = function entered
+    //   2 = BthAllocateBrb succeeded (BRB != NULL)
+    //   3 = payload pool allocation succeeded
+    //   4 = IoAllocateIrp succeeded
+    //   5 = IoCallDriver invoked
+    //   6 = completion routine fired
+    // MtCompletionStatus is the NTSTATUS captured in the completion routine.
+    ULONG    MtStage;
+    NTSTATUS MtCompletionStatus;
+
+    // Diagnostic ring buffer: 16 slots × 16 bytes per IN ACL transfer.
+    // Periodic 1Hz work item flushes to
+    //   HKLM\SYSTEM\CurrentControlSet\Services\MagicMouseDriver\Diag\RecentFrames
+    // (REG_BINARY, 256 bytes; FrameSizes is REG_BINARY 16 bytes; FrameCount
+    // is REG_DWORD).
+    UCHAR        TraceBuf[256];
+    UCHAR        TraceSizes[16];
+    ULONG        TraceIdx;
+    WDFTIMER     TraceTimer;
+    WDFWORKITEM  TraceWorkItem;
 
 } DEVICE_CONTEXT, *PDEVICE_CONTEXT;
 

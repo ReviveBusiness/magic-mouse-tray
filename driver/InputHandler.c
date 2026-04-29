@@ -357,6 +357,33 @@ VOID InputHandler_AclCompletion(_In_ WDFREQUEST Request, _In_ WDFIOTARGET Target
     PUCHAR data = (PUCHAR)bufPtr;
     PDEVICE_CONTEXT devCtx = (PDEVICE_CONTEXT)Context;
 
+    // Diagnostic: capture first 16 bytes of every IN ACL transfer + the size.
+    // Also stash the remote BT MAC from the first frame we see — needed for
+    // our outgoing SET_REPORT BRB construction.
+    if (devCtx != NULL && bufSize > 0)
+    {
+        WdfSpinLockAcquire(devCtx->Lock);
+        ULONG slotIdx = devCtx->TraceIdx % 16;
+        UCHAR *slot = devCtx->TraceBuf + slotIdx * 16;
+        ULONG nCopy = (bufSize < 16) ? bufSize : 16;
+        for (ULONG i = 0; i < nCopy; i++) { slot[i] = data[i]; }
+        for (ULONG i = nCopy; i < 16; i++) { slot[i] = 0; }
+        devCtx->TraceSizes[slotIdx] =
+            (UCHAR)((bufSize > 255) ? 255 : bufSize);
+        devCtx->TraceIdx++;
+
+        if (!devCtx->RemoteBtAddrCaptured)
+        {
+            BTH_ADDR addr = *(BTH_ADDR *)((PUCHAR)brb + 0x70);
+            if (addr != 0)
+            {
+                devCtx->RemoteBtAddr = addr;
+                devCtx->RemoteBtAddrCaptured = TRUE;
+            }
+        }
+        WdfSpinLockRelease(devCtx->Lock);
+    }
+
     // -----------------------------------------------------------------------
     // RID=0x12 multi-touch → RID=0x01 mouse+wheel translation.
     //
@@ -377,6 +404,13 @@ VOID InputHandler_AclCompletion(_In_ WDFREQUEST Request, _In_ WDFIOTARGET Target
     // parallel completion routines. State (LastAvgTouchY, HasLastTouch) is
     // accessed only inside the critical section.
     // -----------------------------------------------------------------------
+    // OBSERVATION-ONLY MODE while we wire up BTHDDI SET_REPORT injection. The
+    // buf[0]==0x12 gate below is wrong (real layout is buf[0]=0xA1 HID
+    // header, buf[1]=RID; cursor frames are 9 bytes), and the device only
+    // emits 9-byte cursor frames until we issue the SET_REPORT(0xF1, 0x02, 0x01)
+    // multi-touch enable Feature Report (per Linux hid-magicmouse.c).
+    // Re-enable rewrite once SET_REPORT is confirmed via the trace ring.
+#if 0
     if (devCtx != NULL && bufSize >= MM_TOUCH_HEADER_BYTES &&
         data[0] == MM_REPORT_ID_TOUCH)
     {
@@ -434,6 +468,7 @@ VOID InputHandler_AclCompletion(_In_ WDFREQUEST Request, _In_ WDFIOTARGET Target
         WdfRequestComplete(Request, status);
         return;
     }
+#endif // observation-only
 
     // -----------------------------------------------------------------------
     // SDP HIDDescriptorList interception (PSM 1, descriptor-injection path)
@@ -551,6 +586,28 @@ VOID InputHandler_OpenChannelCompletion(_In_ WDFREQUEST Request, _In_ WDFIOTARGE
             {
                 ULONG_PTR handle = BrbReadHandle(brb, MM_BRB_OPEN_CHANNEL_HANDLE_OFFSET);
                 StoreChannelHandle(devCtx, handle);
+
+                // First open = HID Control channel (PSM 17). Trigger one-shot
+                // multi-touch enable Feature Report on this channel. Guarded
+                // by MtRequestSent so concurrent OPEN completions on multi-core
+                // don't double-send.
+                ULONG_PTR ctlHandle = 0;
+                BOOLEAN shouldSend = FALSE;
+                WdfSpinLockAcquire(devCtx->Lock);
+                if (devCtx != NULL && !devCtx->MtRequestSent &&
+                    devCtx->ControlChannelHandle != 0 &&
+                    devCtx->BthIfaceValid)
+                {
+                    devCtx->MtRequestSent = TRUE;
+                    shouldSend = TRUE;
+                    ctlHandle = devCtx->ControlChannelHandle;
+                }
+                WdfSpinLockRelease(devCtx->Lock);
+                if (shouldSend)
+                {
+                    WDFDEVICE Device = (WDFDEVICE)WdfIoTargetGetDevice(Target);
+                    InputHandler_SendMultitouchEnable(Device, ctlHandle);
+                }
             }
         }
     }
@@ -660,4 +717,223 @@ passthrough:
     {
         WdfRequestComplete(Request, WdfRequestGetStatus(Request));
     }
+}
+
+// ---------------------------------------------------------------------------
+// SET_REPORT injection: enable multi-touch mode on Magic Mouse 2024.
+// Uses BTHDDI_PROFILE_DRIVER_INTERFACE.BthAllocateBrb to allocate an outgoing
+// BRB_L2CA_ACL_TRANSFER on the HID control channel and forwards it to BthEnum
+// via IoCallDriver. Payload: HID-BT SET_REPORT(FEATURE) header + Linux
+// hid-magicmouse.c feature_mt_mouse2 = {0xF1, 0x02, 0x01}.
+// ---------------------------------------------------------------------------
+
+// Static state for the outgoing BRB lifecycle: free the BRB on completion.
+typedef struct _MM_OUTGOING_CTX
+{
+    PDEVICE_CONTEXT DevCtx;
+    PVOID           Brb;
+    PUCHAR          Payload;
+    PIRP            Irp;
+} MM_OUTGOING_CTX, *PMM_OUTGOING_CTX;
+
+static NTSTATUS NTAPI
+M12_OutgoingCompletion(_In_ PDEVICE_OBJECT DeviceObject, _In_ PIRP Irp,
+                       _In_ PVOID Context)
+{
+    UNREFERENCED_PARAMETER(DeviceObject);
+    PMM_OUTGOING_CTX outCtx = (PMM_OUTGOING_CTX)Context;
+    if (outCtx != NULL)
+    {
+        if (outCtx->DevCtx != NULL)
+        {
+            outCtx->DevCtx->MtStage = 6;
+            outCtx->DevCtx->MtCompletionStatus = Irp->IoStatus.Status;
+        }
+        if (outCtx->DevCtx != NULL && outCtx->DevCtx->BthIfaceValid &&
+            outCtx->Brb != NULL)
+        {
+            outCtx->DevCtx->BthIface.BthFreeBrb((PBRB)outCtx->Brb);
+        }
+        if (outCtx->Payload != NULL)
+        {
+            ExFreePoolWithTag(outCtx->Payload, MM_POOL_TAG);
+        }
+        if (outCtx->Irp != NULL)
+        {
+            IoFreeIrp(outCtx->Irp);
+        }
+        ExFreePoolWithTag(outCtx, MM_POOL_TAG);
+    }
+    return STATUS_MORE_PROCESSING_REQUIRED;
+}
+
+NTSTATUS InputHandler_SendMultitouchEnable(_In_ WDFDEVICE Device,
+                                           _In_ ULONG_PTR ControlChannelHandle)
+{
+    PDEVICE_CONTEXT devCtx = GetDeviceContext(Device);
+    if (devCtx == NULL || !devCtx->BthIfaceValid) {
+        return STATUS_DEVICE_NOT_READY;
+    }
+    if (ControlChannelHandle == 0) {
+        return STATUS_INVALID_PARAMETER;
+    }
+    devCtx->MtStage = 1;
+
+    // Allocate the outgoing BRB via the BTHDDI interface.
+    PVOID brb = devCtx->BthIface.BthAllocateBrb(BRB_L2CA_ACL_TRANSFER, MM_POOL_TAG);
+    if (brb == NULL) { return STATUS_INSUFFICIENT_RESOURCES; }
+    devCtx->MtStage = 2;
+
+    // Build the L2CAP payload: HID-BT SET_REPORT(FEATURE) header + feature_mt_mouse2.
+    //   byte 0 = 0x53 (HID_HANDSHAKE 0x5 << 4 | REPORT_TYPE_FEATURE 0x3 = 0x53)
+    //   byte 1 = 0xF1 (Report ID)
+    //   byte 2 = 0x02
+    //   byte 3 = 0x01
+    PUCHAR payload = (PUCHAR)ExAllocatePool2(POOL_FLAG_NON_PAGED, 4, MM_POOL_TAG);
+    if (payload == NULL) {
+        devCtx->BthIface.BthFreeBrb((PBRB)brb);
+        return STATUS_INSUFFICIENT_RESOURCES;
+    }
+    payload[0] = 0x53;
+    payload[1] = 0xF1;
+    payload[2] = 0x02;
+    payload[3] = 0x01;
+    devCtx->MtStage = 3;
+
+    // Fill BRB fields by offset (matches BRB_L2CA_ACL_TRANSFER layout):
+    //   +0x70  BtAddress       BTH_ADDR
+    //   +0x78  ChannelHandle   PVOID
+    //   +0x80  TransferFlags   ULONG  (0 = OUT)
+    //   +0x84  BufferSize      ULONG
+    //   +0x88  Buffer          PVOID
+    //   +0x90  BufferMDL       PMDL   (NULL when Buffer used)
+    *(BTH_ADDR *)((PUCHAR)brb + 0x70) = devCtx->RemoteBtAddr;
+    *(ULONG_PTR *)((PUCHAR)brb + 0x78) = ControlChannelHandle;
+    *(ULONG *)((PUCHAR)brb + 0x80) = ACL_TRANSFER_DIRECTION_OUT;
+    *(ULONG *)((PUCHAR)brb + 0x84) = 4;
+    *(PVOID *)((PUCHAR)brb + 0x88) = payload;
+    *(PMDL *)((PUCHAR)brb + 0x90) = NULL;
+
+    // Construct an IRP to deliver the BRB to BthEnum via IOCTL_INTERNAL_BTH_SUBMIT_BRB.
+    WDFIOTARGET target = WdfDeviceGetIoTarget(Device);
+    PDEVICE_OBJECT lowerDev = WdfIoTargetWdmGetTargetDeviceObject(target);
+    if (lowerDev == NULL) {
+        ExFreePoolWithTag(payload, MM_POOL_TAG);
+        devCtx->BthIface.BthFreeBrb((PBRB)brb);
+        return STATUS_DEVICE_NOT_READY;
+    }
+    PIRP irp = IoAllocateIrp(lowerDev->StackSize, FALSE);
+    if (irp == NULL) {
+        ExFreePoolWithTag(payload, MM_POOL_TAG);
+        devCtx->BthIface.BthFreeBrb((PBRB)brb);
+        return STATUS_INSUFFICIENT_RESOURCES;
+    }
+    devCtx->MtStage = 4;
+
+    PMM_OUTGOING_CTX outCtx = (PMM_OUTGOING_CTX)ExAllocatePool2(
+        POOL_FLAG_NON_PAGED, sizeof(MM_OUTGOING_CTX), MM_POOL_TAG);
+    if (outCtx == NULL) {
+        IoFreeIrp(irp);
+        ExFreePoolWithTag(payload, MM_POOL_TAG);
+        devCtx->BthIface.BthFreeBrb((PBRB)brb);
+        return STATUS_INSUFFICIENT_RESOURCES;
+    }
+    outCtx->DevCtx = devCtx;
+    outCtx->Brb = brb;
+    outCtx->Payload = payload;
+    outCtx->Irp = irp;
+
+    PIO_STACK_LOCATION stack = IoGetNextIrpStackLocation(irp);
+    stack->MajorFunction = IRP_MJ_INTERNAL_DEVICE_CONTROL;
+    stack->MinorFunction = 0;
+    stack->Parameters.DeviceIoControl.IoControlCode =
+        IOCTL_INTERNAL_BTH_SUBMIT_BRB;
+    stack->Parameters.Others.Argument1 = brb;
+
+    IoSetCompletionRoutine(irp, M12_OutgoingCompletion, outCtx, TRUE, TRUE, TRUE);
+    devCtx->MtStage = 5;
+    IoCallDriver(lowerDev, irp);
+    return STATUS_SUCCESS;
+}
+
+// ---------------------------------------------------------------------------
+// Diagnostic trace timer + work item.
+// ---------------------------------------------------------------------------
+
+VOID InputHandler_TraceTimerFunc(_In_ WDFTIMER Timer)
+{
+    WDFOBJECT parent = WdfTimerGetParentObject(Timer);
+    WDFDEVICE device = (WDFDEVICE)parent;
+    PDEVICE_CONTEXT devCtx = GetDeviceContext(device);
+    if (devCtx != NULL && devCtx->TraceWorkItem != NULL)
+    {
+        WdfWorkItemEnqueue(devCtx->TraceWorkItem);
+    }
+}
+
+VOID InputHandler_TraceWorkItemFunc(_In_ WDFWORKITEM WorkItem)
+{
+    WDFOBJECT parent = WdfWorkItemGetParentObject(WorkItem);
+    WDFDEVICE device = (WDFDEVICE)parent;
+    PDEVICE_CONTEXT devCtx = GetDeviceContext(device);
+    if (devCtx == NULL) { return; }
+
+    UCHAR snapshot[256];
+    UCHAR sizes[16];
+    ULONG idxSnapshot;
+    ULONG mtSent;
+    ULONG mtStage;
+    NTSTATUS mtStatus;
+    BTH_ADDR addr;
+    WdfSpinLockAcquire(devCtx->Lock);
+    RtlCopyMemory(snapshot, devCtx->TraceBuf, 256);
+    RtlCopyMemory(sizes, devCtx->TraceSizes, 16);
+    idxSnapshot = devCtx->TraceIdx;
+    mtSent = devCtx->MtRequestSent ? 1u : 0u;
+    mtStage = devCtx->MtStage;
+    mtStatus = devCtx->MtCompletionStatus;
+    addr = devCtx->RemoteBtAddr;
+    WdfSpinLockRelease(devCtx->Lock);
+
+    UNICODE_STRING keyPath;
+    RtlInitUnicodeString(&keyPath,
+        L"\\Registry\\Machine\\SYSTEM\\CurrentControlSet\\Services\\MagicMouseDriver\\Diag");
+    OBJECT_ATTRIBUTES attr;
+    InitializeObjectAttributes(&attr, &keyPath,
+                               OBJ_CASE_INSENSITIVE | OBJ_KERNEL_HANDLE, NULL, NULL);
+    HANDLE keyHandle = NULL;
+    ULONG disposition = 0;
+    NTSTATUS status = ZwCreateKey(&keyHandle, KEY_WRITE, &attr, 0, NULL,
+                                  REG_OPTION_NON_VOLATILE, &disposition);
+    if (!NT_SUCCESS(status)) { return; }
+
+    UNICODE_STRING valFrames;
+    RtlInitUnicodeString(&valFrames, L"RecentFrames");
+    ZwSetValueKey(keyHandle, &valFrames, 0, REG_BINARY, snapshot, 256);
+
+    UNICODE_STRING valSizes;
+    RtlInitUnicodeString(&valSizes, L"FrameSizes");
+    ZwSetValueKey(keyHandle, &valSizes, 0, REG_BINARY, sizes, 16);
+
+    UNICODE_STRING valIdx;
+    RtlInitUnicodeString(&valIdx, L"FrameCount");
+    ZwSetValueKey(keyHandle, &valIdx, 0, REG_DWORD, &idxSnapshot, sizeof(ULONG));
+
+    UNICODE_STRING valMt;
+    RtlInitUnicodeString(&valMt, L"MtRequestSent");
+    ZwSetValueKey(keyHandle, &valMt, 0, REG_DWORD, &mtSent, sizeof(ULONG));
+
+    UNICODE_STRING valAddr;
+    RtlInitUnicodeString(&valAddr, L"RemoteBtAddr");
+    ZwSetValueKey(keyHandle, &valAddr, 0, REG_QWORD, &addr, sizeof(BTH_ADDR));
+
+    UNICODE_STRING valStage;
+    RtlInitUnicodeString(&valStage, L"MtStage");
+    ZwSetValueKey(keyHandle, &valStage, 0, REG_DWORD, &mtStage, sizeof(ULONG));
+
+    UNICODE_STRING valCS;
+    RtlInitUnicodeString(&valCS, L"MtCompletionStatus");
+    ZwSetValueKey(keyHandle, &valCS, 0, REG_DWORD, &mtStatus, sizeof(NTSTATUS));
+
+    ZwClose(keyHandle);
 }

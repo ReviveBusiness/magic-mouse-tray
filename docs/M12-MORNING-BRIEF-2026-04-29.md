@@ -1,11 +1,19 @@
 ---
 created: 2026-04-29T03:42:00-06:00
+modified: 2026-04-29
 type: morning-brief
 audience: Lesley waking up
 tldr: Mouse off-on cycles M12 v2 into binding. Then test scroll. Tell me what you see.
+status: SUPERSEDED — see `M12-EMPIRICAL-BLOCKER-2026-04-29.md`
 ---
 
-# M12 Morning Brief — 2026-04-29
+> **SUPERSEDED — historical morning plan only.**
+>
+> The morning install completed and reached the device, but **scroll never worked on v3**. ~12 hours of empirical work that day proved the BRB-lower-filter SDP descriptor injection mechanism does not work on this Bluetooth stack — see **`M12-EMPIRICAL-BLOCKER-2026-04-29.md`** for the full analysis.
+>
+> System currently runs Apple's stock `applewirelessmouse.sys` driver. M12 is uninstalled.
+
+# M12 Morning Brief — 2026-04-29 (SUPERSEDED)
 
 ## What I did while you slept
 

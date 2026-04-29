@@ -1,6 +1,12 @@
 // SPDX-License-Identifier: MIT
+#define INITGUID
+#include <initguid.h>
 #include "Driver.h"
 #include "InputHandler.h"
+
+// {94A59AA8-4383-4286-AA4F-34A160F40004}
+DEFINE_GUID(GUID_BTHDDI_PROFILE_DRIVER_INTERFACE_LOCAL,
+            0x94a59aa8, 0x4383, 0x4286, 0xaa, 0x4f, 0x34, 0xa1, 0x60, 0xf4, 0x0, 0x4);
 
 NTSTATUS
 DriverEntry(_In_ PDRIVER_OBJECT DriverObject, _In_ PUNICODE_STRING RegistryPath)
@@ -39,6 +45,49 @@ EvtDeviceAdd(_In_ WDFDRIVER Driver, _Inout_ PWDFDEVICE_INIT DeviceInit)
     {
         return status;
     }
+
+    // Query the Bluetooth profile driver interface from the underlying bus
+    // stack. Provides BthAllocateBrb / BthFreeBrb / BthInitializeBrb / BthReuseBrb,
+    // which we use to construct outgoing SET_REPORT BRBs for multi-touch enable.
+    // Failure is non-fatal — we just skip the SET_REPORT injection path.
+    devCtx->BthIface.Interface.Size = sizeof(BTH_PROFILE_DRIVER_INTERFACE);
+    devCtx->BthIface.Interface.Version =
+        BTHDDI_PROFILE_DRIVER_INTERFACE_VERSION_FOR_QI;
+    NTSTATUS qiStatus = WdfFdoQueryForInterface(
+        device,
+        &GUID_BTHDDI_PROFILE_DRIVER_INTERFACE_LOCAL,
+        (PINTERFACE)&devCtx->BthIface,
+        sizeof(BTH_PROFILE_DRIVER_INTERFACE),
+        BTHDDI_PROFILE_DRIVER_INTERFACE_VERSION_FOR_QI,
+        NULL);
+    devCtx->BthIfaceValid = NT_SUCCESS(qiStatus) &&
+                            devCtx->BthIface.BthAllocateBrb != NULL &&
+                            devCtx->BthIface.BthFreeBrb != NULL;
+
+    // Diagnostic trace work item + 1Hz periodic timer (from InputHandler.c).
+    WDF_WORKITEM_CONFIG wiConfig;
+    WDF_WORKITEM_CONFIG_INIT(&wiConfig, InputHandler_TraceWorkItemFunc);
+    WDF_OBJECT_ATTRIBUTES wiAttr;
+    WDF_OBJECT_ATTRIBUTES_INIT(&wiAttr);
+    wiAttr.ParentObject = device;
+    status = WdfWorkItemCreate(&wiConfig, &wiAttr, &devCtx->TraceWorkItem);
+    if (!NT_SUCCESS(status))
+    {
+        return status;
+    }
+
+    WDF_TIMER_CONFIG timerConfig;
+    WDF_TIMER_CONFIG_INIT_PERIODIC(&timerConfig,
+                                   InputHandler_TraceTimerFunc, 1000);
+    WDF_OBJECT_ATTRIBUTES timerAttr;
+    WDF_OBJECT_ATTRIBUTES_INIT(&timerAttr);
+    timerAttr.ParentObject = device;
+    status = WdfTimerCreate(&timerConfig, &timerAttr, &devCtx->TraceTimer);
+    if (!NT_SUCCESS(status))
+    {
+        return status;
+    }
+    WdfTimerStart(devCtx->TraceTimer, WDF_REL_TIMEOUT_IN_MS(1000));
 
     // Internal device control queue — handles IRP_MJ_INTERNAL_DEVICE_CONTROL,
     // which carries IOCTL_INTERNAL_BTH_SUBMIT_BRB (0x00410003) from HidBth to BthEnum.

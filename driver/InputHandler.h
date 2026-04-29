@@ -27,3 +27,18 @@ EVT_WDF_REQUEST_COMPLETION_ROUTINE InputHandler_CloseChannelCompletion;
 // g_HidDescriptor[] in-place and updates the SDP TLV length fields. All other transfers
 // pass through unchanged.
 EVT_WDF_REQUEST_COMPLETION_ROUTINE InputHandler_AclCompletion;
+
+// Periodic 1Hz timer (DISPATCH_LEVEL): enqueues trace work item.
+EVT_WDF_TIMER InputHandler_TraceTimerFunc;
+
+// Trace work item (PASSIVE_LEVEL): dumps TraceBuf to service registry.
+EVT_WDF_WORKITEM InputHandler_TraceWorkItemFunc;
+
+// Send the multi-touch enable Feature Report (RID=0xF1, payload {0x02, 0x01})
+// to the device on the L2CAP HID control channel via BTHDDI BRB injection.
+// Per Linux hid-magicmouse.c magicmouse_enable_multitouch() for
+// USB_DEVICE_ID_APPLE_MAGICMOUSE2_USBC. Without this, the device stays in
+// basic 9-byte cursor mode and never emits multi-touch frames.
+NTSTATUS InputHandler_SendMultitouchEnable(
+    _In_ WDFDEVICE Device,
+    _In_ ULONG_PTR ControlChannelHandle);

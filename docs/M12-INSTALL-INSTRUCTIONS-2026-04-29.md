@@ -4,10 +4,21 @@ modified: 2026-04-29
 type: install-instructions
 audience: Lesley (morning review)
 risk: HIGH — kernel driver install can BSOD or break Bluetooth stack
-status: READY FOR REVIEW + ELEVATED SIGN/INSTALL
+status: DEPRECATED — architectural blocker discovered 2026-04-29 evening
+supersedes: M12-EMPIRICAL-BLOCKER-2026-04-29.md
 ---
 
-# M12 Driver Morning Install — 2026-04-29
+> **DEPRECATED — DO NOT INSTALL**
+>
+> This driver bundle was the morning's working artifact. After installing and pairing, empirical evidence showed the BRB-lower-filter SDP injection path **never actually intercepts the SDP HIDDescriptorList exchange** on this Windows BT stack. v3 scroll did not work, the BTHPORT cache repopulated with Apple's native descriptor (not ours), and zero SDP-shaped frames appeared in the trace ring buffer.
+>
+> See **`M12-EMPIRICAL-BLOCKER-2026-04-29.md`** for the full analysis and the recommended next-session path (Ghidra reverse-engineering of `applewirelessmouse.sys` to find the actual injection layer).
+>
+> System currently runs Apple's stock `applewirelessmouse.sys` driver. Do not re-install M12 v9 from this bundle — it does nothing useful and adds an extra filter layer for no benefit.
+
+---
+
+# M12 Driver Morning Install — 2026-04-29 (HISTORICAL — DEPRECATED)
 
 ## TL;DR
 
