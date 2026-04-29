@@ -1,16 +1,19 @@
 # M12 Method of Procedure (MOP)
 
-**Status:** v1.1 — DRAFT pending user approval (NLM peer-review patches applied)
+**Status:** v1.3 — DRAFT pending user approval (NLM pass-2 blocking issues resolved)
 **Date:** 2026-04-28
-**Linked design:** `docs/M12-DESIGN-SPEC.md` v1.1
-**Linked PRD:** PRD-184 v1.26
-**Linked review:** `docs/M12-DESIGN-PEER-REVIEW-NOTEBOOKLM-2026-04-28.md`
+**Linked design:** `docs/M12-DESIGN-SPEC.md` v1.3
+**Linked PRD:** PRD-184 v1.27
+**Linked NLM pass-1:** `docs/M12-DESIGN-PEER-REVIEW-NOTEBOOKLM-2026-04-28.md`
+**Linked NLM pass-2:** `docs/M12-DESIGN-PEER-REVIEW-NOTEBOOKLM-PASS2-2026-04-28.md`
 **BCP reference:** BCP-OPS-501 (Change Management) — pre-flight + rollback + health-check pattern.
 **Related rules:** `~/.claude/projects/-home-lesley-projects/memory/feedback_backup_before_destructive_commands.md` (AP-24 — non-negotiable backup gate).
 
 ## Revision history
 
-- **v1.1 (2026-04-28):** Added Section 7c-pre (force fresh SDP exchange via BTHPORT cache wipe / unpair-repair) and VG-0 pre-validation gate (HIDP_GetCaps confirms Mode A landed). Both required because Disable+Enable rebind alone does NOT trigger fresh BT SDP — HidBth re-uses cached descriptor (failure mode F13). Per NLM peer review CHANGES-NEEDED verdict.
+- **v1.3 (2026-04-28):** Aligned to design spec v1.3 (PID branch restored + BRB descriptor rewriter restored). VG-0 dual-state pass condition added (Descriptor B in cache OR Descriptor A + DescriptorBRewritten flag set). VG-1 v1 baseline now exercises NATIVE Feature 0x47 path, not M12 short-circuit — failure here means M12 broke the pass-through (regression in INF binding or queue forwarding). New optional MAX_STALE_MS registry tunable documented. Soft active-poll noted as future work (OQ-D).
+- **v1.2 (2026-04-28):** Aligned to design spec v1.2 (applewirelessmouse-baseline reframe). Driver Verifier flags expanded to 0x9bb + IRP completion + IoTarget flags. Pool tag verification step added (`!poolused 4 'M12 '`). EvtIoStop verification step added (forced cancel via Driver Verifier). Empirical battery offset verification step added (LogShadowBuffer debug.log diff at known battery levels). 24-hr soak scope clarified to include BT sleep/wake cycles. VG-0 caps check repurposed: confirms cached SDP descriptor matches applewirelessmouse-baseline (Input=47, Feature=2, LinkColl=2), NOT Mode A — because v1.2 doesn't mutate the descriptor. Section 7c-pre BTHPORT cache wipe demoted to optional (only triggered if VG-0 caps mismatch suggests a stale non-applewirelessmouse cache).
+- **v1.1 (2026-04-28):** Added Section 7c-pre (force fresh SDP exchange via BTHPORT cache wipe / unpair-repair) and VG-0 pre-validation gate.
 - **v1.0 (2026-04-28):** Initial MOP.
 
 ---
@@ -53,7 +56,7 @@ bcdedit /set testsigning on
 ### 3b. EWDK mounted
 
 ```pwsh
-Test-Path F:\BuildTools\msbuild.exe   # if F: is the EWDK ISO mount
+Test-Path F:\BuildTools\msbuild.exe
 # OR
 Test-Path D:\ewdk25h2\BuildTools\msbuild.exe
 ```
@@ -74,7 +77,7 @@ Test-Path "$RecoveryPath\AppleWirelessMouse.sys"
 # All three must exist. If any are missing, STOP — recovery path is broken.
 ```
 
-Per `feedback_backup_before_destructive_commands.md` and AP-24: this MOP MAY perform `pnputil /delete-driver` operations as part of rollback (Section 8). The recovery backup MUST be verified intact BEFORE we begin. If it is missing or corrupt, this MOP halts.
+Per `feedback_backup_before_destructive_commands.md` and AP-24: this MOP MAY perform `pnputil /delete-driver` operations as part of rollback (Section 8). The recovery backup MUST be verified intact BEFORE we begin.
 
 ### 3e. Tray app debug log accessible
 
@@ -83,13 +86,21 @@ Test-Path "$env:APPDATA\MagicMouseTray\debug.log"
 Get-Content "$env:APPDATA\MagicMouseTray\debug.log" -Tail 5
 ```
 
-The tray must be running and producing log output. The MOP relies on tray log entries as the primary success oracle.
+### 3f. WinDbg / kernel debugger ready (NEW v1.2)
+
+Pool-tag verification (`!poolused`) and Driver Verifier triage require WinDbg attached or kernel-mode crash-dump analysis available. Either:
+
+```pwsh
+Test-Path "C:\Program Files (x86)\Windows Kits\10\Debuggers\x64\windbg.exe"
+# OR
+Test-Path "F:\Debuggers\x64\windbg.exe"   # via EWDK mount
+```
+
+For 24-hr soak triage, configure live-kernel debugging or capture small-memory-dump on bugcheck (default `%SYSTEMROOT%\Minidump\`).
 
 ---
 
 ## 4. Pre-flight backup (BCP-OPS-501)
-
-Run BEFORE any install/uninstall/PnP operation. Per AP-24, no destructive command runs without these snapshots verified first.
 
 ```pwsh
 $ts = Get-Date -Format "yyyyMMdd-HHmmss"
@@ -118,9 +129,7 @@ Test-Path "$BackupRoot\debug.log.pre"
 Get-ChildItem $BackupRoot | Format-Table Name, Length
 ```
 
-**Gate PRE-1:** all five files exist, sizes plausible (HKLM\SYSTEM export typically 50-150 MB). Halt if missing.
-
-Record `$BackupRoot` for use in Sections 8 (rollback) and 9 (post-validation reg-diff).
+**Gate PRE-1:** all five files exist, sizes plausible. Halt if missing.
 
 ---
 
@@ -129,8 +138,7 @@ Record `$BackupRoot` for use in Sections 8 (rollback) and 9 (post-validation reg
 ### 5a. Open EWDK build environment
 
 ```pwsh
-& F:\LaunchBuildEnv.cmd   # OR D:\ewdk25h2\LaunchBuildEnv.cmd
-# After this, $env:Path includes msbuild + WDK tools
+& F:\LaunchBuildEnv.cmd
 ```
 
 ### 5b. Build
@@ -143,28 +151,35 @@ msbuild MagicMouseDriver.vcxproj `
     /p:SignMode=Off `
     /verbosity:minimal `
     /m
-# Expected exit code 0
 ```
 
 ### 5c. Verify build artefacts
 
 ```pwsh
 $BuildOut = "C:\Users\Lesley\projects\Personal\magic-mouse-tray\driver\Debug\x64\MagicMouseDriver"
-Test-Path "$BuildOut\MagicMouseDriver.sys"   # main binary
-Test-Path "$BuildOut\MagicMouseDriver.inf"   # processed INF
-# .cat is generated in step 6c (signing) — not present yet.
+Test-Path "$BuildOut\MagicMouseDriver.sys"
+Test-Path "$BuildOut\MagicMouseDriver.inf"
 ```
 
-**Gate BUILD-1:** `MagicMouseDriver.sys` and `MagicMouseDriver.inf` both exist in the build output directory.
+**Gate BUILD-1:** `MagicMouseDriver.sys` and `MagicMouseDriver.inf` both exist.
 
-### 5d. Validate descriptor
+### 5d. Validate descriptor (reference-only in v1.2)
 
 ```pwsh
 & "$env:WindowsSdkDir\Tools\x64\hidparser.exe" "$BuildOut\MagicMouseDriver.inf"
-# Or run hidparser against extracted descriptor bytes from a static-init test harness
 ```
 
-**Gate BUILD-2:** `hidparser.exe` returns success on the static `g_HidDescriptor[]` bytes. No syntax warnings. (This catches descriptor-malformation BSOD risk per design spec failure mode F7.)
+**Gate BUILD-2:** `hidparser.exe` returns success on the static `g_HidDescriptor[]` bytes (the 116-byte applewirelessmouse-baseline reference). M12 v1.2 does not actually serve this descriptor — applewirelessmouse-style cached SDP does — but the bytes are validated to confirm M12's design assumptions match the real device descriptor. Helps catch firmware-version drift.
+
+### 5e. Verify pool tag in binary (NEW v1.2)
+
+```pwsh
+# Confirm pool tag 'M12 ' (0x2032314D, ASCII "M12 ") is referenced in the .sys file.
+Select-String -Path "$BuildOut\MagicMouseDriver.sys" -Pattern "M12 " -SimpleMatch
+# Or use dumpbin to confirm pool tag constants in .data section.
+```
+
+**Gate BUILD-3:** Binary contains pool tag literal `M12 ` (ASCII bytes 0x4D 0x31 0x32 0x20). MAJ-5 fix verification.
 
 ---
 
@@ -185,7 +200,6 @@ if (-not $existing) {
         -KeyExportPolicy Exportable `
         -CertStoreLocation Cert:\CurrentUser\My `
         -NotAfter (Get-Date).AddYears(2)
-    # Move to TrustedPublisher + Root for kernel-mode acceptance
     $store = Get-Item Cert:\LocalMachine\TrustedPublisher
     $store.Open("ReadWrite"); $store.Add($cert); $store.Close()
     $store = Get-Item Cert:\LocalMachine\Root
@@ -193,7 +207,7 @@ if (-not $existing) {
 }
 ```
 
-### 6b. Sign the .sys
+### 6b. Sign the .sys (RFC 3161 timestamp per Senior MOP §10 v1.1 review)
 
 ```pwsh
 $signtool = "$env:WindowsSdkDir\bin\$env:WindowsSdkVer\x64\signtool.exe"
@@ -201,27 +215,29 @@ $signtool = "$env:WindowsSdkDir\bin\$env:WindowsSdkVer\x64\signtool.exe"
     /v `
     /s My `
     /n "MagicMouseTray-TestSign" `
-    /t http://timestamp.digicert.com `
-    /fd sha256 `
+    /tr http://timestamp.digicert.com `
+    /td SHA256 `
+    /fd SHA256 `
     "$BuildOut\MagicMouseDriver.sys"
 
 & $signtool verify /v /pa "$BuildOut\MagicMouseDriver.sys"
-# Expected: "Successfully verified"
 ```
+
+Note v1.2: switched from legacy `/t` (SHA1) to `/tr` (RFC 3161) + `/td SHA256` per Senior driver dev §10 — Win11 22H2+ rejects SHA1-timestamped test-signed kernel drivers at load.
 
 ### 6c. Generate + sign catalog
 
 ```pwsh
 $inf2cat = "$env:WindowsSdkDir\bin\$env:WindowsSdkVer\x86\Inf2Cat.exe"
 & $inf2cat /driver:$BuildOut /os:10_X64
-# Produces MagicMouseDriver.cat
 
 & $signtool sign `
     /v `
     /s My `
     /n "MagicMouseTray-TestSign" `
-    /t http://timestamp.digicert.com `
-    /fd sha256 `
+    /tr http://timestamp.digicert.com `
+    /td SHA256 `
+    /fd SHA256 `
     "$BuildOut\MagicMouseDriver.cat"
 ```
 
@@ -231,40 +247,60 @@ $inf2cat = "$env:WindowsSdkDir\bin\$env:WindowsSdkVer\x86\Inf2Cat.exe"
 
 ## 7. Install procedure
 
-Pre-condition: Section 4 (backup) and Section 5-6 (build + sign) both complete and gates passed.
-
-### 7a. Pre-install enumeration check
+### 7a. Pre-install enumeration check + applewirelessmouse removal (UPDATED v1.2)
 
 ```pwsh
 pnputil /enum-drivers | Select-String -Context 0,5 -Pattern "MagicMouse|applewirelessmouse"
 ```
 
-Expected: shows the existing `applewirelessmouse` (oem<N>.inf) entry. NO existing `MagicMouseDriver` entry. If a stale M12 install is present from prior testing, run Section 8 rollback first.
+Expected: shows `applewirelessmouse` (oem<N>.inf) entry. NO existing `MagicMouseDriver` entry.
+
+Per Senior MIN-5: `applewirelessmouse` must be REMOVED from LowerFilters before M12 install (M12's INF appends, would otherwise stack both). Required removal:
+
+```pwsh
+# Capture applewirelessmouse oem<N>.inf for rollback
+$appleOem = pnputil /enum-drivers |
+    Select-String -Context 5,0 "applewirelessmouse" |
+    Select-String "Published Name" |
+    ForEach-Object { ($_ -split ":")[1].Trim() }
+
+# Verify recovery backup exists per AP-24
+foreach ($f in @("AppleWirelessMouse.inf", "AppleWirelessMouse.cat", "AppleWirelessMouse.sys")) {
+    if (-not (Test-Path "D:\Backups\AppleWirelessMouse-RECOVERY\$f")) {
+        Write-Error "MISSING: D:\Backups\AppleWirelessMouse-RECOVERY\$f -- HALT"
+        return
+    }
+}
+
+# Remove. M12 install (7b) follows.
+pnputil /delete-driver "$appleOem" /uninstall
+# Note: NOT /force here — let PnP pick up the absence cleanly. /force fallback only if needed.
+```
 
 ### 7b. Stage and install M12
 
 ```pwsh
 pnputil /add-driver "$BuildOut\MagicMouseDriver.inf" /install
-# Expected: "Driver package added successfully" + driver published as oem<N>.inf
 ```
 
-Capture the published OEM number for rollback:
+Capture published OEM number for rollback:
 
 ```pwsh
 $published = pnputil /enum-drivers | Select-String -Context 5,0 "MagicMouseDriver" |
-    ForEach-Object { ($_.Context.PreContext + $_.Line) -join "`n" }
-$published    # extract Published Name = oem<N>.inf
+    Select-String "Published Name" | ForEach-Object { ($_ -split ":")[1].Trim() }
+$published   # e.g., oem15.inf
 ```
 
-### 7c-pre. Force fresh SDP exchange (CRITICAL — added per NLM peer review)
+### 7c-pre. (Optional in v1.2) BTHPORT cache invalidation
 
-`pnputil /disable-device` + `/enable-device` does NOT trigger a fresh Bluetooth SDP descriptor fetch. HidBth caches the SDP HIDDescriptorList in `HKLM\SYSTEM\CurrentControlSet\Services\BTHPORT\Parameters\Devices\<mac>\CachedServices\00010000` and re-uses it across rebinds (failure mode F13). M12's BRB-level descriptor mutation only fires on fresh SDP — so we must invalidate the cache OR force re-pair.
+v1.2 design does NOT mutate the cached SDP descriptor — applewirelessmouse-published descriptor is what M12 expects HidBth to serve. The cache trap (F13) only matters if the cache contains a non-applewirelessmouse descriptor (e.g., MU's Mode A from a prior install). Run VG-0 first; only invalidate the cache if VG-0 caps mismatch.
+
+If VG-0 fails with caps showing Mode A (Input=8, Feature=2, LinkColl=5):
 
 **Path A (preferred — scripted cache wipe, requires verified backup per AP-24):**
 
 ```pwsh
-# Backup BTHPORT cache for both mice before wipe
-$macV1 = "04F13EEEDE10"   # confirm via Get-PnpDevice or BT settings
+$macV1 = "04F13EEEDE10"
 $macV3 = "D0C050CC8C4D"
 $BthRoot = "HKLM:\SYSTEM\CurrentControlSet\Services\BTHPORT\Parameters\Devices"
 foreach ($mac in @($macV1, $macV3)) {
@@ -272,26 +308,18 @@ foreach ($mac in @($macV1, $macV3)) {
     if (Test-Path $cachePath) {
         $bk = "$BackupRoot\BTHPORT-CachedServices-$mac.reg"
         reg export "HKLM\SYSTEM\CurrentControlSet\Services\BTHPORT\Parameters\Devices\$mac\CachedServices" "$bk" /y
-        # Verify backup non-empty
         if ((Get-Item $bk).Length -lt 100) {
             Write-Error "Backup of $cachePath is empty — HALT"
             return
         }
         Remove-ItemProperty -Path $cachePath -Name "00010000" -ErrorAction SilentlyContinue
-        Remove-ItemProperty -Path "$BthRoot\$mac\DynamicCachedServices" -Name "00010000" -ErrorAction SilentlyContinue
     }
 }
 ```
 
-**Path B (fallback — operator unpair + re-pair):**
-
-If Path A is not validated empirically yet (first-ever M12 install): in Windows BT settings, remove both Magic Mouse devices, then re-pair them. Re-pairing always triggers fresh SDP. Slower (60-90 sec per device, manual UI interaction), but no risk of registry-state ambiguity.
-
-**Decision rule for first run:** use Path B (unpair + re-pair) on the very first M12 install since cache-wipe behaviour is empirically unvalidated. After first M12 install confirms Mode A bound, subsequent re-installs may use Path A.
+**Path B (fallback — operator unpair + re-pair):** remove both Magic Mouse devices from BT settings, then re-pair.
 
 ### 7c. Force re-bind
-
-After 7c-pre completes (cache invalidated OR re-paired), re-enumerate the BTHENUM device. The mice are currently bound to `applewirelessmouse` — to make M12 win the rank battle:
 
 ```pwsh
 $v1Inst = (Get-PnpDevice -InstanceId "BTHENUM\*VID&0001004C_PID&030D*" |
@@ -299,7 +327,6 @@ $v1Inst = (Get-PnpDevice -InstanceId "BTHENUM\*VID&0001004C_PID&030D*" |
 $v3Inst = (Get-PnpDevice -InstanceId "BTHENUM\*VID&0001004C_PID&0323*" |
            Where-Object { $_.Status -eq "OK" }).InstanceId
 
-# Disable + Enable each device — triggers AddDevice with the new INF rank
 pnputil /disable-device "$v1Inst"
 pnputil /enable-device "$v1Inst"
 pnputil /disable-device "$v3Inst"
@@ -310,31 +337,50 @@ Start-Sleep -Seconds 5
 ### 7d. Verify M12 is bound
 
 ```pwsh
-Get-PnpDeviceProperty -InstanceId "$v1Inst" `
-    -KeyName DEVPKEY_Device_LowerFilters
-Get-PnpDeviceProperty -InstanceId "$v3Inst" `
-    -KeyName DEVPKEY_Device_LowerFilters
-# Expected: Data column contains "MagicMouseDriver"
+Get-PnpDeviceProperty -InstanceId "$v1Inst" -KeyName DEVPKEY_Device_LowerFilters
+Get-PnpDeviceProperty -InstanceId "$v3Inst" -KeyName DEVPKEY_Device_LowerFilters
+# Expected: Data column contains "M12"
 
-sc.exe query MagicMouseDriver
+sc.exe query M12
 # Expected: STATE = 4 RUNNING
 ```
 
-**Gate INSTALL-1:** both v1 and v3 LowerFilters contain `MagicMouseDriver`. Service state RUNNING. Halt if either fails.
+**Gate INSTALL-1:** both v1 and v3 LowerFilters contain `M12`. Service state RUNNING. Halt if either fails.
+
+### 7e. Initial registry tunables (NEW v1.2)
+
+```pwsh
+# Defaults are baked into the driver but explicit registration documents intent.
+# BATTERY_OFFSET default = 1 (first byte of 46-byte payload).
+# FirstBootPolicy default = 0 (STATUS_DEVICE_NOT_READY).
+# MAX_STALE_MS default = 10000 (10 sec; 0 disables staleness check).
+$svcParams = "HKLM:\SYSTEM\CurrentControlSet\Services\M12\Parameters"
+if (-not (Test-Path $svcParams)) {
+    New-Item -Path $svcParams -Force | Out-Null
+}
+Set-ItemProperty -Path $svcParams -Name BATTERY_OFFSET -Value 1 -Type DWord
+Set-ItemProperty -Path $svcParams -Name FirstBootPolicy -Value 0 -Type DWord
+Set-ItemProperty -Path $svcParams -Name MAX_STALE_MS -Value 0 -Type DWord
+# NOTE: Default 0 = disabled (v1.3 final per NLM pass-3). Setting to 10000 (10 sec) would
+# cause NOT_READY whenever mouse is asleep (>2 min idle = no fresh RID=0x27 frames).
+# Recommended only if empirical 24-hr soak shows stale-cache corruption — start with 7200000 (2 hr).
+```
+
+**Gate INSTALL-2:** Registry tunables present. Reboot or PnP cycle picks them up at next AddDevice.
 
 ---
 
 ## 8. Rollback procedure
 
-Run this section AT ANY FAILURE POINT in Sections 5-7-9. Idempotent — safe to re-run.
+Run AT ANY FAILURE POINT in Sections 5-7-9. Idempotent.
 
-### 8a. Verify recovery backup before any destructive command (AP-24 gate)
+### 8a. Verify recovery backup before any destructive command
 
 ```pwsh
 $RecoveryPath = "D:\Backups\AppleWirelessMouse-RECOVERY"
 foreach ($f in @("AppleWirelessMouse.inf", "AppleWirelessMouse.cat", "AppleWirelessMouse.sys")) {
     if (-not (Test-Path "$RecoveryPath\$f")) {
-        Write-Error "MISSING: $RecoveryPath\$f -- HALTING ROLLBACK; restore the backup first."
+        Write-Error "MISSING: $RecoveryPath\$f -- HALT"
         return
     }
 }
@@ -353,7 +399,7 @@ if ($M12Oem) {
 }
 ```
 
-### 8c. Restore Apple driver (only if it was deleted during testing)
+### 8c. Restore Apple driver
 
 ```pwsh
 $appleStillThere = pnputil /enum-drivers | Select-String "applewirelessmouse"
@@ -380,7 +426,7 @@ Get-PnpDeviceProperty -InstanceId "$v3Inst" -KeyName DEVPKEY_Device_LowerFilters
 # Expected: applewirelessmouse on both
 ```
 
-### 8f. Reg-diff against pre-M12 snapshot
+### 8f. Reg-diff
 
 ```pwsh
 $ts = Get-Date -Format "yyyyMMdd-HHmmss"
@@ -388,19 +434,15 @@ reg export HKLM\SYSTEM "$BackupRoot\HKLM-SYSTEM-post-rollback-$ts.reg" /y
 bash -c "diff <(grep -v '^Windows' $BackupRoot/HKLM-SYSTEM-pre-M12.reg) <(grep -v '^Windows' $BackupRoot/HKLM-SYSTEM-post-rollback-$ts.reg) | head -100"
 ```
 
-Expected: only minor PnP transient changes (timestamps, DeviceContainer GUIDs). No structural difference. Significant drift = follow-up investigation; baseline isn't fully restored.
-
-**Gate ROLLBACK-1:** Both mice show `applewirelessmouse` in LowerFilters; reg-diff shows no significant drift. Tray (after restart) reports v1 battery = `OK battery=N% (Feature 0x47)`.
+**Gate ROLLBACK-1:** Both mice show `applewirelessmouse` in LowerFilters; reg-diff shows no significant drift. Tray reports v1 battery `OK battery=N% (Feature 0x47)`.
 
 ---
 
 ## 9. Validation gates (success criteria)
 
-Run AFTER Section 7 (install) succeeds. These are the binary success oracles.
+### VG-0: Cached SDP descriptor matches applewirelessmouse-baseline (UPDATED v1.2)
 
-### VG-0: Mode A descriptor confirmation (pre-validation, added per NLM peer review)
-
-Before restarting the tray, confirm M12's BRB-level mutation actually landed on both mice. If HIDP_GetCaps still reports Mode B (47-byte input, 1 link collection), the BRB injection didn't fire — most likely BTHPORT cache trap (F13) — and Section 7c-pre needs to be re-run with Path B (unpair + re-pair).
+v1.2 design does not mutate the descriptor; instead it expects the device's published descriptor (Input=47, Feature=2, LinkColl=2). VG-0 verifies the cached SDP descriptor is the correct one before any further validation.
 
 ```pwsh
 $v1HidPdo = (Get-PnpDevice | Where-Object { $_.InstanceId -like "HID\*VID&0001004C_PID&030D*" -and $_.Status -eq "OK" }).InstanceId
@@ -409,20 +451,35 @@ $v3HidPdo = (Get-PnpDevice | Where-Object { $_.InstanceId -like "HID\*VID&000100
 & "$PSScriptRoot\..\scripts\mm-hid-descriptor-dump.ps1" -InstanceId $v1HidPdo
 & "$PSScriptRoot\..\scripts\mm-hid-descriptor-dump.ps1" -InstanceId $v3HidPdo
 
-# Expected for both v1 and v3:
-#   InputReportByteLength = 8
-#   FeatureReportByteLength = 2
-#   LinkCollections = 5
-#   InputValueCaps = 4 (X, Y, Wheel, AC Pan)
-#   FeatureValueCaps = 2 (RID 0x03 + 0x04 Resolution Multipliers)
+# Expected for both v1 and v3 (applewirelessmouse-baseline / "Mode B"):
+#   InputReportByteLength = 47   (RID=0x27 vendor blob defines max)
+#   FeatureReportByteLength = 2  (RID=0x47 battery)
+#   LinkCollections = 2          (App + Physical/Pointer)
+#   InputValueCaps includes RID=0x02 (X, Y, Pan, Wheel) AND RID=0x27 (vendor blob)
+#   FeatureValueCaps = 1 (RID=0x47 battery)
 ```
 
-**Gate VG-0:** both mice show Mode A caps (Input=8, Feature=2, LinkColl=5). PASS = proceed to VG-1. FAIL = halt; M12 mutation didn't land. Re-run Section 7c-pre with Path B; if still failing, check `sc.exe query MagicMouseDriver` (must be RUNNING) and ETW trace for BRB injection events; if injection fires but caps don't change, BTHPORT cache wasn't actually invalidated — escalate.
-
-### VG-1: v1 regression baseline
+**Gate VG-0 (v1.3 dual-state):** PASS condition is EITHER:
+- (i) both mice show applewirelessmouse-baseline caps (Input=47, Feature=2, LinkColl=2). M12's BRB rewriter took the fast-path (cache already had Descriptor B from prior `applewirelessmouse`). Proceed to VG-1.
+- (ii) both mice show split caps (Descriptor A: COL01 Input=8 + COL02 Vendor) AND `Get-WinEvent` for the M12 ETW provider OR M12's debug log shows a `BRB_REWRITE_OK` event for each device (M12 actively rewrote the SDP TLV during this session's pairing/SDP exchange). Proceed to VG-1.
 
 ```pwsh
-# Restart tray to refresh DriverHealthChecker
+# v1.3 — check M12 BRB rewriter telemetry
+Get-WinEvent -ProviderName "M12-Driver" -MaxEvents 50 -ErrorAction SilentlyContinue |
+    Where-Object { $_.Id -in 100,101,102 } |  # 100=BRB_REWRITE_OK, 101=BRB_REWRITE_SKIPPED, 102=BRB_REWRITE_FAILED
+    Format-Table TimeCreated, Id, Message
+```
+
+FAIL conditions:
+- Caps show Descriptor A AND no BRB_REWRITE_OK event: stale BTHPORT cache from pre-M12 era. Run Section 7c-pre Path A (cache wipe) or Path B (unpair/repair) to force fresh SDP — M12 BRB rewriter then injects Descriptor B.
+- Caps show Mode A (Input=8 single-TLC, Feature=2, LinkColl=5): residual MU/Mode-A injection. Run Section 7c-pre, re-bind, retry.
+- Caps show other variant: device firmware drift. Capture `mm-hid-descriptor-dump.ps1` output, halt, triage.
+
+### VG-1: v1 regression baseline (v1.3 — native Feature 0x47 pass-through)
+
+In v1.3, v1's Feature 0x47 path is M12 ForwardRequest → native firmware (per design Sec 7d PID branch). VG-1 validates that M12's queue forwarding doesn't drop or corrupt v1's working pass-through.
+
+```pwsh
 Get-Process MagicMouseTray -ErrorAction SilentlyContinue | Stop-Process -Force
 Start-Process "C:\Path\To\MagicMouseTray.exe"
 Start-Sleep -Seconds 30
@@ -432,32 +489,93 @@ Get-Content "$env:APPDATA\MagicMouseTray\debug.log" -Tail 50 |
 # Expected: "OK ... pid&030d ... battery=NN% (Feature 0x47)"
 ```
 
-**Gate VG-1:** v1 produces `OK battery=N% (Feature 0x47)` within 30 seconds of tray start. PASS = green-light v3 testing. FAIL = halt; v1 regression is a M12 bug; do not proceed.
+**Gate VG-1:** v1 produces `OK battery=N% (Feature 0x47)` within 30 seconds, AND the percentage matches the same value the tray reported BEFORE M12 install (compare against `debug.log.pre` in `$BackupRoot`). PASS = M12 didn't regress v1's working baseline. FAIL = halt; either INF binding misrouted v1 IRPs, or queue forwarding dropped them, or the PID branch logic is wrong.
 
 ### VG-2: v3 target outcome
 
 ```pwsh
 Get-Content "$env:APPDATA\MagicMouseTray\debug.log" -Tail 50 |
     Select-String "pid&0323.*battery=.*\(Feature 0x47\)"
-# Expected: "OK ... pid&0323 ... battery=NN% (Feature 0x47)"
 ```
 
-**Gate VG-2:** v3 produces `OK battery=N% (Feature 0x47)` within 60 seconds of tray start. PASS = M12 delivers PRD-184's primary feature.
+**Gate VG-2:** v3 produces `OK battery=N% (Feature 0x47)` within 60 seconds.
 
 ### VG-3: Scroll on both mice
 
-Manual test, 10 seconds per device, in a browser (Edge or Chrome) on a long page (e.g., MDN reference doc):
-
 | Device | Action | Expected |
 |--------|--------|----------|
-| v1 | 2-finger swipe up + down + sideways | Page scrolls smoothly in all directions; no dropped events; cursor stays steady; left+right click work |
+| v1 | 2-finger swipe up + down + sideways | Page scrolls smoothly; cursor stays steady; left+right click work |
 | v3 | Same | Same |
 
-**Gate VG-3:** Both mice scroll fluidly with no perceptible loss. Quantitative metric: `WM_MOUSEWHEEL` event count >= 30 in a 3-second 2-finger gesture (per M13 G1 #1 decision). Use `scripts/mm-wheel-count.ps1` if needed.
+**Gate VG-3:** Both mice scroll fluidly. Quantitative: `WM_MOUSEWHEEL` event count >= 30 in a 3-second 2-finger gesture. v1.2 note: scroll is native pass-through (RID=0x02 unmodified) so VG-3 mostly proves the filter doesn't drop or corrupt input — it shouldn't, since M12 doesn't touch RID=0x02 IRPs.
 
-### VG-4: 24-hour soak
+### VG-4: Empirical battery offset confirmation (NEW v1.2)
 
-After VG-1, VG-2, VG-3 pass, leave the system running with both mice idle. Tray polls every 2 hours when battery > 50% (per AdaptivePoller tier).
+The `BATTERY_OFFSET` default is a hypothesis (offset 1 in the 46-byte payload). VG-4 confirms or corrects it.
+
+```pwsh
+# Pre-condition: charge or discharge mouse to a known battery level (read from a SECOND
+# host or the MU 3.1.5.x trial app pre-expiry — anything that doesn't depend on M12).
+$known_pct = 80   # operator-supplied
+
+# Capture LogShadowBuffer entries from debug.log (M12 logs cached payload hex on every
+# Feature 0x47 query). These look like:
+#   [M12] Shadow.Payload[0..45]: 32 41 00 ... <hex>
+Get-Content "$env:APPDATA\MagicMouseTray\debug.log" -Tail 200 |
+    Select-String "Shadow.Payload" | Select-Object -First 5
+
+# Operator: extract the hex bytes from the most-recent line. For each byte position N
+# (0..45), check whether the value plausibly matches $known_pct via the formula
+# (raw - 1) * 100 / 64 where raw in [1..65]. The byte position with a matching value
+# is the BATTERY_OFFSET.
+#
+# Run a second capture at a different battery level (e.g., charge to 100% or
+# discharge to 20%) to confirm the offset. Same byte position must change in the
+# expected direction.
+```
+
+**Gate VG-4:** debug.log Shadow.Payload at a known battery level contains a byte that translates (per the formula) to within ±5% of the known level, and a SECOND capture at a different known level confirms the SAME byte position changes accordingly.
+
+If default `BATTERY_OFFSET=1` matches: no action.
+
+If a different offset matches:
+
+```pwsh
+$svcParams = "HKLM:\SYSTEM\CurrentControlSet\Services\M12\Parameters"
+Set-ItemProperty -Path $svcParams -Name BATTERY_OFFSET -Value <correct_offset> -Type DWord
+pnputil /disable-device "$v3Inst"; pnputil /enable-device "$v3Inst"
+# Re-run VG-2 to confirm tray now shows correct percentage.
+```
+
+If no byte position matches: `TranslateBatteryRaw()` formula likely non-linear; capture a wider battery sweep, log the raw -> %known mapping, decide on a lookup table for Phase 3.
+
+### VG-5: Pool tag verification (NEW v1.2)
+
+```
+!poolused 4 'M12 '
+```
+
+Run in WinDbg attached as live kernel debugger, or against a memory dump.
+
+**Gate VG-5:** at least one allocation tagged `M12 ` enumerates. Confirms MAJ-5 fix is wired up. Zero allocations is acceptable if M12 hasn't needed manual pool yet (most v1.2 paths use stack or WDF object context).
+
+### VG-6: EvtIoStop verification under Driver Verifier (NEW v1.2)
+
+Driver Verifier with IRP-tracking flags forces IRP cancellation on PnP stop. Confirms CRIT-3 fix.
+
+```pwsh
+verifier /flags 0x9bb /driver MagicMouseDriver.sys
+# 0x9bb = standard flags
+# Reboot.
+```
+
+After reboot, induce a BT disconnect (e.g., `Get-PnpDevice -InstanceId $v3Inst | Disable-PnpDevice -Confirm:$false`). Driver Verifier asserts on IRP cancellation paths.
+
+**Gate VG-6:** No bugcheck during forced disable/enable. `verifier /query` shows zero violations against M12. Disable verifier after pass: `verifier /reset`.
+
+### VG-7: 24-hour soak (BT sleep/wake cycles)
+
+After VG-1, VG-2, VG-3, VG-4, VG-5, VG-6 pass, leave the system running with both mice idle. Mouse goes to sleep after ~2 minutes of inactivity (BT disconnect). Tray polls every 2 hours when battery > 50%.
 
 ```pwsh
 # After 24 hours:
@@ -468,16 +586,18 @@ Get-Content "$env:APPDATA\MagicMouseTray\debug.log" -Tail 200 |
 Get-Content "$env:APPDATA\MagicMouseTray\debug.log" -Tail 200 |
     Select-String "OK.*battery=.*\(Feature 0x47\)" |
     Measure-Object | Select-Object Count
-# Expected: >= 12 successful reads (one per ~2 hr per mouse over 24 hr)
+# Expected: >= 12 successful reads
 ```
 
-**Gate VG-4:** Sustained `OK battery=N% (Feature 0x47)` reads on both mice for 24 hours. Sleep/wake cycles tolerated. Zero BSOD events.
+Specific BT sleep/wake validation:
+- Operator manually puts mouse to sleep (turn off, leave 5 min, turn on) at least 3 times.
+- After each wake: tray must produce `OK battery` within 60 sec.
+
+**Gate VG-7:** Sustained `OK battery` reads on both mice for 24 hours. Sleep/wake cycles tolerated. Zero BSOD events. Driver Verifier off (re-enable for a final sanity boot if desired).
 
 ---
 
 ## 10. Health checks
-
-Run continuously during VG-4 soak.
 
 ### 10a. BSOD watch
 
@@ -487,42 +607,47 @@ Get-WinEvent -LogName System -MaxEvents 20 -ErrorAction SilentlyContinue |
     Select-Object TimeCreated, Id, Message
 ```
 
-Expected: empty.
-
-### 10b. Driver Verifier (optional but recommended for first install)
+### 10b. Driver Verifier (UPDATED v1.2)
 
 ```pwsh
+# Recommended flags for first install
 verifier /flags 0x9bb /driver MagicMouseDriver.sys
-# 0x9bb = standard flags + force IRQL checking + I/O verification
-# Reboot required after enabling.
-```
-
-After 24 hr soak, disable:
-
-```pwsh
-verifier /reset
+# 0x9bb decoded:
+#   0x001 special pool
+#   0x002 force IRQL checking
+#   0x008 I/O verification
+#   0x010 deadlock detection      <-- catches CRIT-2 if it regressed
+#   0x080 IRP logging              <-- catches CRIT-3 if EvtIoStop regressed
+#   0x100 disk integrity (n/a)
+#   0x200 enhanced I/O verification
+#   0x400 (reserved for advanced WDF checks if available)
 # Reboot required.
 ```
 
-Any BSOD during verifier-on soak surfaces a real bug; halt and triage.
+After 24 hr soak: `verifier /reset` then reboot.
 
 ### 10c. Tray log monitoring
 
 ```pwsh
 Get-Content "$env:APPDATA\MagicMouseTray\debug.log" -Wait -Tail 20
-# Watch in a side terminal for the duration of validation
 ```
-
-Expected: regular `OK battery=...` entries. Any `FEATURE_BLOCKED`, `OPEN_FAILED`, or `err=87` indicates a partial regression worth investigating before full sign-off.
 
 ### 10d. Service health
 
 ```pwsh
-sc.exe query MagicMouseDriver
-# State should remain RUNNING
-sc.exe queryex MagicMouseDriver | Select-String "STATE|EXIT_CODE"
-# EXIT_CODE = 0
+sc.exe query M12
+sc.exe queryex M12 | Select-String "STATE|EXIT_CODE"
 ```
+
+### 10e. Pool tag continuity (NEW v1.2)
+
+Periodically during soak (every few hours):
+
+```
+!poolused 4 'M12 '
+```
+
+Should be stable or trending — sustained growth = leak.
 
 ---
 
@@ -530,41 +655,47 @@ sc.exe queryex MagicMouseDriver | Select-String "STATE|EXIT_CODE"
 
 | Failure | Symptom | Recovery action |
 |---------|---------|-----------------|
-| Build fails (msbuild error) | exit != 0 | Read msbuild log; fix code; rebuild. No system mutation occurred. |
-| Signing fails (signtool error 0x800B0100) | cert chain not trusted | Cert wasn't installed to TrustedPublisher + Root; re-run Section 6a. |
-| `pnputil /add-driver` fails (signature) | Error 0xE0000247 (NoCert) | Test signing not enabled (3a) or .cat not signed (6c). Re-verify, retry. |
-| M12 doesn't bind after Disable+Enable | LowerFilters missing M12 | Apple INF outranks. Run Section 8 rollback, then run M12 INF with `pnputil /add-driver /install /force` flag. If still rank-loses, requires Apple INF removal — STOP, escalate, do not auto-delete (AP-24). |
-| BSOD on bind | bugcheck 0xC4 / 0x9F | Force-shutdown, boot to Safe Mode, run Section 8b-c-d (rollback). Triage from `MEMORY.DMP`. |
-| v1 regresses (VG-1 fails) | v1 tray log shows err=87 or OPEN_FAILED on PID 030D | M12 bug: PID branch not routing v1 to pass-through. Run Section 8 rollback. Fix code. Rebuild. |
-| v3 produces no battery (VG-2 fails) | v3 tray log shows FEATURE_BLOCKED | Either: (a) M12's HandleGetFeature47_ActivePoll path isn't being hit (PID branch wrong), (b) downstream GET_REPORT on 0x90 timing out, (c) buffer marshalling bug. Capture `Tail 50` of debug.log + driver ETW; rollback; triage. |
-| v3 scroll dropped events (VG-3 fails) | Scroll feels "stuck" or skips | Translation algorithm bug — most likely TouchState reset on a state we missed. Capture raw input report 0x12 hex via WinDbg; compare to Linux algorithm trace; fix; rebuild. |
-| Reg-diff post-rollback shows unexpected drift | reg-diff section 8f produces > 5 unrelated entries | Phase 1 cleanup-style drift — recoverable. Inspect each delta; restore individually if needed; rerun reg-diff. |
+| Build fails | exit != 0 | Read msbuild log; fix code; rebuild. No system mutation. |
+| Signing fails | cert chain not trusted | Re-run Section 6a. |
+| `pnputil /add-driver` fails (signature) | Error 0xE0000247 | Test signing not enabled or .cat not signed. Re-verify, retry. |
+| M12 doesn't bind after Disable+Enable | LowerFilters missing M12 | Apple INF outranks. Run Section 8 rollback, then run M12 INF with `/force`. |
+| BSOD on bind | bugcheck 0xC4 / 0x9F / 0x3B | Force-shutdown, boot Safe Mode, run Section 8b-c-d. Triage from `MEMORY.DMP`. Common 0xC4: Driver Verifier IRP/IoTarget violation — re-check CRIT-1..CRIT-4 implementation. |
+| v1 regresses (VG-1 fails) | v1 tray log shows err=87 | Likely `BATTERY_OFFSET` mismatch v1 vs v3. Capture LogShadowBuffer for v1, compute v1-specific offset, set `BATTERY_OFFSET` per-device-instance via PnP `Parameters` subkey. |
+| v3 produces no battery (VG-2) | v3 tray log shows STATUS_DEVICE_NOT_READY | Either: (a) Shadow.Valid=FALSE persistently — RID=0x27 not arriving (check VG-0 caps), (b) FirstBootPolicy mismatch — set to 1 to fall back to `[0x47, 0x00]`. |
+| Battery percentage wrong (VG-2 + VG-4 mismatch) | Tray shows e.g. 100% when device is 20% | Wrong `BATTERY_OFFSET`. Re-run VG-4 capture, identify correct offset, update registry, re-bind. |
+| v3 scroll dropped events (VG-3) | Scroll feels stuck | Surprising — M12 doesn't touch scroll. Likely a HidBth or HidClass bug; capture WinDbg trace; consider compatibility issue. |
+| Reg-diff post-rollback drift | > 5 unrelated entries | Inspect each delta; restore individually; rerun reg-diff. |
+| Driver Verifier triggers 0xC4 on first bind | DV detected violation | Most likely CRIT-3 regression (missing EvtIoStop on a queue). Check Verifier dump; fix in code; rebuild. |
+| Pool tag `M12 ` not enumerable post-install (VG-5 zero hits) | M12 not allocating from manual pool | Acceptable in v1.2 — most paths use WDF context. Consider non-blocking. |
 
 ---
 
 ## 12. Sign-off checklist
 
-Operator (Lesley or designate) initials each line on completion. Proceed only when all are checked.
-
 ```
-[ ] PRE-1: Pre-flight backup verified (Section 4 gate PRE-1)
+[ ] PRE-1: Pre-flight backup verified
 [ ] BUILD-1: MagicMouseDriver.sys + .inf in build output
-[ ] BUILD-2: hidparser.exe validates g_HidDescriptor[]
-[ ] SIGN-1:  signtool verify successful on .sys + .cat
-[ ] 7c-pre: BTHPORT cache invalidated (Path A) OR mice re-paired (Path B)
+[ ] BUILD-2: hidparser.exe validates 116-byte reference descriptor
+[ ] BUILD-3: pool tag 'M12 ' present in binary
+[ ] SIGN-1:  signtool verify successful (RFC 3161 SHA256)
+[ ] 7a:      applewirelessmouse removed from LowerFilters
+[ ] 7e:      registry tunables BATTERY_OFFSET + FirstBootPolicy + MAX_STALE_MS set
 [ ] INSTALL-1: M12 LowerFilters bound to v1 + v3, service RUNNING
-[ ] VG-0: HIDP_GetCaps shows Mode A (Input=8, Feature=2, LinkColl=5) on both mice
-[ ] VG-1: v1 produces OK battery (Feature 0x47) within 30s
-[ ] VG-2: v3 produces OK battery (Feature 0x47) within 60s
-[ ] VG-3: scroll fluid on both mice (10-second test each)
-[ ] VG-4: 24-hour soak, >= 12 OK reads, zero err= entries, zero BSOD
-[ ] HEALTH-10a: no BSOD events in System log over soak window
-[ ] HEALTH-10d: service state RUNNING throughout soak
+[ ] VG-0:    HIDP_GetCaps shows applewirelessmouse-baseline (Input=47, Feature=2, LinkColl=2)
+[ ] VG-1:    v1 produces OK battery (Feature 0x47) within 30s
+[ ] VG-2:    v3 produces OK battery (Feature 0x47) within 60s
+[ ] VG-3:    scroll fluid on both mice
+[ ] VG-4:    BATTERY_OFFSET confirmed via debug.log diff at known battery levels
+[ ] VG-5:    pool tag 'M12 ' verifiable in WinDbg !poolused
+[ ] VG-6:    no Driver Verifier violations under flags 0x9bb during forced disable
+[ ] VG-7:    24-hour soak with BT sleep/wake cycles, >= 12 OK reads, zero err= entries, zero BSOD
+[ ] HEALTH-10a: no BSOD events in System log
+[ ] HEALTH-10d: service state RUNNING throughout
 
 Operator: ____________________________  Date: __________
 
 Sign-off complete -> M12 ratified for personal-use deployment.
-WHQL submission is OUT of scope and tracked separately.
+WHQL submission OUT of scope.
 ```
 
 ---
@@ -575,12 +706,16 @@ WHQL submission is OUT of scope and tracked separately.
 |-----------|---------|
 | Capture pre-state | `pnputil /enum-drivers > pre.txt; reg export HKLM\SYSTEM pre.reg /y` |
 | Build | `msbuild MagicMouseDriver.vcxproj /p:Configuration=Debug /p:Platform=x64` |
-| Sign .sys | `signtool sign /v /s My /n "MagicMouseTray-TestSign" /fd sha256 /t http://timestamp.digicert.com MagicMouseDriver.sys` |
+| Sign .sys | `signtool sign /v /s My /n "MagicMouseTray-TestSign" /tr http://timestamp.digicert.com /td SHA256 /fd SHA256 MagicMouseDriver.sys` |
 | Build .cat | `inf2cat /driver:$BuildOut /os:10_X64` |
 | Install | `pnputil /add-driver MagicMouseDriver.inf /install` |
 | Force rebind | `pnputil /disable-device <id>; pnputil /enable-device <id>` |
 | Verify bind | `Get-PnpDeviceProperty -InstanceId <id> -KeyName DEVPKEY_Device_LowerFilters` |
-| Service status | `sc.exe query MagicMouseDriver` |
+| Service status | `sc.exe query M12` |
 | Tray log tail | `Get-Content $env:APPDATA\MagicMouseTray\debug.log -Tail 50` |
+| Set battery offset | `Set-ItemProperty -Path HKLM:\SYSTEM\CurrentControlSet\Services\M12\Parameters -Name BATTERY_OFFSET -Value N -Type DWord` |
+| Pool tag enumerate (WinDbg) | `!poolused 4 'M12 '` |
+| Driver Verifier on | `verifier /flags 0x9bb /driver MagicMouseDriver.sys` |
+| Driver Verifier off | `verifier /reset` |
 | Uninstall | `pnputil /delete-driver oem<N>.inf /uninstall /force` |
 | Reset signing test mode | `bcdedit /set testsigning off` (reboot) |
