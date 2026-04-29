@@ -1,13 +1,32 @@
 # mm-task-runner.ps1 - invoked by the SYSTEM scheduled task 'MM-Dev-Cycle'.
 #
 # Protocol (filesystem queue, ASCII text, pipe-delimited):
-#   Request:  C:\mm-dev-queue\request.txt   "PHASE|NONCE"
+#   Request:  C:\mm-dev-queue\request.txt   "PHASE|NONCE[|arg...]"
 #   Result:   C:\mm-dev-queue\result.txt    "EXITCODE|NONCE"
 #   Lock:     C:\mm-dev-queue\running.lock  (created on enter, removed on exit)
 #
 # WSL drops a request, triggers `schtasks /run /tn MM-Dev-Cycle`, and polls
 # result.txt for a matching nonce. The nonce prevents reading a stale result
 # from a previous run.
+#
+# Phase 3 build routes (pipe-delimited args after PHASE|NONCE):
+#   BUILD|<nonce>|<config>|<platform>[|<sln-path>]
+#     config:    Release | Debug
+#     platform:  x64
+#     sln-path:  optional; defaults to driver\M12.sln on WSL path
+#     log:       C:\mm-dev-queue\build-<nonce>.log
+#
+#   SIGN|<nonce>|<sys-path>|<cat-path>|<pfx-path>|<pfx-pass-env-var>
+#     sys-path:       full Windows path to .sys file
+#     cat-path:       full Windows path to .cat file
+#     pfx-path:       full Windows path to .pfx file
+#     pfx-pass-env-var: name of env var holding PFX password (avoids plaintext)
+#     log:      C:\mm-dev-queue\sign-<nonce>.log
+#
+#   DV-CHECK|<nonce>|<driver-name>
+#     driver-name: e.g. M12.sys (just the filename, no path)
+#     log:      C:\mm-dev-queue\dv-<nonce>.log
+#     result 0: Driver Verifier configured (reboot required to activate)
 
 $ErrorActionPreference = 'Continue'
 $ProgressPreference    = 'SilentlyContinue'
@@ -54,15 +73,124 @@ try {
         exit 0
     }
 
-    $parts = $raw -split '\|', 2
+    $parts = $raw -split '\|'
     $phase = $parts[0].Trim()
     $nonce = if ($parts.Count -gt 1) { $parts[1].Trim() } else { 'no-nonce' }
-    Log "Request parsed: phase='$phase' nonce='$nonce'"
+    Log "Request parsed: phase='$phase' nonce='$nonce' args=$($parts.Count - 2)"
 
     $rc = 0
 
+    # BUILD route: invoke EWDK msbuild against M12.sln (or any .sln on WSL path)
+    # Request format: BUILD|<nonce>|<config>|<platform>[|<sln-path>]
+    if ($phase -eq 'BUILD') {
+        $config   = if ($parts.Count -gt 2) { $parts[2].Trim() } else { 'Release' }
+        $platform = if ($parts.Count -gt 3) { $parts[3].Trim() } else { 'x64' }
+        $defaultSln = '\\wsl.localhost\Ubuntu\home\lesley\projects\Personal\magic-mouse-tray\driver\M12.sln'
+        $solution = if ($parts.Count -gt 4 -and $parts[4].Trim()) { $parts[4].Trim() } else { $defaultSln }
+        $buildLog = Join-Path $QueueDir "build-$nonce.log"
+        # Use SetupBuildEnv.cmd (one-shot env setup), NOT LaunchBuildEnv.cmd (cmd /k interactive)
+        # Senior-dev review CRIT-1: LaunchBuildEnv hangs the queue indefinitely.
+        $ewdk     = 'F:\BuildEnv\SetupBuildEnv.cmd'
+
+        Log "BUILD config=$config platform=$platform solution=$solution"
+
+        if (-not (Test-Path $ewdk)) {
+            $msg = "ERROR: EWDK SetupBuildEnv not found at $ewdk - is the ISO mounted?"
+            Log $msg
+            $msg | Set-Content $buildLog -Encoding ASCII
+            $rc = 1
+        } else {
+            $cmdLine = "call `"$ewdk`" >NUL 2>&1 && msbuild `"$solution`" /p:Configuration=$config /p:Platform=$platform /v:minimal"
+            Log "Invoking: cmd /c $cmdLine"
+            try {
+                cmd /c $cmdLine > $buildLog 2>&1
+                $rc = $LASTEXITCODE
+                if ($null -eq $rc) { $rc = 0 }
+            } catch {
+                "Exception: $_" | Add-Content $buildLog -Encoding ASCII
+                Log "Exception in BUILD: $_"
+                $rc = 99
+            }
+        }
+        Log "BUILD exited $rc; log at $buildLog"
+    }
+    # SIGN route: signtool sign .sys + .cat with a PFX cert
+    # Request format: SIGN|<nonce>|<sys-path>|<cat-path>|<pfx-path>|<pfx-pass-env-var>
+    elseif ($phase -eq 'SIGN') {
+        $sysPath    = if ($parts.Count -gt 2) { $parts[2].Trim() } else { '' }
+        $catPath    = if ($parts.Count -gt 3) { $parts[3].Trim() } else { '' }
+        $pfxPath    = if ($parts.Count -gt 4) { $parts[4].Trim() } else { '' }
+        $pfxPassVar = if ($parts.Count -gt 5) { $parts[5].Trim() } else { '' }
+        $signLog    = Join-Path $QueueDir "sign-$nonce.log"
+        $signtool   = 'F:\Program Files\Windows Kits\10\bin\10.0.26100.0\x64\signtool.exe'
+        $tsUrl      = 'http://timestamp.digicert.com'
+
+        Log "SIGN sys=$sysPath cat=$catPath pfx=$pfxPath passvar=$pfxPassVar"
+
+        if (-not (Test-Path $signtool)) {
+            $msg = "ERROR: signtool not found at $signtool"
+            Log $msg
+            $msg | Set-Content $signLog -Encoding ASCII
+            $rc = 1
+        } elseif (-not $sysPath -or -not $catPath -or -not $pfxPath) {
+            $msg = "ERROR: SIGN requires sys-path, cat-path, and pfx-path args"
+            Log $msg
+            $msg | Set-Content $signLog -Encoding ASCII
+            $rc = 2
+        } else {
+            $pfxPass = if ($pfxPassVar) { [Environment]::GetEnvironmentVariable($pfxPassVar) } else { '' }
+            $passArgs = if ($pfxPass) { @('/p', $pfxPass) } else { @() }
+            try {
+                "=== Sign $sysPath ===" | Set-Content $signLog -Encoding ASCII
+                & $signtool sign /fd sha256 /tr $tsUrl /td sha256 /f $pfxPath @passArgs $sysPath 2>&1 | Add-Content $signLog -Encoding ASCII
+                $rc = $LASTEXITCODE
+                if ($null -eq $rc) { $rc = 0 }
+                "=== Sign $catPath ===" | Add-Content $signLog -Encoding ASCII
+                & $signtool sign /fd sha256 /tr $tsUrl /td sha256 /f $pfxPath @passArgs $catPath 2>&1 | Add-Content $signLog -Encoding ASCII
+                $rc2 = $LASTEXITCODE
+                if ($null -eq $rc2) { $rc2 = 0 }
+                if ($rc -eq 0) { $rc = $rc2 }
+            } catch {
+                "Exception: $_" | Add-Content $signLog -Encoding ASCII
+                Log "Exception in SIGN: $_"
+                $rc = 99
+            }
+        }
+        Log "SIGN exited $rc; log at $signLog"
+    }
+    # DV-CHECK route: configure Driver Verifier for a named driver
+    # Request format: DV-CHECK|<nonce>|<driver-name>
+    # Result 0 = verifier configured; actual enforcement requires reboot
+    elseif ($phase -eq 'DV-CHECK') {
+        $driverName = if ($parts.Count -gt 2) { $parts[2].Trim() } else { '' }
+        $dvLog      = Join-Path $QueueDir "dv-$nonce.log"
+        $dvFlags    = '0x49bb'
+
+        Log "DV-CHECK driver=$driverName flags=$dvFlags"
+
+        if (-not $driverName) {
+            $msg = "ERROR: DV-CHECK requires driver-name arg (e.g. M12.sys)"
+            Log $msg
+            $msg | Set-Content $dvLog -Encoding ASCII
+            $rc = 2
+        } else {
+            try {
+                "=== verifier /flags $dvFlags /driver $driverName ===" | Set-Content $dvLog -Encoding ASCII
+                & verifier /flags $dvFlags /driver $driverName /standard /reset 2>&1 | Add-Content $dvLog -Encoding ASCII
+                $rc = $LASTEXITCODE
+                if ($null -eq $rc) { $rc = 0 }
+                "=== verifier /query ===" | Add-Content $dvLog -Encoding ASCII
+                & verifier /query 2>&1 | Add-Content $dvLog -Encoding ASCII
+            } catch {
+                "Exception: $_" | Add-Content $dvLog -Encoding ASCII
+                Log "Exception in DV-CHECK: $_"
+                $rc = 99
+            }
+        }
+        Log "DV-CHECK exited $rc; log at $dvLog"
+    }
     # Special phase prefix "SNAPSHOT:Stack" routes to mm-bt-stack-snapshot.ps1
-    if ($phase -like 'SNAPSHOT:*') {
+    elseif ($phase -like 'SNAPSHOT:*') {
         $snapScript = 'D:\mm3-driver\scripts\mm-bt-stack-snapshot.ps1'
         if (-not (Test-Path $snapScript)) {
             Log "ERROR: mm-bt-stack-snapshot.ps1 not found at $snapScript"
