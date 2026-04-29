@@ -195,6 +195,7 @@ if (Test-Path $sdvLog) {
 } else {
     Write-Log "No SDV report found at $sdvDir -- SDV may not have run or solution missing M12 project." 'WARN'
     Write-Log "Raw build log: $LogFile" 'WARN'
+    $parseSource = 'none'
 }
 
 $violationCount = $violations.Count
@@ -202,11 +203,17 @@ Write-Log "SDV violations found: $violationCount (parsed from: $parseSource)"
 
 # ---------------------------------------------------------------------------
 # Gate determination
-# Pass only if: msbuild exit = 0 AND 0 FAIL/ERROR rules.
-# A non-zero msbuild exit means SDV infrastructure failure (not just violations)
-# -- treat as gate fail so the agent investigates.
+# Pass only if: msbuild exit = 0 AND parse succeeded AND 0 FAIL/ERROR rules.
+# Senior-dev review MAJ-3: previous logic falsely PASSED when SDV exited 0 but
+# produced no artifacts (SDK mismatch, cancelled run, missing M12 project).
+# Now: parseSource = 'none' is a hard FAIL even if exit code is 0.
+# A non-zero msbuild exit also fails (infrastructure failure, not just violations).
 # ---------------------------------------------------------------------------
-$gatePassed = ($violationCount -eq 0 -and $buildExitCode -eq 0)
+$reportFound = ($parseSource -ne 'none')
+$gatePassed  = ($violationCount -eq 0 -and $buildExitCode -eq 0 -and $reportFound)
+if (-not $reportFound) {
+    Write-Log "Gate FAIL: SDV produced no parseable report. Cannot confirm what was checked." 'ERROR'
+}
 
 # ---------------------------------------------------------------------------
 # Emit sdv-results.json

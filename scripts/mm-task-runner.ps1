@@ -88,17 +88,19 @@ try {
         $defaultSln = '\\wsl.localhost\Ubuntu\home\lesley\projects\Personal\magic-mouse-tray\driver\M12.sln'
         $solution = if ($parts.Count -gt 4 -and $parts[4].Trim()) { $parts[4].Trim() } else { $defaultSln }
         $buildLog = Join-Path $QueueDir "build-$nonce.log"
-        $ewdk     = 'F:\LaunchBuildEnv.cmd'
+        # Use SetupBuildEnv.cmd (one-shot env setup), NOT LaunchBuildEnv.cmd (cmd /k interactive)
+        # Senior-dev review CRIT-1: LaunchBuildEnv hangs the queue indefinitely.
+        $ewdk     = 'F:\BuildEnv\SetupBuildEnv.cmd'
 
         Log "BUILD config=$config platform=$platform solution=$solution"
 
         if (-not (Test-Path $ewdk)) {
-            $msg = "ERROR: EWDK not found at $ewdk - is the ISO mounted?"
+            $msg = "ERROR: EWDK SetupBuildEnv not found at $ewdk - is the ISO mounted?"
             Log $msg
             $msg | Set-Content $buildLog -Encoding ASCII
             $rc = 1
         } else {
-            $cmdLine = "`"$ewdk`" && msbuild `"$solution`" /p:Configuration=$config /p:Platform=$platform /v:minimal"
+            $cmdLine = "call `"$ewdk`" >NUL 2>&1 && msbuild `"$solution`" /p:Configuration=$config /p:Platform=$platform /v:minimal"
             Log "Invoking: cmd /c $cmdLine"
             try {
                 cmd /c $cmdLine > $buildLog 2>&1

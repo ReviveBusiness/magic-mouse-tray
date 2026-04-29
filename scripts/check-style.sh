@@ -128,24 +128,32 @@ declare -a TARGET_FILES=()
 collect_files TARGET_FILES
 
 # ---- violation tracking ----
-VIOLATIONS_JSON="[]"   # will be built as JSON array incrementally via python
+# Senior-dev review CRIT-3: previous heredoc-based JSON accumulator broke on
+# apostrophes / quotes in detail strings (e.g. "doesn't", common in English
+# comments). Now we write each violation as one JSONL line to a temp file via
+# Python argv (no shell interpolation into Python source); consolidate in
+# a single final pass. Eliminates injection class entirely.
+VIOLATIONS_JSONL=$(mktemp -t mm-style-violations.XXXXXX.jsonl)
+trap 'rm -f "$VIOLATIONS_JSONL"' EXIT
 HAS_REJECT=false
 
 add_violation() {
     local file="$1" check="$2" severity="$3" line="$4" detail="$5"
-    VIOLATIONS_JSON=$(python3 - <<PYEOF
+    # Pass strings via argv — Python sees them as bytes-literal string objects
+    # so any single/double-quote, backslash, or $-sign in detail is benign.
+    python3 -c '
 import json, sys
-data = json.loads('''$VIOLATIONS_JSON''')
-data.append({
-    "file": "$file",
-    "check": "$check",
-    "severity": "$severity",
-    "line": "$line",
-    "detail": "$detail"
-})
-print(json.dumps(data))
-PYEOF
-)
+out = sys.argv[1]
+record = {
+    "file": sys.argv[2],
+    "check": sys.argv[3],
+    "severity": sys.argv[4],
+    "line": sys.argv[5],
+    "detail": sys.argv[6],
+}
+with open(out, "a") as f:
+    f.write(json.dumps(record) + "\n")
+' "$VIOLATIONS_JSONL" "$file" "$check" "$severity" "$line" "$detail"
     if [[ "$severity" == "REJECT" ]]; then
         HAS_REJECT=true
     fi
@@ -247,17 +255,17 @@ check_generic_names() {
 
     local pattern='\b(helper|util|data|buffer|temp|tmp|dummy|placeholder|var)[0-9]*\b'
     local matches
-    matches=$(grep -n -P "$pattern" "$file" 2>/dev/null || true)
+    matches=$(grep -n -E "$pattern" "$file" 2>/dev/null || true)
     if [[ -n "$matches" ]]; then
         while IFS= read -r match_line; do
             local lineno="${match_line%%:*}"
             local content="${match_line#*:}"
             # skip if it appears inside a string literal (heuristic: in quotes)
-            if echo "$content" | grep -qP '"[^"]*'"$pattern"'[^"]*"' 2>/dev/null; then
+            if echo "$content" | grep -qE '"[^"]*'"$pattern"'[^"]*"' 2>/dev/null; then
                 continue
             fi
             local word
-            word=$(echo "$content" | grep -oP "$pattern" | head -1)
+            word=$(echo "$content" | grep -oE "$pattern" | head -1)
             add_violation "$rel_file" "generic-name" "FLAG" "$lineno" \
                 "Generic identifier '${word}' detected. Use domain-specific WDF/HID terms (reqContext, devCtx, batteryStatus, etc.)."
         done <<< "$matches"
@@ -457,8 +465,10 @@ alloc_patterns = [
     re.compile(r'\bExAllocatePoolWithTag\s*\([^)]*?,\s*[^)]*?,\s*([^)]+?)\s*\)'),
     # ExAllocatePool2(flags, size, tag)
     re.compile(r'\bExAllocatePool2\s*\([^)]*?,\s*[^)]*?,\s*([^)]+?)\s*\)'),
-    # WdfMemoryCreate(..., tag, ...) — tag is 4th positional param after attributes/device/pooltype
-    re.compile(r'\bWdfMemoryCreate\s*\([^)]*?,\s*[^)]*?,\s*[^)]*?,\s*([^)]+?)\s*,'),
+    # WdfMemoryCreate(Attributes, PoolType, PoolTag, BufferSize, ...) — PoolTag is 3rd arg
+    # Senior-dev review MAJ-2: original regex consumed 3 commas before the capture, hitting
+    # the 4th arg (BufferSize). Reduced to 2 leading args so we capture the 3rd (PoolTag).
+    re.compile(r'\bWdfMemoryCreate\s*\([^)]*?,\s*[^)]*?,\s*([^)]+?)\s*,'),
 ]
 
 EXPECTED_TAG = "'M12 '"  # four chars: M, 1, 2, space
@@ -556,15 +566,25 @@ for f in "${TARGET_FILES[@]}"; do
 done
 
 # ---- produce outputs ----
-python3 - "$RESULTS_JSON" "$RESULTS_MD" "$TIMESTAMP" "$HAS_REJECT" <<PYEOF
+python3 - "$RESULTS_JSON" "$RESULTS_MD" "$TIMESTAMP" "$HAS_REJECT" "$VIOLATIONS_JSONL" <<'PYEOF'
 import json, sys
 
-results_json, results_md, ts, has_reject_str = sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4]
+results_json = sys.argv[1]
+results_md = sys.argv[2]
+ts = sys.argv[3]
+has_reject_str = sys.argv[4]
+violations_jsonl = sys.argv[5]
 has_reject = has_reject_str == 'true'
-violations_raw = '''$VIOLATIONS_JSON'''
 
+violations = []
 try:
-    violations = json.loads(violations_raw)
+    with open(violations_jsonl, 'r') as f:
+        for line in f:
+            line = line.strip()
+            if line:
+                violations.append(json.loads(line))
+except FileNotFoundError:
+    violations = []
 except Exception:
     violations = []
 

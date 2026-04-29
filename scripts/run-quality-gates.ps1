@@ -194,9 +194,11 @@ if ($SkipSdv) {
 # ---------------------------------------------------------------------------
 $prefastPassed = ($prefastExit -eq 0)
 $sdvPassed     = ($sdvExit -eq 0)
-$allPassed     = $prefastPassed -and ($sdvPassed -or -not $sdvSkipped -eq $false)
+# Senior-dev review MAJ-1: previous $allPassed had wrong operator precedence
+# (always evaluated as $prefastPassed alone) and was unused downstream.
+# Removed entirely; downstream logic uses $fullyPassed / $preOnlyMode.
 
-# Re-evaluate: fully passed = both exit 0 with no skip required.
+# Fully passed = both exit 0 with no skip required.
 # Partial (PREfast only) = informational; merge still blocked pending SDV.
 $fullyPassed = ($prefastExit -eq 0 -and $sdvExit -eq 0)
 $preOnlyMode = ($prefastExit -eq 0 -and $sdvSkipped)
