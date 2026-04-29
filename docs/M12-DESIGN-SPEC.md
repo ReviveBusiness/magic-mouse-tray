@@ -1,15 +1,18 @@
 # M12 Design Specification
 
-**Status:** v1.3 — DRAFT pending user approval (NLM pass-2 blocking issues resolved)
+**Status:** v1.4 — DRAFT pending user approval (DSM/PnP + Power Saver + Production Hygiene briefs folded in)
 **Date:** 2026-04-28
-**Linked PRD:** PRD-184 v1.27
+**Linked PRD:** PRD-184 v1.29
 **Linked PSN:** PSN-0001 v1.9
 **Linked NLM pass-1:** `docs/M12-DESIGN-PEER-REVIEW-NOTEBOOKLM-2026-04-28.md`
 **Linked NLM pass-2:** `docs/M12-DESIGN-PEER-REVIEW-NOTEBOOKLM-PASS2-2026-04-28.md`
+**Linked NLM pass-3:** `docs/M12-DESIGN-PEER-REVIEW-NOTEBOOKLM-PASS3-2026-04-28.md`
+**Linked NLM pass-4:** `docs/M12-DESIGN-PEER-REVIEW-NOTEBOOKLM-PASS4-2026-04-28.md`
 **Approval gate:** PR ai/m12-design-prd-mop must be approved by user before any code is written.
 
 ## Revision history
 
+- **v1.4 (2026-04-28, brief fold-in iteration):** Three briefs folded in that v1.3 did not have access to. (a) `M12-DSM-PNP-CONCERNS-FOR-V1.3.md` — declares INF `DriverVer = 01/01/2027, 1.0.0.0` to win PnP rank against `applewirelessmouse` (04/21/2026, 6.2.0.0) and Magic Utilities (11/05/2024, 3.1.5.3); adds service entry hygiene (`sc.exe delete MagicMouseM12` on uninstall + stale-service detection at install); BTHPORT cache invalidation alternatives (registry delete vs unpair-repair); orphan LowerFilter walk reference; coexistence rank table. (b) `M12-POWER-SAVER-DESIGN.md` — power saver / suspend modes IN v1 scope per user direction 2026-04-28; PoRegisterCallback for display state, AC/DC, sleep, sign-out; vendor suspend command marked as OPEN QUESTION with three resolution paths; passive wake on click; manual suspend custom IOCTL `IOCTL_M12_SUSPEND` METHOD_BUFFERED admin-SDDL; CRD `PowerSaver\` config subkey schema; defaults SuspendOnSignOut=1, SuspendOnSleep=1, SuspendOnShutdown=1, others=0. (c) `M12-PRODUCTION-HYGIENE-FOR-V1.3.md` — WPP/ETW provider declared (levels ERROR/WARNING/INFO/VERBOSE; flags PNP/IO/SHADOW_BUFFER/POWER/IOCTL); per-DEVICE_CONTEXT shadow buffer + spinlock confirmed (multi-mouse safe); F15-F18 disconnect/reconnect failure modes added; Driver Verifier flags expanded to `0x49bb`; IOCTL input validation contract (METHOD_BUFFERED + range checks + admin SDDL); test plan in new `docs/M12-TEST-PLAN.md`; build system = msbuild + EWDK 25H2 (decision documented); compatibility matrix Win11 22H2-25H2 x64 (Win10 + ARM64 deferred); coexistence story; pool tag `'M12 '` + structure signature `'M12-'`; watchdog (30s tick, 120s stall threshold); logging policy DebugLevel 0-4 (default 0; 4 only for empirical-offset workflow). New sections 15-25 added; sections 4 + 11 + 12 + 16 patched. v1.4 changelog table below. NLM pass-4 verdict at `docs/M12-DESIGN-PEER-REVIEW-NOTEBOOKLM-PASS4-2026-04-28.md`.
 - **v1.3 (2026-04-28, post-NLM-pass-3 patches inline):** Pass-3 ran against v1.3 and surfaced two CHANGES-NEEDED items, both documentation-quality fixes (not architectural). Patched in place: (a) `MAX_STALE_MS` default changed from 10000 to **0 (disabled)** — 10-sec default would force NOT_READY whenever mouse is asleep (~2 min idle), severe UX regression. Operator can opt-in to non-zero. (b) BRB TLV parser safety requirements expanded in Section 3b' to mandatory subsections a-g: MDL bounds, TLV walk bounds with abandon-on-failure, no-expansion-beyond-BufferLen, no-length-form-upgrade, recursive-parser, Driver Verifier special-pool catch. Pass-3 verdict at `docs/M12-DESIGN-PEER-REVIEW-NOTEBOOKLM-PASS3-2026-04-28.md`. Per playbook iteration cap, no v1.4 — v1.3 with these inline patches is the final design ship.
 - **v1.3 (2026-04-28, original):** Resolved two blocking issues from NLM pass-2: (1) **PID branch restored for Feature 0x47** (Section 7d). v1 (PID 0x030D / 0x0310) Feature 0x47 IRPs pass-through to native firmware unchanged; only v3 (PID 0x0323) gets the shadow-buffer short-circuit. v1's working Feature 0x47 baseline preserved by definition. (2) **BRB-level descriptor mutation restored as fallback** (Section 3b'). When VG-0 detects the cached SDP descriptor is the device's native multi-TLC Descriptor A (no Feature 0x47 declared) — the fresh-pair scenario where no `applewirelessmouse` previously mutated the cache — M12's BRB completion routine intercepts `IOCTL_INTERNAL_BTH_SUBMIT_BRB` and rewrites the SDP HIDDescriptorList TLV to inject the unified Descriptor B (the v1.1 logic, retained as a fresh-pair fallback). Fast-path: when the cache already has Descriptor B (post-applewirelessmouse, the common case), no rewriting occurs and the v1.2 simplification still applies. New advisory: tunable `MAX_STALE_MS` registry default 10000 — if shadow timestamp older, return STATUS_DEVICE_NOT_READY (forces fresh data or explicit N/A in tray).
 - **v1.2 (2026-04-28):** Major architectural correction following five parallel reviews (senior driver dev + HID protocol validation + Ghidra extended + applewirelessmouse Ghidra + RID=0x27 empirical). Re-baselined on `applewirelessmouse.sys` rather than MU `MagicMouse.sys`: M12 = applewirelessmouse baseline (Descriptor B = 116 bytes verbatim, RID=0x02 native scroll pass-through, RID=0x27 vendor blob input declared but raw) PLUS one delta — IRP completion intercept on `IOCTL_HID_GET_FEATURE` for ReportID 0x47, served from a shadow buffer of the most recent RID=0x27 input. No Mode A scroll synthesis. No Resolution Multiplier features. No active-poll path. Estimated < 100 LOC of M12-specific code beyond the applewirelessmouse skeleton. Senior driver dev review CRIT-1..CRIT-4 + MAJ-1..MAJ-5 + MIN-1..MIN-5 addressed inline. RID=0x27 battery byte offset implemented as registry-tunable `BATTERY_OFFSET` constant with debug log of cached payload bytes for empirical post-install confirmation. Translation formula `(raw - 1) * 100 / 64` clamped at boundaries.
@@ -53,6 +56,39 @@
 | NEW-3 NON-BLOCKING: BATTERY_OFFSET=1 hypothesis | Sec 7, Sec 12 | Already addressed in v1.2 via VG-4 + registry tunable. v1.3 explicitly notes: tray ships with NOT_READY default; user must complete VG-4 before relying on percentage. |
 | NEW-4 NON-BLOCKING: cold-start N/A indefinite if mouse idle | Sec 7c, Sec 12 | Already accepted in v1.2. v1.3 adds advisory MAX_STALE_MS registry tunable (default 10000 ms / 10 sec): if shadow timestamp older than threshold, return STATUS_DEVICE_NOT_READY rather than serve potentially stale percentage. Forces tray to retry rather than display stale data. |
 | Pass-2 advisory: soft active-poll for cold-start | Sec 12 OQ-D | Documented as future work; out of scope for v1.3. |
+
+### v1.4 changelog (brief-finding -> section)
+
+| Brief finding | Section addressed | Resolution |
+|---|---|---|
+| DSM Issue 1: PnP rank tie-breaker (Apple INF DriverVer 04/21/2026 wins by date) | Sec 4a, Sec 4g (new), Sec 22 | M12 INF declares `DriverVer = 01/01/2027, 1.0.0.0`. Outranks both `applewirelessmouse` (04/21/2026) and Magic Utilities (11/05/2024) without destructive INF deletion. INSTALL-1 MOP gate verifies LowerFilters post-install via `reg query`. |
+| DSM Issue 2: pnputil /remove-device + /scan-devices does not bypass rank | Sec 22, MOP Sec 7 | Rank fix above eliminates the issue at install. Uninstall MOP explicitly deletes M12 INF from DriverStore via `pnputil /delete-driver oem<NN>.inf /uninstall /force` BEFORE re-pairing. |
+| DSM Issue 3: Apple INF deletion was destructive (Session 12 incident) | Sec 22, MOP | Rank fix removes need for destructive `/delete-driver /force` on competitor INFs. AP-24 backup-verify gate retained. |
+| DSM Issue 4: BTHPORT cached descriptor persists across rebind | Sec 3b' (already in v1.3), MOP Sec 7c-pre Path A | v1.3 already addressed via `IOCTL_INTERNAL_BTH_SUBMIT_BRB` rewriter; v1.4 documents registry-based cache flush alternative `reg delete HKLM\SYSTEM\CurrentControlSet\Services\BTHPORT\Parameters\Devices\<BD-addr>` (faster than UI unpair) in MOP. |
+| DSM Issue 5: Orphan service entries persist after uninstall | Sec 15.2 (new), MOP Sec 7a + Sec 8b | Service name = `MagicMouseM12`. Pre-install: `sc.exe query MagicMouseM12`; if exists with STOPPED state and missing binary, `sc.exe delete` before proceeding. Rollback: explicit `sc.exe delete MagicMouseM12` after pnputil delete-driver. |
+| DSM Issue 6: DriverStore staged packages don't auto-clean | Sec 15.4, MOP Sec 7a + Sec 8b | Pre-install: enumerate staged M12 packages via `pnputil /enum-drivers \| findstr MagicMouseM12`; delete pre-existing M12 INF before staging. Rollback: explicit `pnputil /delete-driver` of M12's published name. |
+| DSM Issue 7: Sticky LowerFilters on disconnected devices | Sec 15.5, MOP Sec 7d post-install | Registry-walk script `mm-orphan-filter-walk.ps1` (referenced in MOP) lists all `LowerFilters` MULTI_SZ values under v1/v3 BTHENUM device tree; flags any not matching `MagicMouseM12`. |
+| Power Saver: power-event registration | Sec 17.1 (new) | `PoRegisterCallback` for `GUID_CONSOLE_DISPLAY_STATE`, `GUID_ACDC_POWER_SOURCE`, `GUID_SYSTEM_AWAYMODE`. KMDF `EvtDeviceD0Entry` / `EvtDeviceD0Exit` for D-state. Sign-out via tray-app SessionChange + IOCTL bridge (kernel can't directly subscribe to user-session events). |
+| Power Saver: vendor suspend command bytes | Sec 17.2 (new), Sec 17.6 OQ-F | OPEN QUESTION. Three resolution paths: Ghidra of `MagicMouse.sys` HID Output Report patterns; HCI sniff during MU manual-suspend; trial-and-error candidate command bytes. Fallback: BT disconnect via `WdfIoTargetClose` (less battery-efficient but functional). |
+| Power Saver: wake handling | Sec 17.3 (new) | Passive — user clicks mouse, BTHPORT re-establishes connection, RID=0x27 frames resume. `EvtDeviceD0Entry` resets shadow timestamp on wake. |
+| Power Saver: manual suspend custom IOCTL | Sec 18 (new) | `IOCTL_M12_SUSPEND` (METHOD_BUFFERED) on M12 device interface GUID. SDDL admin-only. CLI tool `mm-suspend.exe` for v1; tray menu item for v2. |
+| Power Saver: CRD config subkey | Sec 17.4 (new) | `HKLM\SYSTEM\CurrentControlSet\Services\MagicMouseM12\Devices\<HardwareKey>\PowerSaver\` with Enabled, SuspendOnDisplayOff, SuspendOnACUnplug, SuspendOnSignOut, SuspendOnSleep, SuspendOnShutdown, SuspendCommandBytes (REG_BINARY). Defaults SuspendOnSignOut=1, SuspendOnSleep=1, SuspendOnShutdown=1, others=0. |
+| Production Hygiene 1: WPP/ETW tracing | Sec 19 (new) | WPP provider GUID declared in `Driver.h`. Trace levels ERROR/WARNING/INFO/VERBOSE; flags PNP/IO/SHADOW_BUFFER/POWER/IOCTL. `WPP_INIT_TRACING` in DriverEntry. TMF generated at build, distributed alongside .sys. All DbgPrint migrated to DoTraceMessage. |
+| Production Hygiene 2: Multi-mouse per-device-context | Sec 9b/10a (already per-DEVICE_CONTEXT in v1.3), Sec 19.2 (clarification) | DEVICE_CONTEXT already per-instance in v1.3; v1.4 explicitly confirms: shadow buffer per-DEVICE_CONTEXT (not global), spinlock per-device, battery configuration loaded per-device from CRD config (PID-keyed). Multiple devices = independent contexts. VG-7 expanded to verify simultaneous v1+v3 read-out. |
+| Production Hygiene 3: Disconnect / reconnect resilience | Sec 11 F15-F18 (new entries) | F15: BT disconnect mid-Feature-0x47-query → completes from cache (not failure). F16: Reconnect → first RID=0x27 frame overwrites shadow. F17: Long disconnect (>5 min) → shadow marked stale via timestamp; Feature 0x47 returns last cached value, stale flag in WPP log. F18: Reconnect race → if Feature 0x47 query arrives BEFORE first post-reconnect RID=0x27, return last-cached value. |
+| Production Hygiene 4: Driver Verifier 0x49bb | Sec 13 (new), MOP VG-8 | DV target: `verifier /flags 0x49bb /driver MagicMouseDriver.sys`. Decoded: 0x9bb base + 0x10000 security checks + 0x40000 IRP logging. Target: 0 violations across 1000 IOCTL cycles + 100 pair/unpair cycles. |
+| Production Hygiene 5: IOCTL input validation | Sec 18 (new) | All custom IOCTLs METHOD_BUFFERED. Each handler validates `InputBufferLength == sizeof(struct)`, `OutputBufferLength >= response_size`, range-checks user-controllable fields, returns `STATUS_INVALID_PARAMETER` on any failure (no kernel state change). SDDL on device interface = admin-only. |
+| Production Hygiene 6: Test plan | New file `docs/M12-TEST-PLAN.md` | 8 test classes documented: unit (translation), unit (descriptor parse), race (shadow buffer), race (Feature 0x47 vs RID=0x27 update), DV cycle, functional (VG-0..VG-8), 24h soak, 72h soak. |
+| Production Hygiene 7: Build system msbuild + EWDK | Sec 20 (new) | Decision: msbuild + EWDK 25H2 (not cmake). EWDK already mounted at `F:\` on dev machine; KMDF templates out-of-box. Build script `scripts/build-m12.ps1` invokes msbuild with EWDK env vars. Output: `build/Win11Release/x64/`. Artifacts: `MagicMouseDriver.sys` + `.cat` + `.inf` + `.tmf` (WPP). |
+| Production Hygiene 8: Compatibility matrix | Sec 21 (new) | Supported: Win11 22H2/23H2/24H2/25H2 x64. Deferred: Win11 ARM64 (v2), Win10 21H2+ (v2; KMDF 1.15 still supported but not tested). Out of scope: Windows Server. KMDF version pinned 1.15. |
+| Production Hygiene 9: Coexistence story | Sec 22 (new) | Coexistence table: vs `applewirelessmouse` (DriverVer 04/21/2026, M12 wins by rank), vs Magic Utilities (DriverVer 11/05/2024, M12 wins), vs MagicMouseFix forks (variable; MOP detection step flags any with DriverVer >= M12's). Pre-install detection step in MOP lists candidate INFs and warns user. |
+| Production Hygiene 10: Crash dump / debug helpers | Sec 23 (new) | Pool tag `'M12 '` (4 ASCII; v1.3). DEVICE_CONTEXT signature field `0x4D31322D` ('M12-' LE) at offset 0 — corruption detection at every spinlock acquire. Each major function logs entry/exit at WPP VERBOSE. !analyze-friendly DbgPrint format for kernel-mode error paths. |
+| Production Hygiene 11: Watchdog | Sec 24 (new) | WDF timer started in `EvtDevicePrepareHardware`; fires every 30 sec. Checks `Shadow.Timestamp` — if no input in 120s while D0 active and BT connected, log WARNING (mouse may be in stuck state). Configurable in CRD: `WatchdogIntervalSec`, `StallThresholdSec`. |
+| Production Hygiene 12: Logging policy | Sec 25 (new) | DebugLevel REG_DWORD 0-4 (default 0). 0=Errors only; 1=+Warnings; 2=+Info (PnP, IOCTL success, suspend/wake); 3=+Verbose (every Feature 0x47 read, shadow updates); 4=+Hex dumps (full 46-byte RID=0x27 payloads — required for empirical BATTERY_OFFSET resolution). DebugLevel 4 set ONLY during VG-4 empirical-offset validation; reset to 0 in production. |
+
+### v1.4 design ship rationale (NLM pass-4)
+
+NLM pass-4 verdict: see `docs/M12-DESIGN-PEER-REVIEW-NOTEBOOKLM-PASS4-2026-04-28.md`. Per playbook v1.8 iteration cap (v1.5 max if pass-4 surfaces NEW critical issues), v1.4 is the design ship target. Open questions tracked as future work; none blocking.
 
 ---
 
@@ -254,7 +290,24 @@ H-013 confirmed empirically (Session 12) that Magic Utilities splits descriptor 
 
 ## 4. INF Design
 
-### 4a. Hardware ID matching
+### 4a. INF [Version] block — DriverVer to win PnP rank (v1.4)
+
+```
+[Version]
+Signature   = "$Windows NT$"
+Class       = HIDClass
+ClassGuid   = {745A17A0-74D3-11D0-B6FE-00A0C90F57DA}
+Provider    = %ProviderName%
+DriverVer   = 01/01/2027,1.0.0.0
+CatalogFile = MagicMouseDriver.cat
+PnpLockdown = 1
+```
+
+`DriverVer = 01/01/2027, 1.0.0.0` is intentional: it outranks every known competing INF on date-precedence — Apple `applewirelessmouse` (`04/21/2026, 6.2.0.0`) and Magic Utilities `MagicMouse` (`11/05/2024, 3.1.5.3`) — without requiring destructive `pnputil /delete-driver /force` against the competitor (the workaround that hit the user during Session 12). M12 wins on first PnP scan; INSTALL-1 MOP gate verifies post-install LowerFilters via `reg query` to confirm rebinding actually happened.
+
+If a future MagicMouseFix fork ships with `DriverVer >= 01/01/2027`, M12 loses the rank tie. Coexistence table (Sec 22) and MOP pre-install detection step (Sec 7a) flag this case and warn the operator. Bump M12's DriverVer (e.g., `01/01/2028, 1.1.0.0`) on each release to stay ahead.
+
+### 4b. Hardware ID matching
 
 The INF must enumerate all three Apple BT HID PIDs that this user owns:
 
@@ -267,7 +320,7 @@ The INF must enumerate all three Apple BT HID PIDs that this user owns:
 
 PID 0x0310 is included to bind any Magic Mouse advertising as the "trackpad-class" hardware ID even though the user owns the standard v1 (0x030D); this matches the applewirelessmouse INF behaviour and forecloses the over-match issue.
 
-### 4b. Service registration and filter binding
+### 4c. Service registration and filter binding
 
 ```
 [Install_Mouse]
@@ -277,12 +330,13 @@ CopyFiles = DriverFiles
 AddReg = AddReg_LowerFilter
 
 [AddReg_LowerFilter]
-HKR,,"LowerFilters",0x00010008,"M12"   ; FLG_ADDREG_TYPE_MULTI_SZ|FLG_ADDREG_APPEND
-                                        ; service key name short-form 'M12'
-                                        ; binary on disk is MagicMouseDriver.sys
+HKR,,"LowerFilters",0x00010008,"MagicMouseM12"   ; FLG_ADDREG_TYPE_MULTI_SZ|FLG_ADDREG_APPEND
+                                                  ; service key name = MagicMouseM12 (no namespace
+                                                  ; conflict with applewirelessmouse or MagicMouse)
+                                                  ; binary on disk is MagicMouseDriver.sys
 
 [Install_Mouse.Services]
-AddService = M12, 0x00000002, ServiceInstall
+AddService = MagicMouseM12, 0x00000002, ServiceInstall
 
 [ServiceInstall]
 DisplayName   = %ServiceDesc%
@@ -292,9 +346,11 @@ ErrorControl  = 1                ; SERVICE_ERROR_NORMAL
 ServiceBinary = %12%\MagicMouseDriver.sys
 ```
 
-Note (per Senior MIN-5): `applewirelessmouse` must be removed from LowerFilters BEFORE M12 install. M12's INF appends; if applewirelessmouse is still bound, BOTH filters end up on the stack and behaviour is undefined. MOP step INSTALL-1 enforces removal.
+**Service name decision (v1.4):** `MagicMouseM12` (not `M12` — too short, would collide if a future driver author also picks 3-letter short-forms). Avoids namespace conflict with Apple's `applewirelessmouse` and Magic Utilities' `MagicMouse`. Pool tag stays `'M12 '` (4 ASCII chars, distinct from service name). Throughout this document, Section 4 onwards uses `MagicMouseM12` as the canonical service name; older v1.0-v1.3 references to bare `M12` should be read as `MagicMouseM12` post-v1.4.
 
-### 4c. Class
+Note (per Senior MIN-5 + DSM Issue 1 mitigation): with `DriverVer = 01/01/2027`, M12 outranks both `applewirelessmouse` and Magic Utilities at PnP rank evaluation, so explicit pre-install removal of `applewirelessmouse` is no longer strictly required. However, if `applewirelessmouse` is on the LowerFilters chain at install time, both filters end up on the stack and behaviour is undefined. MOP step INSTALL-1 still enforces removal as a defensive measure (preferable to relying on rank alone for the steady state).
+
+### 4d. Class
 
 ```
 Class       = HIDClass
@@ -303,7 +359,7 @@ ClassGuid   = {745A17A0-74D3-11D0-B6FE-00A0C90F57DA}
 
 The filter sits on the HID-class GUID stack (per AP-16 lesson: filter binding lives on `{00001124-...}` LowerFilters of the HID-class device, not the BT-service GUID).
 
-### 4d. Include / Needs
+### 4e. Include / Needs
 
 ```
 Include = input.inf, hidbth.inf
@@ -312,13 +368,13 @@ Needs   = HID_Inst.NT, HID_Inst.NT.Services
 
 Same as applewirelessmouse and MU. Ensures HidClass is registered as the function driver of record; M12 sits below it as a lower filter without taking ownership.
 
-### 4e. PnpLockdown
+### 4f. PnpLockdown
 
-`PnpLockdown=1`. Standard.
+`PnpLockdown=1`. Standard. Already declared in [Version] block (Sec 4a).
 
-### 4f. Strings
+### 4g. Strings
 
-`Provider`, `DeviceDesc`, `ServiceDesc` are M12-specific. No reuse of Apple or Magic Utilities trademarks.
+`Provider`, `DeviceDesc`, `ServiceDesc` are M12-specific. No reuse of Apple or Magic Utilities trademarks. Provider string: `Magic Mouse Tray (M12 Filter)`.
 
 ---
 
@@ -683,6 +739,24 @@ NTSTATUS RewriteSdpHidDescriptorList(
     _In_ size_t BufferLen,
     _Out_ PBOOLEAN Rewritten);
 BOOLEAN ScanForReportId47(_In_reads_bytes_(Len) PUCHAR Bytes, _In_ size_t Len);
+
+// Power.c (v1.4)
+EVT_WDF_DEVICE_D0_ENTRY                EvtDeviceD0Entry;
+EVT_WDF_DEVICE_D0_EXIT                 EvtDeviceD0Exit;
+PO_SETTING_CALLBACK_ROUTINE            OnDisplayStateChange;
+PO_SETTING_CALLBACK_ROUTINE            OnAcDcChange;
+PO_SETTING_CALLBACK_ROUTINE            OnAwayModeChange;
+NTSTATUS SendVendorSuspendCommand(_In_ PDEVICE_CONTEXT Ctx);
+NTSTATUS SendBtDisconnectFallback(_In_ PDEVICE_CONTEXT Ctx);   // F22
+
+// Ioctl.c (v1.4 — custom IOCTL surface, Sec 18)
+NTSTATUS HandleSuspendIoctl(_In_ WDFREQUEST Req, _In_ PDEVICE_CONTEXT Ctx);
+
+// Watchdog.c (v1.4)
+EVT_WDF_TIMER  EvtWatchdogTimer;
+
+// Tracing.c (v1.4 — WPP support, Sec 19)
+// (No exported functions; WPP_INIT_TRACING / WPP_CLEANUP are macros in DriverEntry / EvtDriverContextCleanup)
 ```
 
 ### 9a. Pool tag (MAJ-5 fix)
@@ -706,6 +780,8 @@ All non-paged allocations use `POOL_FLAG_NON_PAGED` (not `POOL_FLAG_NON_PAGED_EX
 
 ```c
 typedef struct _DEVICE_CONTEXT {
+    ULONG          Signature;           // == M12_DEVICE_CONTEXT_SIG ('M12-' LE = 0x4D31322D); v1.4 corruption detection (Sec 23.2)
+
     WDFDEVICE      Device;
     WDFIOTARGET    IoTarget;            // == WdfDeviceGetIoTarget(Device); set in EvtDeviceAdd
     WDFQUEUE       IoctlQueue;          // sequential
@@ -713,8 +789,9 @@ typedef struct _DEVICE_CONTEXT {
 
     USHORT         Vid;
     USHORT         Pid;                 // 0x030D / 0x0310 / 0x0323
+    UNICODE_STRING InstanceId;          // v1.4 — for WPP per-device correlation (Sec 19.5)
 
-    // Battery shadow (the only mutable state)
+    // Battery shadow (the only mutable state). Per-DEVICE_CONTEXT, NOT global, so multi-mouse safe (Sec 19.2).
     KSPIN_LOCK     ShadowLock;
     SHADOW_BUFFER  Shadow;
 
@@ -722,12 +799,43 @@ typedef struct _DEVICE_CONTEXT {
     ULONG          BatteryOffset;       // default 1
     ULONG          FirstBootPolicy;     // 0=NOT_READY (default), 1=return 0%
     ULONG          MaxStaleMs;          // default 0 = no staleness check (v1.3 final per NLM pass-3 — 10s default UX-regressed when mouse asleep)
+    ULONG          DebugLevel;          // v1.4 — 0..4, see Sec 25
+    ULONG          WatchdogIntervalSec; // v1.4 — default 30; 0 = disabled (Sec 24)
+    ULONG          StallThresholdSec;   // v1.4 — default 120 (Sec 24)
 
     // BRB rewriter telemetry (v1.3)
     BOOLEAN        DescriptorBRewritten;  // set TRUE after first successful BRB SDP rewrite
                                           // VG-0 reads this to distinguish fresh-pair from stale-cache
+
+    // Power saver (v1.4 — Sec 17)
+    ULONG          DeviceState;          // M12_DEVICE_STATE_ACTIVE / SUSPENDED
+    PO_SETTING_REGISTRATION DisplayCallback;
+    PO_SETTING_REGISTRATION AcDcCallback;
+    PO_SETTING_REGISTRATION AwayModeCallback;
+    POWER_SAVER_CONFIG      PowerSaverConfig;  // loaded from CRD subkey at AddDevice
+
+    // Watchdog (v1.4 — Sec 24)
+    WDFTIMER       WatchdogTimer;
 } DEVICE_CONTEXT, *PDEVICE_CONTEXT;
 WDF_DECLARE_CONTEXT_TYPE_WITH_NAME(DEVICE_CONTEXT, GetDeviceContext)
+
+#define M12_DEVICE_CONTEXT_SIG          0x4D31322D  // 'M12-' little-endian
+#define M12_DEVICE_STATE_ACTIVE         0
+#define M12_DEVICE_STATE_SUSPENDED      1
+```
+
+```c
+// PowerSaver config loaded from CRD subkey (Sec 17.4)
+typedef struct _POWER_SAVER_CONFIG {
+    ULONG  Enabled;                      // master toggle
+    ULONG  SuspendOnDisplayOff;
+    ULONG  SuspendOnACUnplug;
+    ULONG  SuspendOnSignOut;
+    ULONG  SuspendOnSleep;
+    ULONG  SuspendOnShutdown;
+    UCHAR  SuspendCommandBytes[16];      // vendor-specific HID Output Report payload; empty = F22 fallback
+    ULONG  SuspendCommandLen;
+} POWER_SAVER_CONFIG, *PPOWER_SAVER_CONFIG;
 ```
 
 ### 10b. SHADOW_BUFFER
@@ -765,6 +873,16 @@ No REQUEST_CONTEXT needed in v1.2 — M12 does not stash per-IRP state.
 | F15 | EvtIoStop not called (CRIT-3) | BSOD on BT disconnect | EvtIoStop registered on both queues + EvtDeviceSelfManagedIoSuspend (Sec 8). Driver Verifier gates this. |
 | F16 | Registry BATTERY_OFFSET set to 46 (out of bounds) | Reads past payload[45] | Validate at registry-read time: clamp to [0..45]; default if out-of-range. |
 | F17 | Cached SDP descriptor doesn't include RID=0x27 (very old applewirelessmouse pre-firmware) | Shadow buffer never receives 0x27 frames | LogShadowBuffer always logs "Shadow.Valid=FALSE" -> operator notices in debug.log; MOP VG-0 fails caps check. Mitigation: re-pair via Path B with fresh SDP. |
+| F18 (v1.4) | BT disconnect mid-Feature-0x47 query | IRP arrives at M12 while target offline | M12 completes from cached shadow buffer (not a failure). EvtIoStop already wired (CRIT-3 fix); for the in-flight Feature 0x47 IRP, M12 has not yet forwarded it (short-circuit), so no target dependency. WPP log records "F18-DISCONNECT-DURING-QUERY". |
+| F19 (v1.4) | BT reconnect — first RID=0x27 after stale shadow | Shadow has data from prior session | First post-reconnect `OnReadComplete` fires, overwrites payload + bumps timestamp. Shadow becomes fresh. Operator workflow: tray polls within 60s of mouse activity, sees fresh value. Failure mode benign. |
+| F20 (v1.4) | Long disconnect (>5 min) — shadow buffer marked stale | Feature 0x47 returns last cached value | If `MAX_STALE_MS != 0` and `(now - Shadow.Timestamp) > MAX_STALE_MS`, return STATUS_DEVICE_NOT_READY. WPP `STALE_SHADOW_RETURN` event emitted. v1.3 default `MAX_STALE_MS=0` (disabled) per NLM pass-3; operator opts in to non-zero only with empirical justification. |
+| F21 (v1.4) | Reconnect race — Feature 0x47 query arrives BEFORE first post-reconnect RID=0x27 | Risk of returning stale value | Acceptable per HID 1.11 §7 ("data may be stale"). Return last-cached value. WPP log records "F21-RECONNECT-RACE-STALE-SERVED". If MAX_STALE_MS configured, staleness check (F20) catches very old values. Tray's adaptive polling re-queries within seconds; user sees corrected value on next poll. |
+| F22 (v1.4) | Vendor suspend command bytes unknown | Power-saver activates but mouse doesn't enter low-power state | Fallback: M12 issues `WdfIoTargetClose` on the lower target (forces BT disconnect). Less battery-efficient than vendor suspend but functional. CRD config `SuspendCommandBytes` empty -> use BT-disconnect fallback. Once OQ-F resolved, populate `SuspendCommandBytes` via registry. |
+| F23 (v1.4) | Competing INF (e.g., MagicMouseFix fork) ships DriverVer >= 01/01/2027 | M12 loses PnP rank tie | MOP pre-install detection (Sec 7a, brief Issue 9) lists candidate INFs; flags any with DriverVer >= M12's. Operator warned + can choose: bump M12 DriverVer next release, or accept competing driver. No silent failure. |
+| F24 (v1.4) | Orphan service entry persists after uninstall | `MagicMouseM12` service in HKLM with STOPPED + missing binary | MOP rollback Sec 8b explicit `sc.exe delete MagicMouseM12` after `pnputil /delete-driver`. Pre-install Sec 7a detects + cleans stale entries. WPP log records nothing (service not loaded); detection is registry-side. |
+| F25 (v1.4) | Sticky `LowerFilters` reference on disconnected sibling devices | Apple keyboard's BTHENUM still references `applewirelessmouse` after M12 install | MOP post-install `mm-orphan-filter-walk.ps1` (Sec 7d) walks the BTHENUM tree, flags orphan references. Cleanup script removes `applewirelessmouse` from sibling Device Parameters keys. Non-fatal; cosmetic registry hygiene. |
+| F26 (v1.4) | Sign-out event does not reach kernel filter | Power-saver's "SuspendOnSignOut=1" never fires | Kernel KMDF filter cannot directly subscribe to user-session events. Resolution: tray app subscribes to `WTS_SESSION_LOGOFF` via `WTSRegisterSessionNotification`, then sends `IOCTL_M12_SUSPEND` to M12. If tray not running at sign-out, fallback: SCM session-end signal via `RegisterServiceCtrlHandlerEx` (driver service receives `SERVICE_CONTROL_SESSIONCHANGE`). |
+| F27 (v1.4) | Watchdog false-positive on long idle | WARNING log spam when mouse legitimately idle for >120s | Watchdog only fires WARNING (not ERROR). Configurable `StallThresholdSec` in CRD (default 120). Operator can raise to 600+ if false-positives observed. Watchdog never triggers IRP cancellation or recovery — purely diagnostic. |
 
 ---
 
@@ -785,6 +903,19 @@ New open questions in v1.2:
 - **OQ-C:** Shadow staleness. v1.3 introduces `MAX_STALE_MS` registry tunable (default 10000 ms). If 24-hr soak (VG-7) shows users seeing N/A frequently when mouse is briefly idle, raise threshold or set to 0 (no check) at `Parameters` subkey.
 - **OQ-D:** Soft active-poll for cold-start (advisory, future work). If VG-7 reveals persistent N/A windows >5min on v3 cold-start, consider an async (non-blocking) downstream `IOCTL_HID_GET_INPUT_REPORT` for ReportID 0x90 issued from EvtDeviceAdd to wake the firmware. Must be careful not to re-introduce CRIT-2 deadlock — async pattern with held request reference + short timeout. Out of scope for v1.3.
 - **OQ-E:** v1 short-circuit re-evaluation. v1.3 ships v1 as pass-through. If post-install soak shows v1 also benefits from short-circuit (e.g., during BT reconnect when v1 firmware stalls on Feature 0x47), the PID branch in Section 7d can be flipped to short-circuit v1 too. Empirical decision; out of scope for design.
+
+- **OQ-F (v1.4 — power-saver vendor suspend command):** what bytes does Magic Utilities send to put the Magic Mouse into low-power state? Three resolution paths:
+  1. Ghidra of `MagicMouse.sys` (look for `HidD_SetOutputReport` or `IOCTL_HID_WRITE_REPORT` patterns post-power-event-callback; likely in obfuscated region).
+  2. HCI sniff during MU manual-suspend test (requires paid MU license, reproducible).
+  3. Trial-and-error candidate command bytes (0x40, 0x80, etc. on common output report IDs); observe BT controller log for state change.
+
+  If irretrievable: ship M12 v1 power-saver as `WdfIoTargetClose` BT-disconnect fallback (F22). Less battery-efficient but functional. Phase 3 task.
+
+- **OQ-G (v1.4 — Modern Standby detection):** query via `GUID_SYSTEM_AWAYMODE` callback or `GetSystemPowerStatus` polling? Determines whether wake-computer-on-click works. Phase 3 empirical task; out of scope for design ship.
+
+- **OQ-H (v1.4 — sign-out kernel surface):** F26 documents two candidate paths (tray-app bridge via WTSRegisterSessionNotification + IOCTL, or driver service `RegisterServiceCtrlHandlerEx` on `SERVICE_CONTROL_SESSIONCHANGE`). KMDF lower filter has limited direct surface for user-session events. Phase 3 implementation chooses based on reliability + simplicity.
+
+- **OQ-I (v1.4 — DEVICE_CONTEXT signature corruption check IRQL):** structure signature `0x4D31322D` ('M12-' LE) is checked at every spinlock acquire. At DISPATCH_LEVEL inside `OnReadComplete`, the check is a single 4-byte read — cheap. Confirm KMDF allows reading from device context at DISPATCH_LEVEL (it does, per docs); flag for implementation review.
 
 ---
 
@@ -824,3 +955,608 @@ New open questions in v1.2:
 - EU: Software Directive 2009/24/EC Article 6 (decompilation for interoperability).
 
 Interoperability target: Apple Magic Mouse hardware. M12 is independently authored. Captured artefacts are read for facts (API patterns, report formats, descriptor bytes); no expression is copied. The 116-byte HID descriptor is the device's published descriptor surface (firmware-emitted); M12 does not modify it but reads it for structural reference.
+
+---
+
+## 14. (reserved)
+
+(Section number reserved to maintain stable numbering for v1.0-v1.3 cross-references.)
+
+---
+
+## 15. Windows DSM / PnP / Driver Store Compliance (v1.4)
+
+Folded in from `docs/M12-DSM-PNP-CONCERNS-FOR-V1.3.md`. Covers the seven concrete failure modes observed during Session 12 install/uninstall cycles.
+
+### 15.1 INF DriverVer rank
+
+Already declared in Section 4a. Repeated here for cross-reference: `DriverVer = 01/01/2027, 1.0.0.0`. Bumps with each release. Rationale: must exceed all competing applewirelessmouse / MagicMouse / MagicMouseFix INFs to win PnP rank tie without destructive workaround.
+
+### 15.2 Service entry hygiene
+
+- INF declares service name `MagicMouseM12` (Sec 4c).
+- **Pre-install detection** (MOP Sec 7a): `sc.exe query MagicMouseM12`; if exists with `STATE = STOPPED, EXIT_CODE = 31` (driver binary missing) -> stale orphan entry from prior install. `sc.exe delete MagicMouseM12` before proceeding.
+- **Uninstall sequence** (MOP Sec 8b): explicit `sc.exe delete MagicMouseM12` AFTER `pnputil /delete-driver oem<NN>.inf /uninstall /force`. Order matters: deleting the service before the INF can leave the INF referencing a non-existent service.
+
+### 15.3 BTHPORT cache invalidation
+
+Two paths documented in MOP Sec 7c-pre:
+
+- **Path A (preferred — scripted)**: `reg delete HKLM\SYSTEM\CurrentControlSet\Services\BTHPORT\Parameters\Devices\<BD-addr>\CachedServices /v 00010000 /f`. Faster than full BT stack reset, less invasive than UI unpair flow. Requires AP-24 backup-verify gate (export the CachedServices subtree to `.reg` first).
+- **Path B (fallback — operator-driven)**: remove + re-pair the device via Bluetooth Settings UI. Forces fresh SDP exchange + descriptor reload through M12's filter.
+
+v1.3 BRB rewriter (Sec 3b') eliminates the need for cache invalidation in fresh-pair scenarios — M12 rewrites the SDP TLV during the SDP exchange. Cache invalidation only required when M12 is installed AFTER the device was paired (no SDP exchange happens, so M12's BRB rewriter never fires).
+
+### 15.4 DriverStore staged-package cleanup
+
+- **Pre-install** (MOP Sec 7a): `pnputil /enum-drivers | findstr MagicMouseM12`. Delete any pre-existing M12 INF via `pnputil /delete-driver oem<NN>.inf /uninstall /force` to avoid duplicate-staging. (DriverStore is reference-counted by binding, but staged packages without active bindings still persist for re-use — explicit cleanup required.)
+- **Rollback** (MOP Sec 8b): explicit `pnputil /delete-driver` of M12's published name to leave DriverStore clean.
+
+### 15.5 Orphan LowerFilter walk
+
+Post-install registry-walk script `scripts/mm-orphan-filter-walk.ps1`:
+
+```powershell
+# Lists all LowerFilters MULTI_SZ values under v1/v3 BTHENUM device tree;
+# flags any that don't match the expected service name (MagicMouseM12).
+$BthRoot = "HKLM:\SYSTEM\CurrentControlSet\Enum\BTHENUM"
+Get-ChildItem -Path $BthRoot -Recurse -ErrorAction SilentlyContinue |
+    Where-Object { $_.PSIsContainer } |
+    ForEach-Object {
+        $params = "$($_.PSPath)\Device Parameters"
+        if (Test-Path $params) {
+            $lf = (Get-ItemProperty -Path $params -ErrorAction SilentlyContinue).LowerFilters
+            if ($lf -and ($lf -notcontains "MagicMouseM12") -and ($lf -contains "applewirelessmouse")) {
+                Write-Warning "Orphan applewirelessmouse reference: $($_.PSChildName)"
+            }
+        }
+    }
+```
+
+Run after install (MOP Sec 7d post-install) and after rollback (Sec 8e). Removes stale `applewirelessmouse` references on Device Parameters keys when child binding has changed (DSM Issue 7 — sticky LowerFilters on disconnected devices).
+
+---
+
+## 16. Scope and Non-Goals (v1.4 — folded from `M12-SCOPE-AND-DEFERRED-FEATURES.md`)
+
+### 16.1 Goals (M12 v1)
+
+- Battery percentage readable for v3 Magic Mouse via standard Feature 0x47 path.
+- v1 Magic Mouse continues working unchanged (regression baseline).
+- DSM/PnP/Driver Store hygiene (Sec 15).
+- Per-PID configuration via registry (K8s-CRD-style at `HKLM\SYSTEM\CurrentControlSet\Services\MagicMouseM12\Devices\<HardwareKey>\`).
+- Power saver / suspend modes — IN v1 scope per user direction 2026-04-28 (Sec 17).
+- WPP/ETW tracing for diagnostics (Sec 19).
+
+### 16.2 Non-goals (M12 v1)
+
+- Click handling / gesture interpretation — Apple driver suffices for standard 1-finger clicks; precision-touchpad-class logic deferred or out-of-scope.
+- Smooth-scroll auto-reinit on wake — Apple driver does smooth scroll synthesis; M12 doesn't override.
+- Device rename / factory reset — UX layer responsibility.
+- Bluetooth pairing diagnostics — operational documentation, not code.
+- Tray UX — covered in separate PRD.
+- High-resolution scroll (Mode A 5-link-collection / Resolution Multiplier features) — see Section 5a.
+- Multi-finger gestures.
+- Force-feedback, click-pressure, per-finger touch data.
+- USB-C wired path for v3.
+- Replacing `MagicKeyboard.sys` for the AWK keyboard.
+- Magic Trackpad support (PIDs 0x030E, 0x0314).
+
+### 16.3 Deferred to M12 v2 (future)
+
+| Feature | LOC est. | Trigger to add |
+|---|---|---|
+| Keepalive ping every 2 sec (Win10 2004 freeze workaround) | ~30 | If users report freeze symptoms |
+| Auto-reinit on wake (descriptor refresh) | ~50 | If BTHPORT cache stale-state issues recur |
+| Battery polling fallback when shadow buffer cold | ~40 | If first-boot battery shows N/A for >60s (OQ-D triggers this) |
+| Win11 ARM64 support | ~50 (mostly build-system) | User requests + ARM64 hardware acquired |
+| Win10 21H2+ support | ~100 | User requests + KMDF 1.15 fallback validated |
+
+### 16.4 Future tray-app PRD scope
+
+| Feature | Why tray, not driver |
+|---|---|
+| K8s-CRD config UI (registry editor) | UX |
+| Battery low toast notification (<20%) | UX |
+| Per-device dashboard | UX |
+| Driver health check (M12 bound? descriptor mode? RID=0x27 received recently?) | UX + diagnostic |
+| Manual "restart driver" / "force reinit" buttons | UX wrapper around CLI |
+| Diagnostic export (MOP-validation report) | UX |
+| Sign-out detection bridge to driver (`WTSRegisterSessionNotification` -> `IOCTL_M12_SUSPEND`) | F26 mitigation |
+
+### 16.5 NEVER in scope (or new PRD)
+
+- WMI provider for battery exposure
+- Performance counters
+- Localization (INF + device strings)
+- Static-analysis-clean (PREfast / SDV) — aspirational; not gating
+- WHQL submission — test-sign for v1; WHQL is v2 release engineering
+- HLK test compliance — v2
+
+---
+
+## 17. Power Saver / Suspend Modes (v1.4 — folded from `M12-POWER-SAVER-DESIGN.md`)
+
+Per user direction 2026-04-28, power saver / suspend modes are IN v1 scope. Matches Magic Utilities' "Battery saver" feature surface.
+
+### 17.1 Power-event registration
+
+In `EvtDriverDeviceAdd`:
+
+```c
+// D-state callbacks (KMDF native)
+WDF_PNPPOWER_EVENT_CALLBACKS pnpCallbacks;
+WDF_PNPPOWER_EVENT_CALLBACKS_INIT(&pnpCallbacks);
+pnpCallbacks.EvtDeviceD0Entry              = EvtDeviceD0Entry;        // wake from low-power
+pnpCallbacks.EvtDeviceD0Exit               = EvtDeviceD0Exit;          // entering low-power
+pnpCallbacks.EvtDeviceSelfManagedIoSuspend = EvtDeviceSelfManagedIoSuspend;  // CRIT-3 fix from v1.2
+pnpCallbacks.EvtDeviceSelfManagedIoRestart = EvtDeviceSelfManagedIoRestart;
+WdfDeviceInitSetPnpPowerEventCallbacks(DeviceInit, &pnpCallbacks);
+
+// System power events (Win32 callbacks routed to kernel)
+PoRegisterPowerSettingCallback(NULL, &GUID_CONSOLE_DISPLAY_STATE,    OnDisplayStateChange,    dctx, &dctx->DisplayCallback);
+PoRegisterPowerSettingCallback(NULL, &GUID_ACDC_POWER_SOURCE,        OnAcDcChange,            dctx, &dctx->AcDcCallback);
+PoRegisterPowerSettingCallback(NULL, &GUID_SYSTEM_AWAYMODE,          OnAwayModeChange,        dctx, &dctx->AwayModeCallback);
+```
+
+`PoRegisterPowerSettingCallback` is the kernel-mode equivalent of `RegisterPowerSettingNotification`. Each callback receives a `POWERBROADCAST_SETTING` payload; M12 inspects `Data` to determine the new state.
+
+Sleep / hibernate / shutdown are picked up via the standard KMDF `EvtDeviceD0Exit` (system-wide power transition cascades to D-state changes on every device).
+
+Sign-out is NOT directly observable by the kernel filter (F26). Resolution: tray app uses `WTSRegisterSessionNotification` (Win32 user-mode) and bridges to M12 via `IOCTL_M12_SUSPEND` (Sec 18). If tray is not running at sign-out time, fallback: register the M12 service via `RegisterServiceCtrlHandlerEx` to catch `SERVICE_CONTROL_SESSIONCHANGE` events.
+
+### 17.2 Suspend command sequence
+
+When a configured event fires:
+
+1. Acquire CRD config from `DEVICE_CONTEXT->PowerSaverConfig`.
+2. If config flag for THIS event is enabled (e.g., `SuspendOnSleep == 1`):
+   a. Acquire `ShadowLock`.
+   b. Send vendor-specific HID Output Report to mouse via `WdfIoTargetSendIoctlSynchronously(IOCTL_HID_WRITE_REPORT, ...)`. Report ID and command bytes are loaded from `PowerSaverConfig.SuspendCommandBytes` (REG_BINARY).
+      - **OPEN QUESTION (OQ-F)**: vendor command bytes are unknown. Three resolution paths in OQ-F. Until resolved: empty `SuspendCommandBytes` triggers F22 fallback (BT disconnect via `WdfIoTargetClose`).
+   c. Mark `dctx->DeviceState = M12_DEVICE_STATE_SUSPENDED`.
+   d. Release `ShadowLock`.
+3. Subsequent Feature 0x47 reads return last cached value with stale flag in WPP log (no shadow update during suspend; mouse not emitting RID=0x27).
+
+### 17.3 Wake handling
+
+Wake is passive — user clicks mouse, BT controller sees activity, BTHPORT re-establishes connection, HidBth resumes I/O, RID=0x27 reports start arriving.
+
+In `EvtDeviceD0Entry` (driver wake):
+
+```c
+NTSTATUS EvtDeviceD0Entry(WDFDEVICE device, WDF_POWER_DEVICE_STATE prev) {
+    PDEVICE_CONTEXT dctx = GetDeviceContext(device);
+    KIRQL irql;
+    KeAcquireSpinLock(&dctx->ShadowLock, &irql);
+    dctx->DeviceState = M12_DEVICE_STATE_ACTIVE;
+    // Don't invalidate Shadow.Valid here — last cached value still serves Feature 0x47
+    // until first post-wake RID=0x27 arrives. Reset timestamp to "now" so MAX_STALE_MS
+    // doesn't immediately fire on a stale cache.
+    KeQuerySystemTime(&dctx->Shadow.Timestamp);
+    KeReleaseSpinLock(&dctx->ShadowLock, irql);
+
+    DoTraceMessage(TRACE_POWER, "Device D0 entry from %d", prev);
+    return WdfIoTargetStart(dctx->IoTarget);
+}
+```
+
+### 17.4 CRD config schema
+
+Power-saver config lives at:
+
+```
+HKLM\SYSTEM\CurrentControlSet\Services\MagicMouseM12\Devices\<HardwareKey>\PowerSaver\
+    Enabled                  REG_DWORD   (master toggle, default 1)
+    SuspendOnDisplayOff      REG_DWORD   (default 0)
+    SuspendOnACUnplug        REG_DWORD   (default 0)
+    SuspendOnSignOut         REG_DWORD   (default 1)
+    SuspendOnSleep           REG_DWORD   (default 1)
+    SuspendOnShutdown        REG_DWORD   (default 1)
+    SuspendCommandBytes      REG_BINARY  (vendor command payload — empirically determined; empty = F22 fallback)
+```
+
+`<HardwareKey>` is the BTHENUM PID-keyed subkey (e.g., `VID_004C&PID_0323`). Per-device configuration so v1 and v3 can have independent power-saver settings.
+
+Defaults match MU's reasonable out-of-the-box behavior — sleep / hibernate / shutdown / sign-out, NOT display-off (too aggressive for desktop users).
+
+### 17.5 Manual suspend interface
+
+For v1 (no tray app yet): a small user-mode CLI tool `mm-suspend.exe` that opens the M12 device interface and sends `IOCTL_M12_SUSPEND`. See Sec 18 for IOCTL contract.
+
+For v2 / tray app: tray menu item invokes the same IOCTL.
+
+The custom IOCTL is registered in M12's INF as part of the device interface GUID — chosen to NOT collide with MU's `{7D55502A-...}`. M12 device interface GUID: `{1A8B5C92-D04E-4F18-9A23-7E5D4F892C12}` (random; uniqueness verified via `uuidgen`).
+
+### 17.6 OQ-F resolution priority
+
+See Section 12 OQ-F for full details. Priority order:
+
+1. **Trial-and-error** (lowest cost) — test candidate command bytes during VG-5; observe HCI sniff or BT controller log for state change.
+2. **HCI sniff during MU manual-suspend** — requires re-installing MU trial OR finding a paid MU license; reproducible test if achievable.
+3. **Ghidra of `MagicMouse.sys`** — likely in obfuscated region; expensive to RE.
+
+Until resolved: F22 fallback (BT disconnect) ships in v1. Power saver works (mouse goes idle within ~2 minutes when BT disconnects); just less battery-efficient than vendor suspend.
+
+---
+
+## 18. Custom IOCTL surface (v1.4)
+
+M12 exposes a single custom IOCTL for manual suspend (and future feature hooks). All custom IOCTLs follow the validation contract below.
+
+### 18.1 Device interface
+
+Registered in `EvtDriverDeviceAdd` via `WdfDeviceCreateDeviceInterface`:
+
+```c
+DEFINE_GUID(GUID_DEVINTERFACE_M12,
+    0x1a8b5c92, 0xd04e, 0x4f18, 0x9a, 0x23, 0x7e, 0x5d, 0x4f, 0x89, 0x2c, 0x12);
+// {1A8B5C92-D04E-4F18-9A23-7E5D4F892C12}
+
+WdfDeviceCreateDeviceInterface(device, &GUID_DEVINTERFACE_M12, NULL);
+```
+
+INF declares interface SDDL admin-only:
+
+```
+[Install_Mouse.HW]
+AddReg = AddReg_DeviceInterface
+
+[AddReg_DeviceInterface]
+HKR,,DeviceInterfaceGUIDs,0x10000,"{1A8B5C92-D04E-4F18-9A23-7E5D4F892C12}"
+HKR,,Security,0x10001,"D:P(A;;GA;;;BA)(A;;GR;;;WD)"   ; admin full access; users read only
+```
+
+### 18.2 IOCTL_M12_SUSPEND
+
+```c
+// Custom IOCTL definition (see WdfRequestRetrieveInputBuffer for METHOD_BUFFERED)
+#define IOCTL_M12_SUSPEND \
+    CTL_CODE(FILE_DEVICE_UNKNOWN, 0x801, METHOD_BUFFERED, FILE_WRITE_ACCESS)
+
+typedef struct _M12_SUSPEND_INPUT {
+    ULONG  StructureSize;     // == sizeof(M12_SUSPEND_INPUT); validated
+    ULONG  Mode;              // 0=immediate, 1=deferred-on-next-idle (reserved); range [0..1]
+    UCHAR  Reserved[8];       // zeros; must be zero (validated)
+} M12_SUSPEND_INPUT, *PM12_SUSPEND_INPUT;
+```
+
+Handler validation contract (mandatory for all custom IOCTLs):
+
+```c
+NTSTATUS HandleSuspendIoctl(WDFREQUEST req, PDEVICE_CONTEXT dctx) {
+    PM12_SUSPEND_INPUT input;
+    size_t len;
+    NTSTATUS s = WdfRequestRetrieveInputBuffer(req, sizeof(M12_SUSPEND_INPUT), (PVOID*)&input, &len);
+    if (!NT_SUCCESS(s)) {
+        WdfRequestComplete(req, STATUS_INVALID_PARAMETER);
+        return STATUS_INVALID_PARAMETER;
+    }
+    // Validate every field
+    if (input->StructureSize != sizeof(M12_SUSPEND_INPUT) ||
+        input->Mode > 1 ||
+        RtlCompareMemory(input->Reserved, "\0\0\0\0\0\0\0\0", 8) != 8) {
+        WdfRequestComplete(req, STATUS_INVALID_PARAMETER);
+        return STATUS_INVALID_PARAMETER;
+    }
+    // ... invoke SendVendorSuspendCommand(dctx) per Sec 17.2 ...
+    WdfRequestComplete(req, STATUS_SUCCESS);
+    return STATUS_SUCCESS;
+}
+```
+
+### 18.3 Validation requirements (apply to every future custom IOCTL)
+
+- METHOD_BUFFERED only (kernel validates buffer ownership; user-mode pointer dereferences forbidden in METHOD_NEITHER).
+- `InputBufferLength == sizeof(<expected struct>)` validated explicitly (don't trust `WdfRequestRetrieveInputBuffer`'s minimum-length check alone).
+- `OutputBufferLength >= <response_size>` validated.
+- All user-controllable fields range-checked; reserved bytes validated as zero.
+- Invalid input -> `STATUS_INVALID_PARAMETER`, no kernel state mutation.
+- SDDL on device interface (admin-only, declared in INF).
+- WPP log: every IOCTL entry/exit at WPP INFO; failures at WPP WARNING with input fingerprint (length, IOCTL code).
+
+---
+
+## 19. WPP / ETW Tracing (v1.4)
+
+M12 declares its own WPP provider for runtime diagnostics.
+
+### 19.1 Provider declaration
+
+```c
+// Driver.h
+#define WPP_CONTROL_GUIDS                                           \
+    WPP_DEFINE_CONTROL_GUID(                                        \
+        M12TraceGuid,                                               \
+        (8d3c1a92,b04e,4f18,9a23,7e5d4f892c12),                     \
+        WPP_DEFINE_BIT(TRACE_PNP)        /* PnP / AddDevice */      \
+        WPP_DEFINE_BIT(TRACE_IO)         /* IRP path */             \
+        WPP_DEFINE_BIT(TRACE_SHADOW)     /* shadow buffer */        \
+        WPP_DEFINE_BIT(TRACE_POWER)      /* D-state / suspend */    \
+        WPP_DEFINE_BIT(TRACE_IOCTL)      /* custom IOCTLs */        \
+        WPP_DEFINE_BIT(TRACE_BRB)        /* BRB rewriter */         \
+    )
+// {8D3C1A92-B04E-4F18-9A23-7E5D4F892C12}
+```
+
+`WPP_INIT_TRACING(DriverObject, RegistryPath)` in `DriverEntry`. `WPP_CLEANUP(DriverObject)` in `EvtDriverContextCleanup`.
+
+### 19.2 Trace levels
+
+Standard WPP levels: ERROR (1), WARNING (2), INFO (3), VERBOSE (4). M12 adds DebugLevel registry control (Sec 25) that maps to WPP filter level at runtime.
+
+### 19.3 Migration
+
+All existing `DbgPrint` calls migrated to `DoTraceMessage(<flag>, "fmt", ...)`. Examples:
+
+```c
+// Before: DbgPrint("[M12] Shadow.Payload[0..45]: %02x ...\n", buf[0]);
+// After:
+DoTraceMessage(TRACE_SHADOW, "Shadow.Payload[0..45]: %!HEXDUMP!", WPP_HEX(buf, 46));
+```
+
+### 19.4 TMF generation + distribution
+
+`tracewpp.exe` runs as msbuild pre-build step, generates `MagicMouseDriver.tmf`. The TMF + `.sys` ship together. Diagnostic capture command (in MOP):
+
+```pwsh
+logman start M12 -p {8D3C1A92-B04E-4F18-9A23-7E5D4F892C12} -o capture.etl -ets
+# ... reproduce issue ...
+logman stop M12 -ets
+tracefmt capture.etl -p <tmf-dir> -o decoded.txt
+```
+
+### 19.5 Multi-mouse trace correlation
+
+WPP entries include `Device->Pid` and `Device->InstanceId` so a multi-mouse capture can be filtered per-device. (Per-DEVICE_CONTEXT shadow + spinlock from Sec 9b/10a means each device's events are independent; filtering on `Pid` separates them.)
+
+---
+
+## 20. Build System (v1.4)
+
+**Decision: msbuild + EWDK 25H2** (not cmake).
+
+Rationale:
+
+- EWDK 25H2 is already mounted at `F:\` on the dev machine (or `D:\ewdk25h2` fallback).
+- msbuild has KMDF templates out-of-box (`<DriverType>KMDF</DriverType>` in vcxproj).
+- cmake-for-WDK is a community workaround with maintenance burden + non-standard tool integration.
+- Microsoft's official KMDF samples ship as msbuild-only.
+
+Build invocation:
+
+```pwsh
+# scripts/build-m12.ps1
+& F:\LaunchBuildEnv.cmd
+cd C:\Users\Lesley\projects\Personal\magic-mouse-tray\driver
+msbuild MagicMouseDriver.vcxproj `
+    /p:Configuration=Release `
+    /p:Platform=x64 `
+    /p:SignMode=Off `
+    /p:WppEnabled=true `
+    /verbosity:minimal `
+    /m
+```
+
+Build artefacts:
+
+| Artefact | Path | Purpose |
+|---|---|---|
+| `MagicMouseDriver.sys` | `build\Win11Release\x64\` | Kernel binary |
+| `MagicMouseDriver.cat` | same | Catalog (post-inf2cat + signtool) |
+| `MagicMouseDriver.inf` | same | Install file |
+| `MagicMouseDriver.tmf` | same | WPP trace messages format file |
+
+KMDF version pinned in vcxproj to **1.15** (matches `applewirelessmouse.sys` baseline + OS minimum compatibility). Forward-compatible with newer KMDF via standard runtime-loaded WDF binaries.
+
+EWDK provides full toolchain (`msbuild`, `WDK props/targets`, `inf2cat`, `signtool`, `hidparser`, `tracewpp`, WinDbg) without Visual Studio install.
+
+---
+
+## 21. Compatibility Matrix (v1.4)
+
+| OS | Arch | Status | Notes |
+|---|---|---|---|
+| Windows 11 22H2 | x64 | SUPPORTED | Test target; KMDF 1.15 baseline |
+| Windows 11 23H2 | x64 | SUPPORTED | Test target |
+| Windows 11 24H2 | x64 | SUPPORTED | Test target |
+| Windows 11 25H2 | x64 | SUPPORTED (current) | Primary dev OS |
+| Windows 11 ARM64 | ARM64 | DEFERRED to v2 | Build system supports ARM64 via msbuild `/p:Platform=ARM64`; no test hardware |
+| Windows 10 21H2+ | x64 | DEFERRED to v2 | KMDF 1.15 supported but not tested on Win10 |
+| Windows Server | x64 | OUT OF SCOPE | Different driver ecosystem; not a personal-use target |
+
+KMDF version: **1.15** (matches `applewirelessmouse.sys` + `MagicMouse.sys` reference; broadly compatible).
+
+INF declares `[Manufacturer]` section as `%ProviderName% = Standard, NTamd64.10.0...22000` (Win11 22H2 minimum). v2 adds `NTamd64.10.0...19041` (Win10 21H2) and `NTarm64.10.0...22000` (Win11 ARM64) decorators.
+
+---
+
+## 22. Coexistence (v1.4)
+
+| Coexistence target | M12 wins via | Failure mode | Mitigation |
+|---|---|---|---|
+| Apple `applewirelessmouse` (DriverVer 04/21/2026, 6.2.0.0) | M12 DriverVer 01/01/2027, 1.0.0.0 (date wins) | n/a — M12 always wins | MOP INSTALL-1 verifies LowerFilters post-install |
+| Magic Utilities `MagicMouse` (DriverVer 11/05/2024, 3.1.5.3) | DriverVer rank | n/a — MU older | MOP pre-install enumeration flags any MU INF; warn user |
+| MagicMouseFix variants (community forks; DriverVer varies) | DriverVer rank if M12 newer | If community fork has DriverVer >= 01/01/2027, M12 loses tie | MOP pre-install detection step; user warned + bump M12 DriverVer next release |
+| Microsoft default `HidBth` (no LowerFilter) | INF declares hardware ID match; M12 binds as filter | n/a — base case | None needed |
+| Two M12 INFs in DriverStore (e.g., post-failed-uninstall) | None — duplicate-staging risk | PnP picks one arbitrarily | MOP pre-install enumerates + cleans (Sec 15.4) |
+
+### 22.1 MOP detection step
+
+Pre-install (MOP Sec 7a-pre):
+
+```pwsh
+# List all candidate INFs for the v3 hardware ID
+pnputil /enum-drivers | Select-String -Context 5,5 -Pattern "BTHENUM.*PID&0323" | Tee-Object $BackupRoot\candidate-infs.txt
+
+# Extract DriverVer for each candidate; flag any >= M12's DriverVer
+$m12Date = [DateTime]"01/01/2027"
+foreach ($inf in <enumerated INFs>) {
+    $verLine = pnputil /enum-drivers /class HIDClass | Select-String "$inf" -Context 0,5 | Select-String "DriverVer"
+    $candidateDate = ParseDriverVerDate($verLine)
+    if ($candidateDate -ge $m12Date) {
+        Write-Warning "$inf has DriverVer $candidateDate >= M12's $m12Date — M12 may lose rank tie"
+    }
+}
+```
+
+Operator chooses: bump M12 DriverVer + rebuild, or accept competing driver, or remove competing driver via `pnputil /delete-driver oem<NN>.inf /uninstall /force` (after AP-24 backup-verify).
+
+### 22.2 Rank-loss runtime detection
+
+Even with rank fix, INSTALL-1 MOP gate runs `reg query` post-install to confirm M12 is actually bound:
+
+```pwsh
+$v3Inst = (Get-PnpDevice -InstanceId "BTHENUM\*VID&0001004C_PID&0323*" -Status OK).InstanceId
+reg query "HKLM\SYSTEM\CurrentControlSet\Enum\$v3Inst\Device Parameters" /v LowerFilters
+# Expected: REG_MULTI_SZ containing "MagicMouseM12"
+```
+
+If LowerFilters does NOT contain `MagicMouseM12` post-install, M12 lost the rank tie. Halt; investigate (Sec 22.1 detection step missed something).
+
+---
+
+## 23. Crash dump / debug helpers (v1.4)
+
+### 23.1 Pool tag
+
+Already declared in Sec 9a: `'M12 '` (4 ASCII bytes 0x4D 0x31 0x32 0x20, little-endian = 0x2032314D). WinDbg post-install: `!poolused 4 'M12 '` enumerates allocations.
+
+### 23.2 DEVICE_CONTEXT signature field
+
+```c
+typedef struct _DEVICE_CONTEXT {
+    ULONG          Signature;        // == M12_DEVICE_CONTEXT_SIG; corruption detection
+    // ... rest of fields from Sec 10a + power-saver fields ...
+} DEVICE_CONTEXT, *PDEVICE_CONTEXT;
+
+#define M12_DEVICE_CONTEXT_SIG 0x4D31322D   // 'M12-' little-endian
+```
+
+Set in `EvtDeviceAdd` after context allocation:
+
+```c
+dctx->Signature = M12_DEVICE_CONTEXT_SIG;
+```
+
+Validated at every spinlock acquire in `OnReadComplete` and `HandleGetFeature47`:
+
+```c
+if (dctx->Signature != M12_DEVICE_CONTEXT_SIG) {
+    DoTraceMessage(TRACE_IO, "DEVICE_CONTEXT corruption detected: sig=%08x", dctx->Signature);
+    KeBugCheckEx(0xC4, dctx->Signature, M12_DEVICE_CONTEXT_SIG, 0, 0);
+}
+```
+
+OQ-I (Sec 12) flags the DISPATCH_LEVEL safety question for the implementer.
+
+### 23.3 !analyze-friendly DbgPrint format
+
+Kernel-mode error paths use the `!analyze`-friendly format:
+
+```
+[M12] <function>:<line>: <error code> - <description>
+```
+
+Example: `[M12] HandleGetFeature47:142: STATUS_INVALID_PARAMETER - pkt->reportBufferLen=1 < 2`
+
+### 23.4 WPP entry/exit tracing
+
+Each major function logs entry + exit at WPP VERBOSE:
+
+```c
+NTSTATUS HandleGetFeature47(...) {
+    DoTraceMessage(TRACE_IO, "ENTRY HandleGetFeature47 pid=0x%04x", dctx->Pid);
+    NTSTATUS s = STATUS_SUCCESS;
+    // ...
+    DoTraceMessage(TRACE_IO, "EXIT  HandleGetFeature47 status=0x%08x", s);
+    return s;
+}
+```
+
+Compiled-out at non-VERBOSE levels (zero-cost in production builds with DebugLevel < 3).
+
+---
+
+## 24. Watchdog (v1.4)
+
+### 24.1 Purpose
+
+Diagnostic-only watchdog detects "mouse stuck silent" condition: device is connected (D0) and BT is up, but no RID=0x27 frames have arrived for >120s. Does NOT trigger recovery — purely informational.
+
+### 24.2 Implementation
+
+```c
+// In EvtDevicePrepareHardware
+WDF_TIMER_CONFIG timerCfg;
+WDF_TIMER_CONFIG_INIT_PERIODIC(&timerCfg, EvtWatchdogTimer, dctx->WatchdogIntervalSec * 1000);
+WdfTimerCreate(&timerCfg, &attrs, &dctx->WatchdogTimer);
+WdfTimerStart(dctx->WatchdogTimer, WDF_REL_TIMEOUT_IN_SEC(dctx->WatchdogIntervalSec));
+```
+
+```c
+// EvtWatchdogTimer — runs every WatchdogIntervalSec (default 30)
+VOID EvtWatchdogTimer(WDFTIMER timer) {
+    PDEVICE_CONTEXT dctx = GetDeviceContext(WdfTimerGetParentObject(timer));
+    if (dctx->DeviceState != M12_DEVICE_STATE_ACTIVE) return;  // skip if suspended
+
+    LARGE_INTEGER now;
+    KeQuerySystemTime(&now);
+    LONGLONG age_sec = (now.QuadPart - dctx->Shadow.Timestamp.QuadPart) / 10000000;
+    if (age_sec > dctx->StallThresholdSec) {
+        DoTraceMessage(TRACE_IO, "WATCHDOG_STALL pid=0x%04x age=%lld sec",
+                       dctx->Pid, age_sec);
+    }
+}
+```
+
+### 24.3 CRD config
+
+```
+HKLM\SYSTEM\CurrentControlSet\Services\MagicMouseM12\Devices\<HardwareKey>\
+    WatchdogIntervalSec    REG_DWORD   (default 30)
+    StallThresholdSec      REG_DWORD   (default 120)
+```
+
+Operator can disable by setting `WatchdogIntervalSec=0` (timer not started in EvtDevicePrepareHardware).
+
+---
+
+## 25. Logging Policy (v1.4)
+
+### 25.1 DebugLevel registry value
+
+```
+HKLM\SYSTEM\CurrentControlSet\Services\MagicMouseM12\Parameters
+    DebugLevel    REG_DWORD   (default 0)
+```
+
+| DebugLevel | What's logged | WPP filter |
+|---|---|---|
+| 0 | Errors only (driver init failure, IOCTL invalid, BSOD-class issues) | ERROR (1) |
+| 1 | + Warnings (BT disconnect, stale shadow buffer, DV-flagged conditions) | WARNING (2) |
+| 2 | + Info (PnP events, IOCTL success, suspend/wake events) | INFO (3) |
+| 3 | + Verbose (every Feature 0x47 read, shadow buffer updates) | VERBOSE (4) |
+| 4 | + Hex dumps (full 46-byte RID=0x27 payloads on each Feature 0x47 read — required for empirical BATTERY_OFFSET resolution) | VERBOSE + custom hex flag |
+
+### 25.2 Default + workflow
+
+- **Production default**: `DebugLevel = 0` (errors only).
+- **Empirical BATTERY_OFFSET workflow** (MOP VG-4): set `DebugLevel = 4` for the duration of the offset-confirmation capture. Reset to 0 (or 2 for normal operation visibility) after.
+- **Triage mode**: `DebugLevel = 2` recommended for incident investigation. PnP events + IOCTL outcomes give enough signal to root-cause most issues without flooding the log.
+
+### 25.3 Log volume
+
+| DebugLevel | Approx volume per hour (active mouse, 24-hr soak) |
+|---|---|
+| 0 | <1 KB (idle errors only) |
+| 1 | <10 KB |
+| 2 | ~100 KB |
+| 3 | ~5 MB (every Feature 0x47 read = 1 line) |
+| 4 | ~20 MB (hex dump every Feature 0x47 read) |
+
+`DebugLevel = 4` should NEVER be left on in production — disk fill risk.
+
+### 25.4 Read-once semantics
+
+DebugLevel is read in `EvtDeviceAdd` and stored in `DEVICE_CONTEXT`. Changing the registry value requires PnP cycle (`pnputil /disable-device + /enable-device`) for the new value to take effect. Documented in MOP VG-4 workflow.

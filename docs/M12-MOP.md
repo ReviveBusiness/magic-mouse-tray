@@ -1,16 +1,20 @@
 # M12 Method of Procedure (MOP)
 
-**Status:** v1.3 — DRAFT pending user approval (NLM pass-2 blocking issues resolved)
+**Status:** v1.4 — DRAFT pending user approval (DSM/PnP + Power Saver + Production Hygiene briefs folded in)
 **Date:** 2026-04-28
-**Linked design:** `docs/M12-DESIGN-SPEC.md` v1.3
-**Linked PRD:** PRD-184 v1.27
+**Linked design:** `docs/M12-DESIGN-SPEC.md` v1.4
+**Linked test plan:** `docs/M12-TEST-PLAN.md` v1.0
+**Linked PRD:** PRD-184 v1.29
 **Linked NLM pass-1:** `docs/M12-DESIGN-PEER-REVIEW-NOTEBOOKLM-2026-04-28.md`
 **Linked NLM pass-2:** `docs/M12-DESIGN-PEER-REVIEW-NOTEBOOKLM-PASS2-2026-04-28.md`
+**Linked NLM pass-3:** `docs/M12-DESIGN-PEER-REVIEW-NOTEBOOKLM-PASS3-2026-04-28.md`
+**Linked NLM pass-4:** `docs/M12-DESIGN-PEER-REVIEW-NOTEBOOKLM-PASS4-2026-04-28.md`
 **BCP reference:** BCP-OPS-501 (Change Management) — pre-flight + rollback + health-check pattern.
 **Related rules:** `~/.claude/projects/-home-lesley-projects/memory/feedback_backup_before_destructive_commands.md` (AP-24 — non-negotiable backup gate).
 
 ## Revision history
 
+- **v1.4 (2026-04-28):** Aligned to design spec v1.4. Service name changed to `MagicMouseM12` (was bare `M12` in v1.3) per DSM Issue 5 (avoid namespace collision). Pre-install Sec 7a expanded: DriverVer rank-loss detection (DSM Issue 1), stale-service detection (Issue 5), DriverStore staged-package cleanup (Issue 6). Post-install Sec 7d expanded: registry-binding verification via `reg query` (Issue 1) + orphan-filter walk (Issue 7). Section 7c-pre Path A documented (registry cache flush, faster than UI unpair). Rollback Sec 8b explicit `sc.exe delete MagicMouseM12` order (Issue 5). NEW gates: VG-8 power-saver functional test (display-off / AC-unplug / sign-out / sleep / shutdown — verify mouse suspends + wakes on click), VG-9 battery-saving 24-hr measurement, VG-10 multi-mouse simultaneous read-out, VG-11 Driver Verifier 0x49bb soak (1000 IOCTL cycles + 100 pair/unpair). NEW failure-mode entries F23-F27 from design spec. Sign-off checklist updated. Bumped to v1.4.
 - **v1.3 (2026-04-28):** Aligned to design spec v1.3 (PID branch restored + BRB descriptor rewriter restored). VG-0 dual-state pass condition added (Descriptor B in cache OR Descriptor A + DescriptorBRewritten flag set). VG-1 v1 baseline now exercises NATIVE Feature 0x47 path, not M12 short-circuit — failure here means M12 broke the pass-through (regression in INF binding or queue forwarding). New optional MAX_STALE_MS registry tunable documented. Soft active-poll noted as future work (OQ-D).
 - **v1.2 (2026-04-28):** Aligned to design spec v1.2 (applewirelessmouse-baseline reframe). Driver Verifier flags expanded to 0x9bb + IRP completion + IoTarget flags. Pool tag verification step added (`!poolused 4 'M12 '`). EvtIoStop verification step added (forced cancel via Driver Verifier). Empirical battery offset verification step added (LogShadowBuffer debug.log diff at known battery levels). 24-hr soak scope clarified to include BT sleep/wake cycles. VG-0 caps check repurposed: confirms cached SDP descriptor matches applewirelessmouse-baseline (Input=47, Feature=2, LinkColl=2), NOT Mode A — because v1.2 doesn't mutate the descriptor. Section 7c-pre BTHPORT cache wipe demoted to optional (only triggered if VG-0 caps mismatch suggests a stale non-applewirelessmouse cache).
 - **v1.1 (2026-04-28):** Added Section 7c-pre (force fresh SDP exchange via BTHPORT cache wipe / unpair-repair) and VG-0 pre-validation gate.
@@ -181,6 +185,16 @@ Select-String -Path "$BuildOut\MagicMouseDriver.sys" -Pattern "M12 " -SimpleMatc
 
 **Gate BUILD-3:** Binary contains pool tag literal `M12 ` (ASCII bytes 0x4D 0x31 0x32 0x20). MAJ-5 fix verification.
 
+### 5f. Verify WPP TMF generated (NEW v1.4 — Sec 19)
+
+```pwsh
+Test-Path "$BuildOut\MagicMouseDriver.tmf"
+# Optional: validate TMF parses
+& "$env:WindowsSdkDir\bin\$env:WindowsSdkVer\x64\tracewpp.exe" -verify "$BuildOut\MagicMouseDriver.tmf"
+```
+
+**Gate BUILD-4 (v1.4):** TMF file exists alongside .sys. Required for `tracefmt` decoding of WPP traces during VG-* testing.
+
 ---
 
 ## 6. Test-sign procedure
@@ -247,7 +261,7 @@ $inf2cat = "$env:WindowsSdkDir\bin\$env:WindowsSdkVer\x86\Inf2Cat.exe"
 
 ## 7. Install procedure
 
-### 7a. Pre-install enumeration check + applewirelessmouse removal (UPDATED v1.2)
+### 7a. Pre-install enumeration check + applewirelessmouse removal (EXPANDED v1.4)
 
 ```pwsh
 pnputil /enum-drivers | Select-String -Context 0,5 -Pattern "MagicMouse|applewirelessmouse"
@@ -276,6 +290,57 @@ foreach ($f in @("AppleWirelessMouse.inf", "AppleWirelessMouse.cat", "AppleWirel
 pnputil /delete-driver "$appleOem" /uninstall
 # Note: NOT /force here — let PnP pick up the absence cleanly. /force fallback only if needed.
 ```
+
+#### 7a.1 (NEW v1.4) DriverVer rank-loss detection per DSM Issue 1
+
+```pwsh
+# v1.4 — list all candidate INFs for the v3 hardware ID; flag any with DriverVer >= M12's
+$m12DriverVer = [DateTime]"01/01/2027"
+$allInfs = pnputil /enum-drivers
+$candidates = $allInfs | Select-String -Context 5,5 -Pattern "BTHENUM.*PID&0323"
+$flagged = @()
+foreach ($block in $candidates) {
+    $ver = ($block.Context.PostContext + $block.Context.PreContext) | Select-String "Driver Date|Driver Version"
+    # Parse the date and compare; flag if competing >= 01/01/2027
+    # (Implementation: parse via .NET DateTime; this is shorthand)
+}
+if ($flagged.Count -gt 0) {
+    Write-Warning "Competing INFs with DriverVer >= M12 found:"
+    $flagged | ForEach-Object { Write-Warning $_ }
+    Write-Warning "M12 may lose PnP rank tie. Bump M12 DriverVer next release, or accept competing driver, or delete via pnputil /delete-driver (after AP-24 backup)."
+}
+```
+
+#### 7a.2 (NEW v1.4) Stale `MagicMouseM12` service detection per DSM Issue 5
+
+```pwsh
+$svcState = sc.exe query MagicMouseM12 2>$null
+if ($LASTEXITCODE -eq 0) {
+    $stateLine = $svcState | Select-String "STATE"
+    $exitCodeLine = $svcState | Select-String "EXIT_CODE"
+    Write-Output "Existing MagicMouseM12 service: $stateLine $exitCodeLine"
+    # If STOPPED + EXIT_CODE 31 (binary missing) -> orphan from prior install
+    if ($stateLine -match "STOPPED" -and $exitCodeLine -match "\b31\b") {
+        Write-Warning "Stale MagicMouseM12 service found (STOPPED, EXIT_CODE 31). Cleaning up."
+        sc.exe delete MagicMouseM12
+    }
+}
+```
+
+#### 7a.3 (NEW v1.4) Stale M12 DriverStore package detection per DSM Issue 6
+
+```pwsh
+$staleM12 = pnputil /enum-drivers | Select-String -Context 5,5 "MagicMouseDriver"
+if ($staleM12) {
+    Write-Warning "Found existing MagicMouseDriver package(s) in DriverStore. Cleaning up."
+    $staleOems = $staleM12 | Select-String "Published Name" | ForEach-Object { ($_ -split ":")[1].Trim() }
+    foreach ($oem in $staleOems) {
+        pnputil /delete-driver "$oem" /uninstall /force
+    }
+}
+```
+
+**Gate PRE-INSTALL-1 (NEW v1.4):** rank check passes (no competing DriverVer >= M12), stale service cleaned, stale DriverStore packages cleaned. Halt if any step errored.
 
 ### 7b. Stage and install M12
 
@@ -334,39 +399,80 @@ pnputil /enable-device "$v3Inst"
 Start-Sleep -Seconds 5
 ```
 
-### 7d. Verify M12 is bound
+### 7d. Verify M12 is bound (EXPANDED v1.4)
 
 ```pwsh
 Get-PnpDeviceProperty -InstanceId "$v1Inst" -KeyName DEVPKEY_Device_LowerFilters
 Get-PnpDeviceProperty -InstanceId "$v3Inst" -KeyName DEVPKEY_Device_LowerFilters
-# Expected: Data column contains "M12"
+# Expected: Data column contains "MagicMouseM12"
 
-sc.exe query M12
+sc.exe query MagicMouseM12
 # Expected: STATE = 4 RUNNING
 ```
 
-**Gate INSTALL-1:** both v1 and v3 LowerFilters contain `M12`. Service state RUNNING. Halt if either fails.
+**Gate INSTALL-1:** both v1 and v3 LowerFilters contain `MagicMouseM12`. Service state RUNNING. Halt if either fails.
 
-### 7e. Initial registry tunables (NEW v1.2)
+#### 7d.1 (NEW v1.4) Registry binding verification (DSM Issue 1 mitigation)
+
+`Get-PnpDeviceProperty` queries the live PnP surface; cross-check against the on-disk registry to catch any silent rank-loss:
+
+```pwsh
+$v3LfReg = (reg query "HKLM\SYSTEM\CurrentControlSet\Enum\$v3Inst\Device Parameters" /v LowerFilters) -join "`n"
+if ($v3LfReg -notmatch "MagicMouseM12") {
+    Write-Error "v3 LowerFilters registry value does NOT contain MagicMouseM12. M12 lost PnP rank tie."
+    Write-Error "Live PnP surface said: $((Get-PnpDeviceProperty -InstanceId $v3Inst -KeyName DEVPKEY_Device_LowerFilters).Data)"
+    Write-Error "Halt. Triage Sec 7a.1 detection step; bump M12 DriverVer or remove competing INF."
+    return
+}
+```
+
+#### 7d.2 (NEW v1.4) Orphan LowerFilter walk (DSM Issue 7)
+
+```pwsh
+& "$PSScriptRoot\..\scripts\mm-orphan-filter-walk.ps1"
+```
+
+Script lists all `LowerFilters` MULTI_SZ values under v1/v3 BTHENUM device tree; flags any not matching `MagicMouseM12` (e.g., orphan `applewirelessmouse` references on sibling Device Parameters keys). Cleanup is operator-prompted, not automatic.
+
+### 7e. Initial registry tunables (EXPANDED v1.4)
 
 ```pwsh
 # Defaults are baked into the driver but explicit registration documents intent.
 # BATTERY_OFFSET default = 1 (first byte of 46-byte payload).
 # FirstBootPolicy default = 0 (STATUS_DEVICE_NOT_READY).
-# MAX_STALE_MS default = 10000 (10 sec; 0 disables staleness check).
-$svcParams = "HKLM:\SYSTEM\CurrentControlSet\Services\M12\Parameters"
+# MAX_STALE_MS default = 0 (v1.3 final — disabled).
+# DebugLevel default = 0 (errors only; set to 4 only during VG-4 empirical-offset capture).
+$svcParams = "HKLM:\SYSTEM\CurrentControlSet\Services\MagicMouseM12\Parameters"
 if (-not (Test-Path $svcParams)) {
     New-Item -Path $svcParams -Force | Out-Null
 }
 Set-ItemProperty -Path $svcParams -Name BATTERY_OFFSET -Value 1 -Type DWord
 Set-ItemProperty -Path $svcParams -Name FirstBootPolicy -Value 0 -Type DWord
 Set-ItemProperty -Path $svcParams -Name MAX_STALE_MS -Value 0 -Type DWord
-# NOTE: Default 0 = disabled (v1.3 final per NLM pass-3). Setting to 10000 (10 sec) would
-# cause NOT_READY whenever mouse is asleep (>2 min idle = no fresh RID=0x27 frames).
-# Recommended only if empirical 24-hr soak shows stale-cache corruption — start with 7200000 (2 hr).
+Set-ItemProperty -Path $svcParams -Name DebugLevel -Value 0 -Type DWord
+
+# Per-device CRD-style config (v1.4 — Sec 17.4 + Sec 24.3)
+foreach ($pid in @("VID_004C&PID_030D", "VID_004C&PID_0310", "VID_004C&PID_0323")) {
+    $devCfg = "HKLM:\SYSTEM\CurrentControlSet\Services\MagicMouseM12\Devices\$pid"
+    if (-not (Test-Path $devCfg)) { New-Item -Path $devCfg -Force | Out-Null }
+    # Watchdog
+    Set-ItemProperty -Path $devCfg -Name WatchdogIntervalSec -Value 30 -Type DWord
+    Set-ItemProperty -Path $devCfg -Name StallThresholdSec -Value 120 -Type DWord
+    # PowerSaver subkey (Sec 17.4) — defaults match MU's reasonable behavior
+    $ps = "$devCfg\PowerSaver"
+    if (-not (Test-Path $ps)) { New-Item -Path $ps -Force | Out-Null }
+    Set-ItemProperty -Path $ps -Name Enabled -Value 1 -Type DWord
+    Set-ItemProperty -Path $ps -Name SuspendOnDisplayOff -Value 0 -Type DWord
+    Set-ItemProperty -Path $ps -Name SuspendOnACUnplug -Value 0 -Type DWord
+    Set-ItemProperty -Path $ps -Name SuspendOnSignOut -Value 1 -Type DWord
+    Set-ItemProperty -Path $ps -Name SuspendOnSleep -Value 1 -Type DWord
+    Set-ItemProperty -Path $ps -Name SuspendOnShutdown -Value 1 -Type DWord
+    # SuspendCommandBytes intentionally left empty — F22 fallback (BT disconnect) until OQ-F resolved
+    Set-ItemProperty -Path $ps -Name SuspendCommandBytes -Value ([byte[]]@()) -Type Binary
+}
 ```
 
-**Gate INSTALL-2:** Registry tunables present. Reboot or PnP cycle picks them up at next AddDevice.
+**Gate INSTALL-2:** Registry tunables present (parameters subkey + per-device watchdog + PowerSaver subkey for all three PIDs). Reboot or PnP cycle picks them up at next AddDevice.
 
 ---
 
@@ -386,9 +492,10 @@ foreach ($f in @("AppleWirelessMouse.inf", "AppleWirelessMouse.cat", "AppleWirel
 }
 ```
 
-### 8b. Remove M12
+### 8b. Remove M12 (EXPANDED v1.4 — DSM Issues 5+6)
 
 ```pwsh
+# Order matters: delete the INF first (releases binding), then the service entry (Issue 5).
 $M12Oem = pnputil /enum-drivers |
     Select-String -Context 5,0 "MagicMouseDriver" |
     Select-String "Published Name" |
@@ -396,6 +503,20 @@ $M12Oem = pnputil /enum-drivers |
 
 if ($M12Oem) {
     pnputil /delete-driver "$M12Oem" /uninstall /force
+}
+
+# v1.4 — explicit service delete per DSM Issue 5 (orphan service entry persists otherwise)
+$svcQuery = sc.exe query MagicMouseM12 2>$null
+if ($LASTEXITCODE -eq 0) {
+    sc.exe delete MagicMouseM12
+}
+
+# v1.4 — verify cleanup
+if ((sc.exe query MagicMouseM12 2>$null) -match "MagicMouseM12") {
+    Write-Warning "MagicMouseM12 service still present after sc.exe delete. May require reboot."
+}
+if (pnputil /enum-drivers | Select-String "MagicMouseDriver") {
+    Write-Warning "MagicMouseDriver INF still present in DriverStore after pnputil delete-driver."
 }
 ```
 
@@ -595,6 +716,97 @@ Specific BT sleep/wake validation:
 
 **Gate VG-7:** Sustained `OK battery` reads on both mice for 24 hours. Sleep/wake cycles tolerated. Zero BSOD events. Driver Verifier off (re-enable for a final sanity boot if desired).
 
+### VG-8: Power-saver functional test (NEW v1.4 — Power Saver brief)
+
+Validates each configured power-saver event triggers suspend + wake works.
+
+| Sub-test | Action | Expected |
+|---|---|---|
+| 8.1 Display off | Wait for screen timeout (or `Set-Display -Off`) | Mouse suspends within 5s; tray log records `POWER_SUSPEND_DISPLAY_OFF`. (Skip if `SuspendOnDisplayOff=0` default.) |
+| 8.2 AC unplug | Disconnect AC adapter (laptop on battery) | Mouse suspends within 5s; tray log records `POWER_SUSPEND_AC_UNPLUG`. (Skip if `SuspendOnACUnplug=0` default.) |
+| 8.3 Sign out | `shutdown /l` | Mouse suspends before session ends; tray log records `POWER_SUSPEND_SIGN_OUT` (via tray-app bridge per F26). |
+| 8.4 Sleep | `Add-Type -AssemblyName System.Windows.Forms; [System.Windows.Forms.Application]::SetSuspendState('Suspend', $false, $false)` | Mouse suspends; on resume, mouse wakes on click within 2s. Tray log records `POWER_SUSPEND_SLEEP` + `POWER_WAKE`. |
+| 8.5 Shutdown | `shutdown /s /t 60`, cancel before timer | Mouse receives suspend command before shutdown completes. (If shutdown completes, log not retrievable post-boot — skip gating.) |
+| 8.6 Manual suspend | `mm-suspend.exe` (CLI) | IOCTL_M12_SUSPEND succeeds; mouse suspends; click wakes. |
+| 8.7 Wake on click | After any of 8.1-8.6 | Mouse wakes; first RID=0x27 frame arrives within 2s of click; tray reads battery within next adaptive interval. |
+
+**Gate VG-8:** all enabled-by-default sub-tests pass (8.3, 8.4, 8.5, 8.6, 8.7). 8.1, 8.2 only tested if operator opts in. Per-event log line in tray debug.log + WPP capture matches expected event name.
+
+**Failure mode**: if vendor suspend command bytes are unknown (OQ-F unresolved), F22 fallback (BT disconnect via `WdfIoTargetClose`) is exercised instead. Operator confirms via WPP log: `POWER_SUSPEND_FALLBACK_BT_DISCONNECT` event recorded; mouse still wakes on click via re-pair.
+
+### VG-9: Battery-saving 24-hr measurement (NEW v1.4 — Power Saver brief)
+
+Measures whether power-saver actually saves battery vs disabled.
+
+```pwsh
+# Run 1: power-saver disabled (control)
+$ps = "HKLM:\SYSTEM\CurrentControlSet\Services\MagicMouseM12\Devices\VID_004C&PID_0323\PowerSaver"
+Set-ItemProperty -Path $ps -Name Enabled -Value 0 -Type DWord
+pnputil /disable-device $v3Inst; pnputil /enable-device $v3Inst
+# ... 24 hours ...
+# Capture: starting battery %, ending battery %, hours of computer-on time
+
+# Run 2: power-saver enabled (treatment)
+Set-ItemProperty -Path $ps -Name Enabled -Value 1 -Type DWord
+pnputil /disable-device $v3Inst; pnputil /enable-device $v3Inst
+# ... 24 hours ...
+# Capture same.
+
+# Compare battery drift per hour: treatment / control. Target: treatment <= 0.5 * control.
+```
+
+**Gate VG-9:** treatment (power-saver enabled) consumes <= 50% of control (disabled) battery drift per hour over 24 hours. Modest target — primary value is qualitative (does it work at all?), not quantitative.
+
+If F22 fallback is used (vendor command unknown), VG-9 still meaningful — BT disconnect during configured events should reduce drift even if not as efficient as native suspend.
+
+### VG-10: Multi-mouse simultaneous read-out (NEW v1.4 — Production Hygiene brief)
+
+Validates per-DEVICE_CONTEXT shadow buffer + spinlock provide multi-mouse independence.
+
+**Pre-condition**: both v1 (PID 0x030D) and v3 (PID 0x0323) paired and in active use.
+
+```pwsh
+# Capture 30 minutes of tray reads — both mice in use simultaneously
+Get-Content "$env:APPDATA\MagicMouseTray\debug.log" -Tail 500 |
+    Select-String -Pattern "pid&030d.*battery=|pid&0323.*battery="
+# Expected: interleaved OK reads for both mice; no read for one mouse blocks the other.
+# Both mice produce >= 5 successful reads in the 30-min window.
+```
+
+```pwsh
+# WPP per-device correlation check (Sec 19.5)
+logman start M12-multi -p {8D3C1A92-B04E-4F18-9A23-7E5D4F892C12} -o multi.etl -ets
+# ... 30 min ...
+logman stop M12-multi -ets
+tracefmt multi.etl -p <tmf-dir> -o multi-decoded.txt
+# Verify: each WPP entry includes Device->Pid; events for v1 and v3 are independent (no Pid=0xFFFF or shared-context errors).
+```
+
+**Gate VG-10:** both mice produce successful battery reads in the same window; WPP entries are correctly attributed per-device.
+
+### VG-11: Driver Verifier 0x49bb soak (NEW v1.4 — Production Hygiene brief)
+
+```pwsh
+verifier /flags 0x49bb /driver MagicMouseDriver.sys
+# 0x49bb decoded:
+#   0x9bb base (special pool, IRQL, IO verification, deadlock, IRP logging — VG-6 base)
+#   0x10000 security checks
+#   0x40000 IRP logging
+# Reboot.
+```
+
+After reboot, run automated harness `scripts/test-cycle.ps1`:
+
+- 1000 Feature 0x47 IOCTL cycles via tray polling forced rapid (override interval to 1 sec)
+- 100 pair / unpair cycles via `pnputil /disable-device + /enable-device + remove-device + scan-devices` rotation
+
+```pwsh
+& "$PSScriptRoot\..\scripts\test-cycle.ps1" -Feature47Cycles 1000 -PairUnpairCycles 100
+verifier /query
+```
+
+**Gate VG-11:** zero violations across all cycles. Zero BSOD. `verifier /query` reports zero flagged drivers. Disable: `verifier /reset` after pass.
+
 ---
 
 ## 10. Health checks
@@ -667,30 +879,51 @@ Should be stable or trending — sustained growth = leak.
 | Reg-diff post-rollback drift | > 5 unrelated entries | Inspect each delta; restore individually; rerun reg-diff. |
 | Driver Verifier triggers 0xC4 on first bind | DV detected violation | Most likely CRIT-3 regression (missing EvtIoStop on a queue). Check Verifier dump; fix in code; rebuild. |
 | Pool tag `M12 ` not enumerable post-install (VG-5 zero hits) | M12 not allocating from manual pool | Acceptable in v1.2 — most paths use WDF context. Consider non-blocking. |
+| F22: Vendor suspend command unknown (VG-8 fallback) | mouse doesn't enter low-power state on suspend event | F22 BT-disconnect fallback fires automatically when `SuspendCommandBytes` empty. Tray-app log `POWER_SUSPEND_FALLBACK_BT_DISCONNECT`. Once OQ-F resolved, populate `SuspendCommandBytes` REG_BINARY at PowerSaver subkey. |
+| F23: Competing INF rank loss (post-install verify fails) | `MagicMouseM12` not in LowerFilters | Re-run Sec 7a.1 detection step. Bump M12 DriverVer (e.g., to `01/01/2028, 1.1.0.0`) and rebuild, OR remove competing INF (after AP-24 backup-verify). |
+| F24: Orphan `MagicMouseM12` service after rollback | sc.exe query shows STOPPED + EXIT_CODE 31 | Sec 8b includes explicit `sc.exe delete`. If still present after reboot, delete via registry: `reg delete HKLM\SYSTEM\CurrentControlSet\Services\MagicMouseM12 /f`. |
+| F25: Sticky `applewirelessmouse` in sibling LowerFilters | mm-orphan-filter-walk.ps1 reports orphan reference | Cleanup script removes `applewirelessmouse` from sibling Device Parameters keys. Non-fatal (cosmetic). |
+| F26: Sign-out suspend not triggered | tray shows mouse never went to sleep at sign-out | Tray-app must be running at sign-out for the WTSRegisterSessionNotification bridge. If tray not running, verify M12 service registered for SERVICE_CONTROL_SESSIONCHANGE (fallback path). Phase 3 implementation choice. |
+| F27: Watchdog WARNING spam | log fills with stall-detected events | Operator raises `StallThresholdSec` from 120 to higher (e.g., 600 = 10 min) at `HKLM\SYSTEM\CurrentControlSet\Services\MagicMouseM12\Devices\<HardwareKey>\StallThresholdSec`. PnP cycle to reload. |
+| Power-saver enabled but VG-9 shows no measurable savings | treatment battery drift == control | Likely F22 fallback in use (vendor command unknown). BT-disconnect fallback is less efficient. Resolve OQ-F. |
+| Multi-mouse VG-10 fails — one mouse blocks the other | shadow contention or shared spinlock | Verify DEVICE_CONTEXT is per-instance (each PnP node gets its own context). Check INF didn't somehow declare a singleton. WPP log shows shared device pointer = bug. |
+| DV 0x49bb VG-11 violation | special pool / IRP logging / security check fired | Triage from `MEMORY.DMP`. Common: Sec 18 IOCTL handler missing range check; Sec 23.2 DEVICE_CONTEXT signature not initialized; Sec 3b' BRB rewriter abandon condition missed. |
 
 ---
 
 ## 12. Sign-off checklist
 
 ```
-[ ] PRE-1: Pre-flight backup verified
-[ ] BUILD-1: MagicMouseDriver.sys + .inf in build output
-[ ] BUILD-2: hidparser.exe validates 116-byte reference descriptor
-[ ] BUILD-3: pool tag 'M12 ' present in binary
-[ ] SIGN-1:  signtool verify successful (RFC 3161 SHA256)
-[ ] 7a:      applewirelessmouse removed from LowerFilters
-[ ] 7e:      registry tunables BATTERY_OFFSET + FirstBootPolicy + MAX_STALE_MS set
-[ ] INSTALL-1: M12 LowerFilters bound to v1 + v3, service RUNNING
-[ ] VG-0:    HIDP_GetCaps shows applewirelessmouse-baseline (Input=47, Feature=2, LinkColl=2)
-[ ] VG-1:    v1 produces OK battery (Feature 0x47) within 30s
-[ ] VG-2:    v3 produces OK battery (Feature 0x47) within 60s
-[ ] VG-3:    scroll fluid on both mice
-[ ] VG-4:    BATTERY_OFFSET confirmed via debug.log diff at known battery levels
-[ ] VG-5:    pool tag 'M12 ' verifiable in WinDbg !poolused
-[ ] VG-6:    no Driver Verifier violations under flags 0x9bb during forced disable
-[ ] VG-7:    24-hour soak with BT sleep/wake cycles, >= 12 OK reads, zero err= entries, zero BSOD
-[ ] HEALTH-10a: no BSOD events in System log
-[ ] HEALTH-10d: service state RUNNING throughout
+[ ] PRE-1:        Pre-flight backup verified
+[ ] PRE-INSTALL-1 (v1.4): rank-loss check + stale service + DriverStore staged-package cleanup
+[ ] BUILD-1:      MagicMouseDriver.sys + .inf in build output
+[ ] BUILD-2:      hidparser.exe validates 116-byte reference descriptor
+[ ] BUILD-3:      pool tag 'M12 ' present in binary
+[ ] BUILD-4 (v1.4): TMF file generated alongside .sys (WPP support, Sec 19)
+[ ] SIGN-1:       signtool verify successful (RFC 3161 SHA256)
+[ ] 7a:           applewirelessmouse removed from LowerFilters
+[ ] 7a.1 (v1.4):  no competing INF with DriverVer >= 01/01/2027
+[ ] 7a.2 (v1.4):  no stale MagicMouseM12 service
+[ ] 7a.3 (v1.4):  no stale MagicMouseDriver INF in DriverStore
+[ ] 7e:           registry tunables BATTERY_OFFSET + FirstBootPolicy + MAX_STALE_MS + DebugLevel set
+[ ] 7e (v1.4):    per-device Watchdog + PowerSaver subkeys created for all 3 PIDs
+[ ] INSTALL-1:    MagicMouseM12 LowerFilters bound to v1 + v3, service RUNNING
+[ ] 7d.1 (v1.4):  registry binding cross-check (reg query) confirms M12 wins rank
+[ ] 7d.2 (v1.4):  orphan-filter walk reports clean BTHENUM tree
+[ ] VG-0:         HIDP_GetCaps shows applewirelessmouse-baseline (Input=47, Feature=2, LinkColl=2)
+[ ] VG-1:         v1 produces OK battery (Feature 0x47) within 30s
+[ ] VG-2:         v3 produces OK battery (Feature 0x47) within 60s
+[ ] VG-3:         scroll fluid on both mice
+[ ] VG-4:         BATTERY_OFFSET confirmed via debug.log diff at known battery levels
+[ ] VG-5:         pool tag 'M12 ' verifiable in WinDbg !poolused
+[ ] VG-6:         no Driver Verifier violations under flags 0x9bb during forced disable
+[ ] VG-7:         24-hour soak with BT sleep/wake cycles, >= 12 OK reads, zero err= entries, zero BSOD
+[ ] VG-8 (v1.4):  power-saver functional test (sleep/sign-out/shutdown/manual + wake on click)
+[ ] VG-9 (v1.4):  battery-saving 24-hr A/B (treatment <= 50% control drift)
+[ ] VG-10 (v1.4): multi-mouse simultaneous read-out (v1+v3 independent)
+[ ] VG-11 (v1.4): Driver Verifier 0x49bb soak: 1000 IOCTL + 100 pair/unpair = 0 violations
+[ ] HEALTH-10a:   no BSOD events in System log
+[ ] HEALTH-10d:   service state RUNNING throughout
 
 Operator: ____________________________  Date: __________
 
@@ -711,11 +944,18 @@ WHQL submission OUT of scope.
 | Install | `pnputil /add-driver MagicMouseDriver.inf /install` |
 | Force rebind | `pnputil /disable-device <id>; pnputil /enable-device <id>` |
 | Verify bind | `Get-PnpDeviceProperty -InstanceId <id> -KeyName DEVPKEY_Device_LowerFilters` |
-| Service status | `sc.exe query M12` |
+| Service status | `sc.exe query MagicMouseM12` |
 | Tray log tail | `Get-Content $env:APPDATA\MagicMouseTray\debug.log -Tail 50` |
-| Set battery offset | `Set-ItemProperty -Path HKLM:\SYSTEM\CurrentControlSet\Services\M12\Parameters -Name BATTERY_OFFSET -Value N -Type DWord` |
+| Set battery offset | `Set-ItemProperty -Path HKLM:\SYSTEM\CurrentControlSet\Services\MagicMouseM12\Parameters -Name BATTERY_OFFSET -Value N -Type DWord` |
 | Pool tag enumerate (WinDbg) | `!poolused 4 'M12 '` |
-| Driver Verifier on | `verifier /flags 0x9bb /driver MagicMouseDriver.sys` |
+| Driver Verifier (basic) | `verifier /flags 0x9bb /driver MagicMouseDriver.sys` |
+| Driver Verifier (v1.4 ship) | `verifier /flags 0x49bb /driver MagicMouseDriver.sys` |
 | Driver Verifier off | `verifier /reset` |
-| Uninstall | `pnputil /delete-driver oem<N>.inf /uninstall /force` |
+| Uninstall | `pnputil /delete-driver oem<N>.inf /uninstall /force; sc.exe delete MagicMouseM12` |
 | Reset signing test mode | `bcdedit /set testsigning off` (reboot) |
+| WPP capture start | `logman start M12 -p {8D3C1A92-B04E-4F18-9A23-7E5D4F892C12} -o capture.etl -ets` |
+| WPP capture stop + decode | `logman stop M12 -ets; tracefmt capture.etl -p <tmf-dir> -o decoded.txt` |
+| Set DebugLevel for offset workflow | `Set-ItemProperty -Path HKLM:\SYSTEM\CurrentControlSet\Services\MagicMouseM12\Parameters -Name DebugLevel -Value 4 -Type DWord` |
+| Manual suspend (CLI) | `mm-suspend.exe` (sends IOCTL_M12_SUSPEND) |
+| Orphan filter walk | `& scripts\mm-orphan-filter-walk.ps1` |
+| Registry binding cross-check | `reg query "HKLM\SYSTEM\CurrentControlSet\Enum\<Inst>\Device Parameters" /v LowerFilters` |
