@@ -1,10 +1,10 @@
 # M12 Method of Procedure (MOP)
 
-**Status:** v1.7 — DRAFT pending user approval (v1.6 + empirical layout correction)
+**Status:** v1.8 — DRAFT pending user approval (v1.7 + signing strategy folded in)
 **Date:** 2026-04-28
-**Linked design:** `docs/M12-DESIGN-SPEC.md` v1.7
+**Linked design:** `docs/M12-DESIGN-SPEC.md` v1.8
 **Linked test plan:** `docs/M12-TEST-PLAN.md` v1.2
-**Linked PRD:** PRD-184 v1.32
+**Linked PRD:** PRD-184 v1.33
 **Linked NLM pass-1:** `docs/M12-DESIGN-PEER-REVIEW-NOTEBOOKLM-2026-04-28.md`
 **Linked NLM pass-2:** `docs/M12-DESIGN-PEER-REVIEW-NOTEBOOKLM-PASS2-2026-04-28.md`
 **Linked NLM pass-3:** `docs/M12-DESIGN-PEER-REVIEW-NOTEBOOKLM-PASS3-2026-04-28.md`
@@ -13,6 +13,8 @@
 **Related rules:** `~/.claude/projects/-home-lesley-projects/memory/feedback_backup_before_destructive_commands.md` (AP-24 — non-negotiable backup gate).
 
 ## Revision history
+
+- **v1.8 (2026-04-28):** Aligned to design spec v1.8 (signing strategy fold-in). (a) Section 1 CRITICAL prerequisite block REVISED: "test-signing required" changed to "run install-m12-trust.ps1 (admin, one-time)" as PRIMARY path; test-signing demoted to FALLBACK option for users who prefer not to trust M12 cert. (b) Section 3a REVISED: testsigning verify step now labeled FALLBACK ONLY; PRIMARY path is cert trust install. (c) Section 3g ADDED (NEW): pre-install cert trust step -- verify M12-Driver.cer present, run `install-m12-trust.ps1`, verify thumbprint before trusting. (d) Section 6 REVISED: cert generation snippet updated to CN=M12-Driver (production cert, not test-only name); added thumbprint verification step (user cross-checks thumbprint vs INSTALL.md before running install-m12-trust.ps1). (e) Sign-off checklist SIGN-2 added: verify `signtool verify /v /pa MagicMouseDriver.sys` shows CN=M12-Driver (not MagicMouseTray-TestSign). D-S12-59/60/61.
 
 - **v1.7 (2026-04-28):** Aligned to design spec v1.7 (empirical layout correction). (a) VG-14 REPLACED: old self-tuning verification gate (wait 5 min for LEARNING mode, check WPP for "self-tuning detected offset N") deleted. New VG-14: col02 descriptor verification -- after install, confirm col02 (UP:0xFF00 U:0x0014 RID=0x90 InLen=3) is visible via HidP_GetCaps, and HidD_GetInputReport(0x90) returns valid percent in buf[2]. (b) VG-4 RETIRED: BATTERY_OFFSET empirical confirmation gate removed; no offset to confirm. (c) VG-2 REVISED: v3 battery now via HidD_GetInputReport(0x90) on col02, not Feature 0x47. (d) Sign-off checklist updated: VG-4 removed, VG-14 text updated. (e) Registry tunables section updated: BATTERY_OFFSET, FirstBootPolicy, MAX_STALE_MS, LearningModeFramesRequired, LearningModeMaxDurationSec, BatteryByteOffset, ColdShadowThresholdMs all removed (shadow buffer eliminated). (f) VG-12 RETIRED: auto-reinit-on-wake shadow-invalidation test no longer applicable; shadow buffer removed. (g) VG-13 RETIRED: battery polling fallback test no longer applicable; tray polls natively. Design revision logged; PRD reference bumped.
 
@@ -30,27 +32,34 @@
 
 This MOP is the canonical end-to-end procedure for building, signing, installing, validating, and rolling back the M12 KMDF lower filter driver on the Magic Mouse v1 (PID 0x030D) and v3 (PID 0x0323) test machine. Every section maps to a single `bash` / `pwsh` command block; every gate is a Pass/Fail boolean; rollback is a single section the operator can run start-to-finish at any failure point. No section depends on userland Magic Utilities being present.
 
-### CRITICAL prerequisite: Test-signing must be enabled
+### CRITICAL prerequisite: Run cert trust install (PRIMARY path)
 
-M12 v1 is test-signed for development distribution. Production WHQL signing is deferred (see docs/KNOWN-ISSUES.md).
+M12 v1 ships as a self-signed driver (CN=M12-Driver). Before driver install, run the cert trust script once as admin. This installs M12's public cert into LocalMachine\Root + LocalMachine\TrustedPublisher -- the same model used by MagicMouseFix (Rain9333), empirically validated on dev machine 2026-04-28. No "Test Mode" watermark, no BCD edit.
 
-**Verify**:
+**Step 1: Verify cert thumbprint** (cross-check against INSTALL.md before trusting):
 
 ```pwsh
-bcdedit | findstr testsigning
+$cert = New-Object System.Security.Cryptography.X509Certificates.X509Certificate2 "M12-Driver.cer"
+Write-Host "Cert thumbprint: $($cert.Thumbprint)"
+# Compare against expected thumbprint in INSTALL.md before proceeding
 ```
 
-Expected output: `testsigning             Yes`
+**Step 2: Run trust install script** (admin PowerShell):
 
-**If not enabled** (output is `No` or missing):
+```pwsh
+.\scripts\install-m12-trust.ps1 -CertFile "M12-Driver.cer"
+```
+
+This creates the Trust + TrustedPublisher entries for the M12 cert. One-time operation -- does not need to be repeated unless cert is renewed.
+
+**FALLBACK: Test-signing mode** (if user prefers not to trust M12 cert):
 
 ```pwsh
 bcdedit /set testsigning on
+# Reboot required. Desktop shows "Test Mode" watermark.
 ```
 
-Then **REBOOT**. After reboot, the desktop bottom-right corner shows "Test Mode" watermark -- that is the indicator test-signing is active.
-
-Without test-signing enabled, M12 will fail to install with "Driver is not signed" or "Hash mismatch" errors. This is the most common install blocker (upstream issue #1 in MagicMouse2DriversWin10x64 with 30+ comments).
+Test-signing is the fallback only. Primary is cert trust install (no watermark, no BCD edit required). See Section 20.4 of the design spec for full signing strategy rationale (D-S12-59).
 
 ---
 
@@ -63,25 +72,33 @@ Without test-signing enabled, M12 will fail to install with "Driver is not signe
 | Driver under test | `MagicMouseDriver.sys` (M12), built from this repository |
 | Build environment | EWDK 25H2 mounted at `F:\` (or D:\ewdk25h2 if F: unavailable) |
 | Build host | Same Windows 11 Home dev machine |
-| Test signing | Self-signed cert; production WHQL OUT of scope for this MOP |
+| Signing (v1 PRIMARY) | Self-signed cert (CN=M12-Driver) + install-m12-trust.ps1 cert trust install |
+| Signing (v1 FALLBACK) | Test-signing mode (bcdedit testsigning on) for users who prefer not to trust M12 cert |
+| Signing (v2) | Microsoft attestation signing; WHQL OUT of scope for this MOP |
 
 ---
 
 ## 3. Prerequisites
 
-### 3a. Test signing enabled
+### 3a. Signing mode (PRIMARY: cert trust / FALLBACK: testsigning)
+
+**PRIMARY path (recommended):** M12-Driver.cer must be trusted in LocalMachine\Root + LocalMachine\TrustedPublisher before driver install. Verify via Section 3g below. Skip this testsigning check if cert trust install is complete.
+
+**FALLBACK path only:** If using test-signing mode instead of cert trust:
 
 ```pwsh
 bcdedit | Select-String "testsigning"
-# Expected: "testsigning             Yes"
+# Expected if using fallback: "testsigning             Yes"
 ```
 
-If `No` or absent:
+If `No` or absent (FALLBACK only):
 
 ```pwsh
 bcdedit /set testsigning on
 # Reboot required.
 ```
+
+Test-signing mode is NOT required when the primary cert trust path is used (Section 3g).
 
 ### 3b. EWDK mounted
 
@@ -127,6 +144,44 @@ Test-Path "F:\Debuggers\x64\windbg.exe"   # via EWDK mount
 ```
 
 For 24-hr soak triage, configure live-kernel debugging or capture small-memory-dump on bugcheck (default `%SYSTEMROOT%\Minidump\`).
+
+### 3g. M12 cert trust install (NEW v1.8 -- PRIMARY signing path, admin, one-time)
+
+Before driver install, verify M12's public cert is trusted in LocalMachine\Root + LocalMachine\TrustedPublisher. This is the one-time setup that allows M12 to load on production Windows without testsigning mode.
+
+**Step 1: Check if cert already trusted**
+
+```pwsh
+$thumbprint = "<expected-thumbprint-from-INSTALL.md>"
+$trusted = Get-ChildItem Cert:\LocalMachine\TrustedPublisher |
+    Where-Object { $_.Thumbprint -eq $thumbprint }
+if ($trusted) {
+    Write-Host "PREREQ-5 PASS: M12 cert already trusted"
+} else {
+    Write-Host "PREREQ-5: M12 cert not yet trusted -- run install-m12-trust.ps1"
+}
+```
+
+**Step 2: Install cert if not present**
+
+```pwsh
+# Admin PowerShell required
+.\scripts\install-m12-trust.ps1 -CertFile "M12-Driver.cer"
+```
+
+**Step 3: Verify thumbprint before trusting (D-S12-59)**
+
+```pwsh
+# Script displays thumbprint -- cross-check against INSTALL.md before confirming
+$cert = New-Object System.Security.Cryptography.X509Certificates.X509Certificate2 "M12-Driver.cer"
+Write-Host "Cert CN: $($cert.Subject)"
+Write-Host "Cert thumbprint: $($cert.Thumbprint)"
+Write-Host "Cert NotAfter: $($cert.NotAfter)"
+```
+
+**Gate PREREQ-5:** M12-Driver cert thumbprint matches INSTALL.md expected value AND cert is present in both LocalMachine\Root and LocalMachine\TrustedPublisher. Halt if mismatch -- do not import an unverified cert.
+
+**FALLBACK:** If user declines cert trust, ensure testsigning mode is active (Section 3a FALLBACK). In that case, skip PREREQ-5 gate.
 
 ---
 
@@ -294,31 +349,56 @@ if ($defectCount -gt 0) {
 
 ---
 
-## 6. Test-sign procedure
+## 6. Sign procedure (v1.8 -- PRIMARY: self-signed cert; FALLBACK: test-sign)
 
-### 6a. Generate self-signed cert (one-time)
+### 6a. PRIMARY path: generate production self-signed cert (one-time, by Lesley/Revive Business Solutions)
+
+This generates the M12 production cert (CN=M12-Driver). Keep the .pfx offline in secure storage -- NEVER commit to git (D-S12-60). Distribute only the .cer file.
 
 ```pwsh
-$CertSubject = "CN=MagicMouseTray-TestSign"
-$existing = Get-ChildItem Cert:\CurrentUser\My |
-    Where-Object { $_.Subject -eq $CertSubject }
+$cert = New-SelfSignedCertificate `
+  -Type CodeSigningCert `
+  -Subject "CN=M12-Driver, O=Revive Business Solutions" `
+  -KeyAlgorithm RSA `
+  -KeyLength 2048 `
+  -KeyUsage DigitalSignature `
+  -KeyUsageProperty Sign `
+  -KeyExportPolicy Exportable `
+  -NotAfter (Get-Date).AddYears(10) `
+  -CertStoreLocation Cert:\CurrentUser\My
 
-if (-not $existing) {
-    $cert = New-SelfSignedCertificate `
-        -Subject $CertSubject `
-        -Type CodeSigningCert `
-        -KeyUsage DigitalSignature `
-        -KeyExportPolicy Exportable `
-        -CertStoreLocation Cert:\CurrentUser\My `
-        -NotAfter (Get-Date).AddYears(2)
-    $store = Get-Item Cert:\LocalMachine\TrustedPublisher
-    $store.Open("ReadWrite"); $store.Add($cert); $store.Close()
-    $store = Get-Item Cert:\LocalMachine\Root
-    $store.Open("ReadWrite"); $store.Add($cert); $store.Close()
-}
+# Export public cert (.cer) -- ships with driver package
+Export-Certificate -Cert $cert -FilePath "M12-Driver.cer"
+
+# Export private key (.pfx) -- keep OFFLINE, NEVER commit
+$pwd = ConvertTo-SecureString -String "<strong-password>" -Force -AsPlainText
+Export-PfxCertificate -Cert $cert -FilePath "M12-Driver.pfx" -Password $pwd
+
+# Record expected thumbprint for INSTALL.md
+Write-Host "Thumbprint to record in INSTALL.md: $($cert.Thumbprint)"
 ```
 
-### 6b. Sign the .sys (RFC 3161 timestamp per Senior MOP §10 v1.1 review)
+**Gate SIGN-CERT:** .cer file exists and thumbprint is recorded in INSTALL.md for user verification (D-S12-59).
+
+### 6b. Sign the .sys (RFC 3161 timestamp per Senior MOP SS10 v1.1 review)
+
+**PRIMARY path (using M12-Driver.pfx):**
+
+```pwsh
+$signtool = "$env:WindowsSdkDir\bin\$env:WindowsSdkVer\x64\signtool.exe"
+& $signtool sign `
+    /v `
+    /f "M12-Driver.pfx" `
+    /p "<password>" `
+    /tr http://timestamp.digicert.com `
+    /td SHA256 `
+    /fd SHA256 `
+    "$BuildOut\MagicMouseDriver.sys"
+
+& $signtool verify /v /pa "$BuildOut\MagicMouseDriver.sys"
+```
+
+**FALLBACK path (test-signing via cert store, requires testsigning BCD):**
 
 ```pwsh
 $signtool = "$env:WindowsSdkDir\bin\$env:WindowsSdkVer\x64\signtool.exe"
@@ -333,6 +413,12 @@ $signtool = "$env:WindowsSdkDir\bin\$env:WindowsSdkVer\x64\signtool.exe"
 
 & $signtool verify /v /pa "$BuildOut\MagicMouseDriver.sys"
 ```
+
+Note v1.2: switched from legacy `/t` (SHA1) to `/tr` (RFC 3161) + `/td SHA256`. Win11 22H2+ rejects SHA1-timestamped drivers at load.
+
+**Gate SIGN-1:** `signtool verify /v /pa MagicMouseDriver.sys` reports "Successfully verified". Same for `.cat`.
+
+**Gate SIGN-2 (v1.8 -- PRIMARY path only):** Verify output shows `CN=M12-Driver` (not `MagicMouseTray-TestSign`). Confirms production cert was used, not dev test cert.
 
 Note v1.2: switched from legacy `/t` (SHA1) to `/tr` (RFC 3161) + `/td SHA256` per Senior driver dev §10 — Win11 22H2+ rejects SHA1-timestamped test-signed kernel drivers at load.
 

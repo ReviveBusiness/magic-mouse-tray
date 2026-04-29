@@ -1,9 +1,9 @@
 # M12 Design Specification
 
-**Status:** v1.7 — DRAFT pending user approval (v1.6 + empirical layout correction)
+**Status:** v1.8 — DRAFT pending user approval (v1.7 + signing strategy folded in)
 **License:** MIT (Copyright (c) 2026 Lesley Murfin / Revive Business Solutions)
 **Date:** 2026-04-28
-**Linked PRD:** PRD-184 v1.32
+**Linked PRD:** PRD-184 v1.33
 **Linked PSN:** PSN-0001 v1.9
 **Linked NLM pass-1:** `docs/M12-DESIGN-PEER-REVIEW-NOTEBOOKLM-2026-04-28.md`
 **Linked NLM pass-2:** `docs/M12-DESIGN-PEER-REVIEW-NOTEBOOKLM-PASS2-2026-04-28.md`
@@ -12,6 +12,8 @@
 **Approval gate:** PR ai/m12-design-prd-mop must be approved by user before any code is written.
 
 ## Revision history
+
+- **v1.8 (2026-04-28, signing strategy fold-in):** Signing strategy brief `M12-SIGNING-STRATEGY-FOR-V1.8.md` (committed at 4047951 on ai/m12-signing-strategy) folded into Section 20. (a) Section 20.4 ADDED: signing strategy. PRIMARY path: self-signed cert (CN=M12-Driver, O=Revive Business Solutions) + `scripts/install-m12-trust.ps1` admin trust-install script (Rain9333/MagicMouseFix model, empirically validated 2026-04-28). FALLBACK path: test-signing mode (BCD `testsigning on`) for users who prefer not to trust M12 cert. V2 PRODUCTION path: Microsoft attestation signing (~$300-500/yr EV cert). (b) Section 20.4 includes: cert generation snippet (`New-SelfSignedCertificate -Type CodeSigningCert`), signtool invocation pattern (SHA256 + RFC 3161 timestamp), `install-m12-trust.ps1` script (imports M12-Driver.cer into LocalMachine\Root + LocalMachine\TrustedPublisher), cert security considerations table, signing options comparison table. (c) All prior "test-signed for v1" references in Sections 1, 6, 20.1, 20.2, KNOWN-ISSUES revised to "self-signed cert + cert-trust install for v1 (test-signing as fallback)". D-S12-59, D-S12-60, D-S12-61. NLM pass-8 SKIPPED per constraints.
 
 - **v1.7 (2026-04-28, empirical layout correction):** Empirical correction applied based on tray debug.log 2026-04-27 and `MouseBatteryReader.cs` source proving the actual firmware battery layout. (a) Self-tuning RID=0x27 machinery DELETED: Section 6c (LEARNING mode, LEARNING_STATE struct, BatteryByteOffset auto-detect, LearningModeFramesRequired/MaxDurationSec CRD keys) removed entirely. The RID=0x27 46-byte vendor blob and `(raw - 1) * 100 / 64` translation formula were based on incorrect inference from MU's filter; empirical evidence shows they are not used for battery at all. (b) Battery layout corrected: native firmware exposes battery via col02 vendor TLC (UP:0xFF00 / U:0x0014), Input Report ID 0x90, 3 bytes [reportId, flags, percentage]. Battery percent = buf[2] directly -- no translation. (c) M12 architectural pivot: M12 is now pure descriptor passthrough. It does NOT intercept Feature 0x47 IRPs, does NOT maintain a shadow buffer, does NOT translate. It ensures col02 (UP:0xFF00 U:0x0014 RID=0x90 3-byte) remains visible to userland -- the TLC that applewirelessmouse strips. Tray reads via HidD_GetInputReport(0x90) on col02 directly. (d) LOC estimate revised from 100-200 to ~30 LOC pure descriptor passthrough. (e) CRD config simplified: BatteryByteOffset, BatteryScale, BatteryLookupTable, BatteryReportID, BatteryReportType, BatteryReportLength, ShadowBufferSize dropped. Retained: HardwareKey, DeviceName, ScrollPassthrough, FeatureFlags, WatchdogIntervalSec, StallThresholdSec, PowerSaver subkey. (f) Empirical evidence: 96 successful tray battery reads on 2026-04-27 (49% to 47%, monotonic drain); debug.log line 2026-04-27 17:43:44 `OK path=...col02 battery=44% (split)`; `MouseBatteryReader.cs` constants UP_VENDOR_BATTERY=0xFF00, BatteryReportId=0x90, buf[2] extraction. D-S12-55/56/57/58. NLM pass-7 SKIPPED (corpus gap unchanged; this is a correction of prior inference, not new architecture).
 
@@ -143,6 +145,21 @@ NLM pass-6 is skipped per playbook v1.8 cap. v1.6 additions are documentation-on
 ### v1.7 design ship rationale (NLM pass-7 SKIPPED)
 
 NLM pass-7 is skipped per playbook v1.8 cap and per mission constraints. The corpus gap (no empirical battery layout evidence) is what caused the prior incorrect inference. The empirical correction brief `M12-V16-EMPIRICAL-LAYOUT-CORRECTION.md` is the authoritative source; no peer review can override 96 confirmed tray reads against live hardware.
+
+### v1.8 changelog (signing strategy -> section)
+
+| Change | Section addressed | Resolution |
+|---|---|---|
+| ADD Section 20.4: signing strategy | Sec 20.4 (NEW) | PRIMARY: self-signed cert (CN=M12-Driver) + `install-m12-trust.ps1` trust-install. FALLBACK: test-signing mode. V2: Microsoft attestation signing. D-S12-59/60/61. |
+| REVISE "test-signed for v1" references | Sec 1, Sec 6, Sec 20.1, Sec 20.2 | All prior "test-sign for v1" references revised to "self-signed cert + cert-trust install; test-signing as fallback". |
+| ADD cert generation snippet | Sec 20.4 | `New-SelfSignedCertificate -Type CodeSigningCert` PowerShell block with CN=M12-Driver, RSA-2048, 10-year expiry. |
+| ADD signtool invocation pattern | Sec 20.4 | Sign .sys + .cat via signtool /f M12-Driver.pfx /fd SHA256 /tr http://timestamp.digicert.com /td SHA256. |
+| ADD install-m12-trust.ps1 script | Sec 20.4 | Imports M12-Driver.cer into LocalMachine\Root + LocalMachine\TrustedPublisher (admin, one-time). |
+| ADD signing options comparison table | Sec 20.4 | 4-row table: self-signed, test-signing, attestation, WHQL. Cost + UX + use-case columns. |
+
+### v1.8 design ship rationale (NLM pass-8 SKIPPED)
+
+NLM pass-8 is skipped per mission constraints (NLM capped). The signing strategy brief `M12-SIGNING-STRATEGY-FOR-V1.8.md` is empirically grounded (MagicMouseFix cert verified on dev machine 2026-04-28). No architectural surface changes; Section 20.4 is documentation-only.
 
 ---
 
@@ -996,7 +1013,7 @@ Run after install (MOP Sec 7d post-install) and after rollback (Sec 8e). Removes
 - Performance counters
 - Localization (INF + device strings)
 - Static-analysis-clean (PREfast / SDV) — aspirational; not gating
-- WHQL submission — test-sign for v1; WHQL is v2 release engineering
+- WHQL submission — self-signed cert + cert-trust install for v1 (test-signing as fallback); attestation signing is v2; WHQL is v2+ release engineering
 - HLK test compliance — v2
 
 ---
@@ -1279,7 +1296,7 @@ EWDK provides full toolchain (`msbuild`, `WDK props/targets`, `inf2cat`, `signto
 
 ### 20.1 PREfast static analyzer gate (v1.5 — GATING for ship per D-S12-43)
 
-PREfast is NOT aspirational. Every msbuild invocation for a ship candidate MUST run PREfast. Zero warnings is the gate before a test-signed build can be submitted for review.
+PREfast is NOT aspirational. Every msbuild invocation for a ship candidate MUST run PREfast. Zero warnings is the gate before a self-signed (or test-signed) build can be submitted for review.
 
 ```pwsh
 # Enable PREfast in the build
@@ -1300,7 +1317,7 @@ PREfast catches at build time: null pointer dereferences, buffer overruns, IRQL 
 
 ### 20.2 Static Driver Verifier gate (v1.5 — GATING for ship per D-S12-44)
 
-SDV is NOT aspirational. Run SDV against `MagicMouseDriver.sys` before any test-signed build is submitted for signing. Zero violations is the gate.
+SDV is NOT aspirational. Run SDV against `MagicMouseDriver.sys` before signing (whether self-signed or test-signed). Zero violations is the gate.
 
 ```pwsh
 # Run SDV (from EWDK build environment)
@@ -1342,6 +1359,108 @@ build/** binary
 ```
 
 MOP pre-build gate: run `git ls-files --eol -- driver/` and confirm `.inf` files show `crlf` not `lf`. Failure = block build until line endings fixed.
+
+### 20.4 Signing strategy (v1.8 -- folded from `M12-SIGNING-STRATEGY-FOR-V1.8.md`)
+
+**Empirical evidence:** MagicMouseFix (`applewirelessmouse.sys` / Rain9333) ships a self-signed cert (CN=MagicMouseFix, 10-year expiry) installed in LocalMachine\Root + LocalMachine\TrustedPublisher. The driver loads cleanly on production Windows 11 without testsigning mode and without the "Test Mode" watermark. Verified on Lesley's dev machine 2026-04-28.
+
+M12 v1 follows the same model.
+
+#### Signing paths
+
+| Path | Description | When to use |
+|---|---|---|
+| **PRIMARY (v1)** | Self-signed cert (CN=M12-Driver) + `install-m12-trust.ps1` admin trust-install | v1 open-source distribution, personal use |
+| **FALLBACK** | Test-signing mode (`bcdedit /set testsigning on`) | Users who prefer not to trust M12 cert; dev iteration |
+| **V2 PRODUCTION** | Microsoft attestation signing (~$300-500/yr EV cert) | Broad public distribution |
+| **V3+** | Full WHQL submission | Windows Update distribution |
+
+#### 20.4.1 Cert generation (one-time, by Lesley/Revive Business Solutions)
+
+```pwsh
+$cert = New-SelfSignedCertificate `
+  -Type CodeSigningCert `
+  -Subject "CN=M12-Driver, O=Revive Business Solutions" `
+  -KeyAlgorithm RSA `
+  -KeyLength 2048 `
+  -KeyUsage DigitalSignature `
+  -KeyUsageProperty Sign `
+  -KeyExportPolicy Exportable `
+  -NotAfter (Get-Date).AddYears(10) `
+  -CertStoreLocation Cert:\CurrentUser\My
+
+# Export public cert (.cer) for distribution
+Export-Certificate -Cert $cert -FilePath "M12-Driver.cer"
+
+# Export private key (.pfx) -- keep OFFLINE in secure storage, NEVER commit
+$pwd = ConvertTo-SecureString -String "<strong-password>" -Force -AsPlainText
+Export-PfxCertificate -Cert $cert -FilePath "M12-Driver.pfx" -Password $pwd
+```
+
+Output:
+- `M12-Driver.cer` -- public, ships with installer
+- `M12-Driver.pfx` -- private, NEVER committed to git (D-S12-60)
+
+#### 20.4.2 Driver signing (build harness)
+
+```pwsh
+# Sign M12.sys
+signtool sign /v /f M12-Driver.pfx /p <password> /fd SHA256 /tr http://timestamp.digicert.com /td SHA256 MagicMouseDriver.sys
+
+# Generate catalog
+inf2cat /driver:build\Win11Release\x64 /os:10_x64,11_x64
+
+# Sign catalog
+signtool sign /v /f M12-Driver.pfx /p <password> /fd SHA256 /tr http://timestamp.digicert.com /td SHA256 MagicMouseDriver.cat
+```
+
+`/tr` adds RFC 3161 timestamp so the signature remains valid after cert expiration.
+
+#### 20.4.3 End-user cert trust install (`scripts/install-m12-trust.ps1`)
+
+Run once as admin before driver install. Creates Trust + TrustedPublisher entries for M12 cert.
+
+```pwsh
+[CmdletBinding()]param([string]$CertFile = "M12-Driver.cer")
+$ErrorActionPreference = 'Stop'
+if (-not (Test-Path $CertFile)) { throw "Cert file not found: $CertFile" }
+
+# Verify thumbprint before trusting (user should cross-check against INSTALL.md)
+$cert = New-Object System.Security.Cryptography.X509Certificates.X509Certificate2 $CertFile
+Write-Host "Cert thumbprint: $($cert.Thumbprint)" -ForegroundColor Yellow
+Write-Host "Expected thumbprint: [see INSTALL.md]" -ForegroundColor Yellow
+
+Import-Certificate -FilePath $CertFile -CertStoreLocation Cert:\LocalMachine\Root | Out-Null
+Import-Certificate -FilePath $CertFile -CertStoreLocation Cert:\LocalMachine\TrustedPublisher | Out-Null
+
+Write-Host "M12 code-signing cert trusted. Now run install-m12.ps1 to install the driver." -ForegroundColor Green
+```
+
+After cert is trusted, standard install works without testsigning:
+
+```pwsh
+pnputil /add-driver MagicMouseDriver.inf /install
+```
+
+#### 20.4.4 Security considerations
+
+| Risk | Mitigation |
+|---|---|
+| .pfx leak -- attacker signs malicious drivers as M12 | Keep .pfx offline (encrypted USB or hardware token). Never commit. Strong password. |
+| Cert in Trusted Root = anything signed by M12 cert is trusted | Acceptable for personal use; document explicitly in INSTALL.md. |
+| User trusts cert without verifying thumbprint | Document expected thumbprint in INSTALL.md; `install-m12-trust.ps1` displays thumbprint before importing. |
+| Cert renewal at 10-year mark | Document renewal procedure; ship new cert as re-install; old cert revocable from Local Machine stores. |
+
+#### 20.4.5 Fallback: test-signing mode
+
+For users who prefer not to import M12 cert, or for CI/dev iteration:
+
+```pwsh
+bcdedit /set testsigning on
+# Reboot required. Desktop shows "Test Mode" watermark.
+```
+
+Test-signing is the FALLBACK, not the primary. Primary is self-signed cert + trust install (no watermark, no BCD edit).
 
 ---
 
