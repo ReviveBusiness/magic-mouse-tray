@@ -293,7 +293,6 @@ VOID InputHandler_AclCompletion(_In_ WDFREQUEST Request, _In_ WDFIOTARGET Target
                                 _In_ PWDF_REQUEST_COMPLETION_PARAMS Params, _In_ WDFCONTEXT Context)
 {
     UNREFERENCED_PARAMETER(Target);
-    UNREFERENCED_PARAMETER(Context);
 
     NTSTATUS status = Params->IoStatus.Status;
 
@@ -356,6 +355,85 @@ VOID InputHandler_AclCompletion(_In_ WDFREQUEST Request, _In_ WDFIOTARGET Target
     }
 
     PUCHAR data = (PUCHAR)bufPtr;
+    PDEVICE_CONTEXT devCtx = (PDEVICE_CONTEXT)Context;
+
+    // -----------------------------------------------------------------------
+    // RID=0x12 multi-touch → RID=0x01 mouse+wheel translation.
+    //
+    // Magic Mouse 2024 emits scroll input as RID=0x12 multi-touch frames on
+    // the L2CAP interrupt channel. Our injected descriptor declares RID=0x01
+    // (mouse + vertical wheel) and RID=0x90 (vendor battery); HidClass
+    // discards RID=0x12 frames as no TLC matches. We rewrite each RID=0x12
+    // frame in place to a 5-byte RID=0x01 report so mouhid synthesizes
+    // WM_MOUSEWHEEL events.
+    //
+    // Wheel delta = average touch-Y position THIS frame minus average touch-Y
+    // LAST frame, scaled and clamped to INT8. Cursor X/Y are zeroed because
+    // basic cursor motion arrives via separate native frames; doubling X/Y
+    // here would cause acceleration artifacts. Buttons are zeroed for the
+    // same reason.
+    //
+    // SMP-safe via DEVICE_CONTEXT.Lock — multiple ACL transfers can race in
+    // parallel completion routines. State (LastAvgTouchY, HasLastTouch) is
+    // accessed only inside the critical section.
+    // -----------------------------------------------------------------------
+    if (devCtx != NULL && bufSize >= MM_TOUCH_HEADER_BYTES &&
+        data[0] == MM_REPORT_ID_TOUCH)
+    {
+        // Average touch-Y across all 8-byte blocks at offset 14+.
+        INT32 sumY = 0;
+        ULONG nTouches = 0;
+        ULONG off = MM_TOUCH_HEADER_BYTES;
+        while (off + MM_TOUCH_BLOCK_BYTES <= bufSize)
+        {
+            PUCHAR tdata = data + off;
+            // Linux magicmouse_emit_touch: y is 12-bit signed,
+            //   y = -((tdata[3] << 24) | (tdata[7] << 16)) >> 20;
+            INT32 ty =
+                -((((INT32)tdata[3] << 24) | ((INT32)tdata[7] << 16)) >> 20);
+            sumY += ty;
+            nTouches++;
+            off += MM_TOUCH_BLOCK_BYTES;
+        }
+
+        INT32 wheel = 0;
+        WdfSpinLockAcquire(devCtx->Lock);
+        if (nTouches == 0)
+        {
+            // No active touches — reset state. Next touch-down starts fresh.
+            devCtx->HasLastTouch = FALSE;
+        }
+        else
+        {
+            INT32 avgY = sumY / (INT32)nTouches;
+            if (devCtx->HasLastTouch)
+            {
+                wheel = (avgY - devCtx->LastAvgTouchY) / MM_WHEEL_DELTA_DIVIDER;
+                if (wheel < -127) { wheel = -127; }
+                if (wheel >  127) { wheel =  127; }
+            }
+            devCtx->LastAvgTouchY = avgY;
+            devCtx->HasLastTouch = TRUE;
+        }
+        WdfSpinLockRelease(devCtx->Lock);
+
+        // Rewrite to RID=0x01 [RID, buttons=0, X=0, Y=0, wheel].
+        data[0] = MM_REPORT_ID_MOUSE;
+        data[1] = 0x00;
+        data[2] = 0x00;
+        data[3] = 0x00;
+        data[4] = (UCHAR)((CHAR)wheel);
+
+        // Update BRB BufferSize so HidBth sees the truncated transfer length.
+        // brbLen >= 0x88 implied by the outer brbLen >= MM_BRB_ACL_BUFFER_MDL_OFFSET
+        // gate (0x90 + sizeof(PVOID) = 0x98 > 0x88).
+        *(ULONG *)((PUCHAR)brb + MM_BRB_ACL_BUFFER_SIZE_OFFSET) =
+            MM_MOUSE_REPORT_BYTES;
+        irp->IoStatus.Information = MM_MOUSE_REPORT_BYTES;
+
+        WdfRequestComplete(Request, status);
+        return;
+    }
 
     // -----------------------------------------------------------------------
     // SDP HIDDescriptorList interception (PSM 1, descriptor-injection path)

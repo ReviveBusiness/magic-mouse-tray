@@ -83,6 +83,27 @@
 #define MM_ACL_TRANSFER_IN 0x00000001UL
 
 // ---------------------------------------------------------------------------
+// Magic Mouse 2024 RID=0x12 multi-touch frame layout (per hid-magicmouse.c)
+// ---------------------------------------------------------------------------
+//   buf[0]    = 0x12 (RID)
+//   buf[3..4] = body X delta (INT16 LE) — optical sensor / whole-mouse motion
+//   buf[5..6] = body Y delta (INT16 LE)
+//   buf[7]    = clicks
+//   buf[8..13]= header padding (14 bytes total)
+//   buf[14+]  = N x 8-byte touch blocks (touch surface fingertip positions)
+//
+// Touch block (8 bytes): 12-bit signed X and Y (bit-packed across tdata[0,7,3]),
+// state in upper nibble of tdata[7]. Linux's magicmouse_emit_touch:
+//   x =  (((INT32)tdata[7] << 28) | ((INT32)tdata[0] << 20)) >> 20;
+//   y = -(((INT32)tdata[3] << 24) | ((INT32)tdata[7] << 16)) >> 20;
+#define MM_REPORT_ID_TOUCH       0x12
+#define MM_REPORT_ID_MOUSE       0x01
+#define MM_TOUCH_HEADER_BYTES    14
+#define MM_TOUCH_BLOCK_BYTES     8
+#define MM_MOUSE_REPORT_BYTES    5     // [RID, buttons, X, Y, wheel] per descriptor TLC1
+#define MM_WHEEL_DELTA_DIVIDER   8     // touch-Y units per wheel detent (tunable)
+
+// ---------------------------------------------------------------------------
 // Report IDs
 // ---------------------------------------------------------------------------
 
@@ -126,6 +147,17 @@ typedef struct _DEVICE_CONTEXT
     // Count of channels successfully opened. Used to assign control vs. interrupt slot.
     // Incremented in the OPEN_CHANNEL completion routine.
     ULONG ChannelCount;
+
+    // Touch-surface scroll synthesis state.
+    // Magic Mouse 2024 reports scroll input via RID=0x12 multi-touch frames
+    // carrying per-finger Y positions in 8-byte touch blocks at offset 14+.
+    // We compute the average Y across all reported touches, compare to the
+    // previous frame's average, and emit the delta as a synthetic mouse-wheel
+    // event in a rewritten RID=0x01 report. HasLastTouch resets to FALSE on
+    // a frame with zero touches (finger lifted) so the next touch-down does
+    // not produce a spurious wheel jump from stale state.
+    INT32   LastAvgTouchY;
+    BOOLEAN HasLastTouch;
 
 } DEVICE_CONTEXT, *PDEVICE_CONTEXT;
 

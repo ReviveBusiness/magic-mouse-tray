@@ -54,8 +54,10 @@ Include = input.inf
 Needs   = HID_Inst.NT.HW
 
 [MagicMouseDriver_AddReg]
-; FLG_ADDREG_TYPE_MULTI_SZ (no APPEND — overwrites; HidBth's HW section provides
-; the rest of the LowerFilters list which we re-add via Needs).
+; M12 stands alone as the only lower filter on the v3 BTHENUM stack:
+;   - SDP descriptor injection (Mode B → Mode A, vendor RID=0x90 battery)
+;   - RID=0x12 multi-touch → RID=0x01 mouse+wheel report translation
+;     (synthesizes scroll wheel deltas from touch surface Y motion)
 HKR,,"LowerFilters",0x00010000,"MagicMouseDriver"
 
 ; ---- Services: pull in HidBth's services + add our filter service (no SPSVCINST_ASSOCSERVICE) ----
