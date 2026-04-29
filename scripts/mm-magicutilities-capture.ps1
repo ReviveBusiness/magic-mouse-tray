@@ -75,9 +75,16 @@ $ProgressPreference   = 'Continue'
 # -----------------------------------------------------------------------------
 # Configuration
 # -----------------------------------------------------------------------------
-$script:DriverStoreGlob   = 'C:\Windows\System32\DriverStore\FileRepository\magicmouse.inf_amd64_*'
+$script:DriverStoreGlobs  = @(
+    'C:\Windows\System32\DriverStore\FileRepository\magicmouse.inf_amd64_*',
+    'C:\Windows\System32\DriverStore\FileRepository\magickeyboard.inf_amd64_*',
+    'C:\Windows\System32\DriverStore\FileRepository\magictrackpad.inf_amd64_*'
+)
+# Back-compat single glob for code paths that haven't been refactored yet
+$script:DriverStoreGlob   = $script:DriverStoreGlobs[0]
+$script:DriverBinaryGlob  = 'C:\Windows\System32\drivers\Magic*.sys'
 $script:DriverBinaryPath  = 'C:\Windows\System32\drivers\MagicMouse.sys'
-$script:DriverCatalogGlob = 'C:\Windows\System32\drivers\MagicMouse*.cat'
+$script:DriverCatalogGlob = 'C:\Windows\System32\drivers\Magic*.cat'
 $script:ProgramFilesPath  = 'C:\Program Files\MagicUtilities'
 $script:RequiredFreeBytes = 2GB
 
@@ -133,9 +140,14 @@ function Test-IsAdmin {
 }
 
 function Test-MagicUtilitiesInstalled {
+    $anyDriverPkg = $false
+    foreach ($g in $script:DriverStoreGlobs) {
+        if (Test-Path $g) { $anyDriverPkg = $true; break }
+    }
+    $anyMagicSys = (@(Get-ChildItem -Path $script:DriverBinaryGlob -ErrorAction SilentlyContinue).Count -gt 0)
     $checks = @{
-        'Driver INF (DriverStore)'   = (Test-Path $script:DriverStoreGlob)
-        'Driver binary (MagicMouse.sys)' = (Test-Path $script:DriverBinaryPath)
+        'Driver INF (DriverStore, any Magic*)' = $anyDriverPkg
+        'Driver binary (Magic*.sys)' = $anyMagicSys
         'Program Files tree'         = (Test-Path $script:ProgramFilesPath)
         'HKLM\SOFTWARE\MagicUtilities' = (Test-Path 'HKLM:\SOFTWARE\MagicUtilities')
     }
@@ -193,7 +205,9 @@ function Copy-WithManifest {
     param(
         [Parameter(Mandatory)] [string]$SourcePath,
         [Parameter(Mandatory)] [string]$DestPath,
-        [Parameter(Mandatory)] [System.Collections.Generic.List[string]]$ManifestLines,
+        [Parameter(Mandatory)]
+        [AllowEmptyCollection()]
+        [System.Collections.Generic.List[string]]$ManifestLines,
         [Parameter(Mandatory)] [string]$ManifestPrefix
     )
 
@@ -262,9 +276,13 @@ function Export-DriverDatabaseKeys {
     if (-not (Test-Path $base)) {
         throw "DriverDatabase root not found: $base"
     }
-    $matches = Get-ChildItem -Path $base -ErrorAction Stop | Where-Object { $_.PSChildName -like 'magicmouse.inf_amd64_*' }
+    $matches = Get-ChildItem -Path $base -ErrorAction Stop | Where-Object {
+        ($_.PSChildName -like 'magicmouse.inf_amd64_*') -or
+        ($_.PSChildName -like 'magickeyboard.inf_amd64_*') -or
+        ($_.PSChildName -like 'magictrackpad.inf_amd64_*')
+    }
     if (-not $matches) {
-        throw 'No magicmouse.inf_amd64_* DriverDatabase entry found.'
+        throw 'No magic*.inf_amd64_* DriverDatabase entries found.'
     }
     foreach ($m in $matches) {
         $sanitized = $m.PSChildName -replace '[^A-Za-z0-9._-]','_'
@@ -362,8 +380,14 @@ function Capture-PnpTopology {
 
 function Capture-ServiceConfig {
     param([string]$PnpDir)
-    $services = @('MagicMouse', 'MagicUtilitiesService')
-    foreach ($svc in $services) {
+    # Discover all Magic* services + the userland MagicUtilitiesService(s)
+    $allSvc = Get-Service -ErrorAction SilentlyContinue | Where-Object {
+        ($_.Name -like 'Magic*') -or ($_.DisplayName -like 'Magic*')
+    } | Select-Object -ExpandProperty Name -Unique
+    if (-not $allSvc -or $allSvc.Count -eq 0) {
+        $allSvc = @('MagicMouse', 'MagicKeyboard', 'MagicTrackpad', 'MagicUtilitiesService')
+    }
+    foreach ($svc in $allSvc) {
         $qcOut = Join-Path $PnpDir "sc-qc-$svc.txt"
         $qdOut = Join-Path $PnpDir "sc-qdescription-$svc.txt"
         & sc.exe qc $svc 2>&1 | Out-File -FilePath $qcOut -Encoding utf8
@@ -376,7 +400,7 @@ function Capture-DriverDependencies {
 
     # Win32_PnPSignedDriver gives us the driver metadata + InfName + DriverVersion
     Get-CimInstance -ClassName Win32_PnPSignedDriver -ErrorAction SilentlyContinue |
-        Where-Object { $_.InfName -like 'magicmouse.inf*' -or $_.DeviceName -match 'Magic' -or $_.Description -match 'Magic' } |
+        Where-Object { $_.InfName -like 'magic*.inf*' -or $_.DeviceName -match 'Magic' -or $_.Description -match 'Magic' } |
         Select-Object DeviceName, Description, DriverVersion, DriverDate, InfName, Manufacturer, Signer, DriverProviderName, DeviceID |
         ConvertTo-Json -Depth 5 | Out-File -FilePath (Join-Path $PnpDir 'win32-pnpsigneddriver.json') -Encoding utf8
 
@@ -452,23 +476,41 @@ try {
     Write-Info "Magic Utilities version: $muVersion"
     Write-Info "Trial expiry (raw bytes): $trialExpiryRaw"
 
-    # -- (a) Driver package directory ----------------------------------------
-    Write-Step '(a) Capture driver package directory (DriverStore FileRepository)'
-    Copy-WithManifest -SourcePath $script:DriverStoreGlob -DestPath $driverPkgDir `
-        -ManifestLines $manifestLines -ManifestPrefix 'driver-package'
-    Write-Ok 'Driver package copied + hashed.'
+    # -- (a) Driver package directories (mouse + keyboard + trackpad) -------
+    Write-Step '(a) Capture driver package directories (DriverStore FileRepository)'
+    $pkgFound = 0
+    foreach ($glob in $script:DriverStoreGlobs) {
+        if (Test-Path $glob) {
+            Copy-WithManifest -SourcePath $glob -DestPath $driverPkgDir `
+                -ManifestLines $manifestLines -ManifestPrefix 'driver-package'
+            $pkgFound++
+        } else {
+            Write-Warn2 "Driver package glob not present (skipping): $glob"
+        }
+    }
+    if ($pkgFound -eq 0) {
+        throw 'No Magic* driver packages found in DriverStore. Is Magic Utilities installed?'
+    }
+    Write-Ok "Driver packages copied + hashed ($pkgFound found)."
 
-    # -- (b) Active driver binary + catalog ----------------------------------
-    Write-Step '(b) Capture active driver binary + catalogs (System32\drivers)'
-    Copy-WithManifest -SourcePath $script:DriverBinaryPath -DestPath $driverBinDir `
-        -ManifestLines $manifestLines -ManifestPrefix 'driver-binary'
-    if (Test-Path $script:DriverCatalogGlob) {
+    # -- (b) Active driver binaries + catalogs (Magic*.sys / Magic*.cat) ----
+    Write-Step '(b) Capture active driver binaries + catalogs (System32\drivers)'
+    $sysFound = @(Get-ChildItem -Path $script:DriverBinaryGlob -ErrorAction SilentlyContinue)
+    if ($sysFound.Count -gt 0) {
+        Copy-WithManifest -SourcePath $script:DriverBinaryGlob -DestPath $driverBinDir `
+            -ManifestLines $manifestLines -ManifestPrefix 'driver-binary'
+        Write-Ok ("Captured {0} Magic*.sys binaries." -f $sysFound.Count)
+    } else {
+        Write-Warn2 'No Magic*.sys files in System32\drivers.'
+    }
+    $catFound = @(Get-ChildItem -Path $script:DriverCatalogGlob -ErrorAction SilentlyContinue)
+    if ($catFound.Count -gt 0) {
         Copy-WithManifest -SourcePath $script:DriverCatalogGlob -DestPath $driverBinDir `
             -ManifestLines $manifestLines -ManifestPrefix 'driver-binary'
+        Write-Ok ("Captured {0} Magic*.cat catalogs." -f $catFound.Count)
     } else {
-        Write-Warn2 'No MagicMouse*.cat files in System32\drivers (may not be required).'
+        Write-Warn2 'No Magic*.cat files in System32\drivers (may not be required).'
     }
-    Write-Ok 'Driver binary + catalogs copied + hashed.'
 
     # -- (c) Userland install tree -------------------------------------------
     Write-Step '(c) Capture userland install tree (Program Files\MagicUtilities)'

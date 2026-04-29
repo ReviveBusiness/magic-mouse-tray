@@ -4,9 +4,9 @@
                  "TLC_UP":  1,
                  "OutLen":  2,
                  "FeatLen":  0,
-                 "InLen":  9,
-                 "NIVC":  0,
-                 "NIBC":  2,
+                 "InLen":  10,
+                 "NIVC":  1,
+                 "NIBC":  3,
                  "NFBC":  0,
                  "NOBC":  1,
                  "NOVC":  0,
@@ -49,6 +49,16 @@
                        },
                        {
                            "RID":  1,
+                           "UsageMin":  184,
+                           "IsRange":  false,
+                           "UP":  12,
+                           "ReportType":  "Input",
+                           "UsageMax":  184,
+                           "BitField":  2,
+                           "LinkColl":  0
+                       },
+                       {
+                           "RID":  1,
                            "UsageMin":  1,
                            "IsRange":  true,
                            "UP":  8,
@@ -59,6 +69,21 @@
                        }
                    ],
     "ValueCaps":  [
-
+                      {
+                          "PhysMin":  0,
+                          "ReportCount":  1,
+                          "RID":  1,
+                          "UsageMin":  3,
+                          "BitSize":  7,
+                          "IsRange":  false,
+                          "UP":  255,
+                          "LogMin":  0,
+                          "ReportType":  "Input",
+                          "LinkColl":  0,
+                          "PhysMax":  0,
+                          "LogMax":  1,
+                          "BitField":  2,
+                          "UsageMax":  3
+                      }
                   ]
 }

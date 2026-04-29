@@ -1,6 +1,6 @@
 # Autonomous Agent Development Team — Playbook
 
-**Status:** v1.7 (2026-04-28 PM, Session 11 +AP-18 wrong-registry-path filter probe / +AP-19 single-error-code causal inference / +AP-20 screenshot layout described not data extracted / +AP-21 inferred state-intersection without concurrent measurement)
+**Status:** v1.8 (2026-04-28 PM, Session 12 +AP-22 don't ship 3rd-party trial driver / +AP-23 don't manipulate trial registry / D-S12-01 MU as reverse-eng reference only / D-S12-02 clean-room M12 KMDF / D-S12-03 MU uninstalled after capture / D-S12-04 v1-as-control strategy; Session 11 +AP-18 wrong-registry-path filter probe / +AP-19 single-error-code causal inference / +AP-20 screenshot layout described not data extracted / +AP-21 inferred state-intersection without concurrent measurement)
 **Scope:** how to run a multi-agent autonomous workflow that produces correct results the first time, instead of the iterative-discovery cycles we hit overnight.
 
 This is intended to be lifted out of `magic-mouse-tray/.ai/playbooks/` into a global location (e.g. `~/.claude/playbooks/` or `RILEY/.ai/playbooks/`) once it stabilises across one more autonomous session.
@@ -311,10 +311,15 @@ Before invoking `/peer-review` on architecture work, run a corpus-refresh step:
 **Concrete instance (Session 11):** Mode A (Descriptor A) for v3 Magic Mouse was claimed to deliver scroll + battery simultaneously because (a) the filter was on the stack and (b) v1 mouse with the filter has both. Reality: only battery was measured during the 2026-04-27 06:04-19:43 OK-read window (96 successful reads); scroll was never confirmed in that window. The user's "scrolling does not work" reports from that day likely COINCIDED with that exact window. Modes A and B in `applewirelessmouse.sys` are mutually exclusive, not orthogonal. The claim cascaded into a recommended workaround (Option Z) that would have shipped a regression — restoring battery while breaking scroll.
 **Fix:** When documenting a state-machine intersection ("Mode X delivers both Y and Z"), require **both signals measured concurrently in the same window**. If only one is measured, mark the other as ASSUMED with a clear "needs empirical confirmation" callout. Architecture decisions cannot rest on assumed-both-work cells of a state matrix. When in doubt, ask the user "did you observe both working at the same time?" before recommending a path that depends on it.
 
-### AP-15: `python3 - <<HEREDOC` swallows pipeline stdin
-**Symptom:** `cmd | python3 - "$ARG" <<'PY' ... PY` runs without error but `sys.stdin.read()` returns empty.
-**Concrete instance (M13, mm-reg-diff.sh):** The decoder function read 0 bytes of diff output even though the pipeline produced ~1200 lines. Python's `-` argument tells it to read its source from stdin; the `<<'PY'` heredoc is the source. The pipeline's stdout never reaches `sys.stdin.read()` because the heredoc redirect overrides the pipe.
-**Fix:** Either write the python to a temp file (`mktemp --suffix=.py`) and call `cmd | python3 /tmp/decoder.py "$ARG"`, OR use `-c "..."` and pay the bash-quoting cost. Never combine `python3 -` with both `cmd | ...` and `<<HEREDOC`.
+### AP-22: Shipping a third-party trial driver as production solution
+**Symptom:** Adopt a dependency (MagicUtilities driver) as the core production component without owning its maintenance surface or license terms.
+**Concrete instance (Session 12):** Early PRD-184 plan was to install MagicUtilities (trial-based, 30-day expiry), capture the INF, and use MU driver as production. This creates: (a) IP/EULA risk (MU is proprietary), (b) maintenance debt (trial expired, MU userland is unmaintained), (c) dependency on their binary format for any future tweaks, (d) customer-facing "you need trial software installed" setup complexity.
+**Fix:** When reverse-engineering a third-party tool, use it **as a reference for analysis only**, never as the installed production artifact. Build a clean-room replacement using the captured material (INF, behavior, PnP events) as the spec. This is the move from "install MU" to "use MU to design our own M12 KMDF driver" — much cheaper IP-wise and maintains long-term ownership.
+
+### AP-23: Manipulating trial registry markers to extend expiry
+**Symptom:** Attempt to work around a commercial product's trial expiration by patching registry timestamps or license keys.
+**Concrete instance (Session 12):** Avoided. MagicUtilities trial expires, and the natural impulse is to edit the registry marker to get more time. This is: (a) fragile (updates re-set the marker), (b) ethically questionable (circumventing intentional licensing), (c) legal risk (DMCA concerns in some jurisdictions for circumvention tools), (d) unnecessary (we don't need MU installed past the capture phase).
+**Fix:** Treat trial tools as **time-boxed references**, never as production dependencies. Once you have captured the binary artifacts and behavior, uninstall and move to clean-room implementation. The reference phase is short; don't plan to live on trial software.
 
 ---
 

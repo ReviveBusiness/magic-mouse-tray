@@ -79,6 +79,60 @@ try {
             $rc = 99
         }
     }
+    # Special phase prefix "WPPDECODE:*" routes to mm-test-A3-wpp-decode.ps1
+    elseif ($phase -like 'WPPDECODE:*') {
+        $wppScript = 'D:\mm3-driver\scripts\mm-test-A3-wpp-decode.ps1'
+        if (-not (Test-Path $wppScript)) {
+            Log "ERROR: mm-test-A3-wpp-decode.ps1 not found at $wppScript"
+            "127|$nonce" | Set-Content $ResFile -Encoding ASCII
+            exit 127
+        }
+        Log "Using $wppScript"
+        try {
+            & $wppScript
+            $rc = $LASTEXITCODE
+            if ($null -eq $rc) { $rc = 0 }
+        } catch {
+            Log "Exception running mm-test-A3-wpp-decode.ps1: $_"
+            $rc = 99
+        }
+    }
+    # Special phase prefix "ETWBTH:*" routes to mm-test-A2-etw-bth-hid.ps1
+    elseif ($phase -like 'ETWBTH:*') {
+        $eScript = 'D:\mm3-driver\scripts\mm-test-A2-etw-bth-hid.ps1'
+        if (-not (Test-Path $eScript)) {
+            Log "ERROR: mm-test-A2-etw-bth-hid.ps1 not found at $eScript"
+            "127|$nonce" | Set-Content $ResFile -Encoding ASCII
+            exit 127
+        }
+        Log "Using $eScript"
+        try {
+            & $eScript
+            $rc = $LASTEXITCODE
+            if ($null -eq $rc) { $rc = 0 }
+        } catch {
+            Log "Exception running mm-test-A2-etw-bth-hid.ps1: $_"
+            $rc = 99
+        }
+    }
+    # Special phase prefix "PROCMONIO:*" routes to mm-test-C-procmon-iotest.ps1
+    elseif ($phase -like 'PROCMONIO:*') {
+        $pmScript = 'D:\mm3-driver\scripts\mm-test-C-procmon-iotest.ps1'
+        if (-not (Test-Path $pmScript)) {
+            Log "ERROR: mm-test-C-procmon-iotest.ps1 not found at $pmScript"
+            "127|$nonce" | Set-Content $ResFile -Encoding ASCII
+            exit 127
+        }
+        Log "Using $pmScript"
+        try {
+            & $pmScript
+            $rc = $LASTEXITCODE
+            if ($null -eq $rc) { $rc = 0 }
+        } catch {
+            Log "Exception running mm-test-C-procmon-iotest.ps1: $_"
+            $rc = 99
+        }
+    }
     # Special phase prefix "CTRDUMP:*" routes to mm-container-dump.ps1
     elseif ($phase -like 'CTRDUMP:*') {
         $cdScript = 'D:\mm3-driver\scripts\mm-container-dump.ps1'

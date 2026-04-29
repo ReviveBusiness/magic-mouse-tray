@@ -1,6 +1,18 @@
 # Magic Utilities preserve-and-restore plan (last resort)
 
-**Status:** documented. **Use only as a last resort** if all other paths fail. Magic Utilities is a paid third-party product with a per-device-per-year subscription model. Their EULA likely prohibits redistributing or re-using the driver files outside the licensed install.
+**Status: SUPERSEDED — 2026-04-28 (Session 12)**
+
+The production path is now **M12 clean-room KMDF filter driver** (see `docs/M12-MAGIC-UTILITIES-REFERENCE-PLAN.md`). The original preserve-and-ship approach below is no longer the plan.
+
+**Reframe**: MU install is still executed — but as a **reverse-engineering reference** for M12, not as a production driver to ship. The capture script (`scripts/mm-magicutilities-capture.ps1`) and driver extraction steps remain valid. What changes is what happens after capture: we uninstall MU, write our own clean-room driver, and never ship MU's binary. See `docs/M12-MAGIC-UTILITIES-REFERENCE-PLAN.md` for the full M12 plan.
+
+**Why superseded**: Trial already expired (userland dead; driver installs but app won't run). Shipping MU's kernel binary as a production solution carries EULA risk, creates a maintenance dependency on a third-party trial artifact, and leaves no upgrade path. Building M12 from the captured material eliminates all three problems.
+
+**Historical context preserved below** for reference.
+
+---
+
+**Status (original):** documented. **Use only as a last resort** if all other paths fail. Magic Utilities is a paid third-party product with a per-device-per-year subscription model. Their EULA likely prohibits redistributing or re-using the driver files outside the licensed install.
 
 This plan documents the technical mechanism. The decision to execute it is the user's, after reviewing Magic Utilities' Terms of Service.
 
