@@ -47,8 +47,10 @@ try {
 
 # 2. Device + driver binding
 try {
+    $vidPat = 'VID' + [char]0x26 + '0001004C'
+    $pidPat = 'PID' + [char]0x26 + $mousePid
     $devices = Get-PnpDevice -Class HIDClass -PresentOnly | Where-Object {
-        $_.HardwareID -match "VID&0001004C" -and $_.HardwareID -match "PID&$mousePid"
+        $_.HardwareID -match $vidPat -and $_.HardwareID -match $pidPat
     }
     if (-not $devices) {
         Add-Result 'pnp-binding' 'FAIL' "No present BTHENUM device matches Apple Magic Mouse v3 hardware ID"
