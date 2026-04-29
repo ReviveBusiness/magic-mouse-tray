@@ -127,10 +127,6 @@ typedef struct _DEVICE_CONTEXT
     // Incremented in the OPEN_CHANNEL completion routine.
     ULONG ChannelCount;
 
-    // TRUE after g_HidDescriptor[] has been injected into the control channel ACL buffer.
-    // Reset to FALSE when ControlChannelHandle is cleared so we re-inject on reconnect.
-    BOOLEAN DescriptorInjected;
-
 } DEVICE_CONTEXT, *PDEVICE_CONTEXT;
 
 WDF_DECLARE_CONTEXT_TYPE_WITH_NAME(DEVICE_CONTEXT, GetDeviceContext)
@@ -138,10 +134,11 @@ WDF_DECLARE_CONTEXT_TYPE_WITH_NAME(DEVICE_CONTEXT, GetDeviceContext)
 // Per-request context: stash BRB pointer before WdfRequestSend so completion
 // routines recover it safely without re-reading the IRP stack location (which
 // WDF may advance past our layer before invoking our completion).
+// Note: DevCtx is intentionally absent — completion routines receive it via
+// the Context parameter passed to WdfRequestSetCompletionRoutine.
 typedef struct _MM_REQUEST_CONTEXT
 {
     PVOID Brb;
-    PDEVICE_CONTEXT DevCtx;
 } MM_REQUEST_CONTEXT, *PMM_REQUEST_CONTEXT;
 
 WDF_DECLARE_CONTEXT_TYPE_WITH_NAME(MM_REQUEST_CONTEXT, GetRequestContext)

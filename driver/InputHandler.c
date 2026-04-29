@@ -97,7 +97,6 @@ static VOID ClearChannelHandle(_Inout_ PDEVICE_CONTEXT Ctx, _In_ ULONG_PTR Handl
     if (Ctx->ControlChannelHandle == Handle)
     {
         Ctx->ControlChannelHandle = 0;
-        Ctx->DescriptorInjected = FALSE;
         if (Ctx->ChannelCount > 0)
             Ctx->ChannelCount--;
     }
@@ -209,18 +208,40 @@ static BOOLEAN ScanForSdpHidDescriptor(_In_reads_bytes_(bufSize) PUCHAR buf, _In
 
 // Replaces the embedded descriptor at descOffset (length descLen) with
 // g_HidDescriptor[]. Updates the SDP TLV length bytes at [descOffset-1],
-// [descOffset-3], [descOffset-5]. If our descriptor is larger than the
-// allocated buffer can hold, returns FALSE without modifying anything.
+// [descOffset-5], [descOffset-7]. All invariant checks are performed before
+// any buffer mutation — this function is all-or-nothing: on FALSE the buffer
+// is left completely unmodified; on TRUE the patch is fully applied.
 static BOOLEAN PatchSdpHidDescriptor(_Inout_updates_bytes_(bufSize) PUCHAR buf, _In_ ULONG bufSize,
                                      _In_ ULONG descOffset, _In_ ULONG descLen,
                                      _Out_ PULONG newBufUsed)
 {
-    if (descOffset < 6)
+    // Validate ALL invariants before any buffer mutation.
+    // descOffset >= 8 ensures [descOffset-7] is in bounds (outer SEQUENCE length byte).
+    if (descOffset < 8)
     {
         return FALSE; // not enough framing bytes before descriptor
     }
 
     ULONG newDescLen = g_HidDescriptorSize;
+
+    // Validate SDP TLV length fields fit in 1-byte length form (0x35 encoding).
+    if (newDescLen > 0xFF)
+    {
+        return FALSE;
+    }
+    ULONG innerPayload = 2 + 2 + newDescLen; // 0x08 0x22 + 0x25 LL + descriptor
+    if (innerPayload > 0xFF)
+    {
+        DbgPrint("MagicMouse: SDP patch SKIPPED - inner length overflow (%lu)\n", innerPayload);
+        return FALSE;
+    }
+    ULONG outerPayload = 2 + innerPayload; // outer SEQUENCE wraps inner SEQUENCE entry
+    if (outerPayload > 0xFF)
+    {
+        DbgPrint("MagicMouse: SDP patch SKIPPED - outer length overflow (%lu)\n", outerPayload);
+        return FALSE;
+    }
+
     ULONG tailOffset = descOffset + descLen;
     ULONG tailBytes = bufSize - tailOffset;
     ULONG newBufSize = descOffset + newDescLen + tailBytes;
@@ -233,6 +254,7 @@ static BOOLEAN PatchSdpHidDescriptor(_Inout_updates_bytes_(bufSize) PUCHAR buf, 
         return FALSE;
     }
 
+    // All invariants satisfied — now mutate the buffer.
     if (newDescLen != descLen)
     {
         ULONG newTailOffset = descOffset + newDescLen;
@@ -255,20 +277,8 @@ static BOOLEAN PatchSdpHidDescriptor(_Inout_updates_bytes_(bufSize) PUCHAR buf, 
     //   descOffset-1 : TEXT_STRING 1-byte length (0x25 NN) — NN = desc_len
     //   descOffset-5 : inner SEQUENCE 1-byte length (0x35 LL) — LL covers 08 22 25 NN <desc>
     //   descOffset-7 : outer SEQUENCE 1-byte length (0x35 LL) — LL covers inner seq entry
-    buf[descOffset - 1] = (UCHAR)newDescLen; // TEXT_STRING len (i+10)
-    ULONG innerPayload = 2 + 2 + newDescLen; // 0x08 0x22 + 0x25 LL + descriptor
-    if (innerPayload > 0xFF)
-    {
-        DbgPrint("MagicMouse: SDP patch ABORTED - inner length overflow (%lu)\n", innerPayload);
-        return FALSE;
-    }
+    buf[descOffset - 1] = (UCHAR)newDescLen;   // TEXT_STRING len (i+10)
     buf[descOffset - 5] = (UCHAR)innerPayload; // inner SEQUENCE len (i+6)
-    ULONG outerPayload = 2 + innerPayload;     // outer SEQUENCE wraps inner SEQUENCE entry
-    if (outerPayload > 0xFF)
-    {
-        DbgPrint("MagicMouse: SDP patch ABORTED - outer length overflow (%lu)\n", outerPayload);
-        return FALSE;
-    }
     buf[descOffset - 7] = (UCHAR)outerPayload; // outer SEQUENCE len (i+4)
 
     *newBufUsed = descOffset + newDescLen + tailBytes;
@@ -283,9 +293,9 @@ VOID InputHandler_AclCompletion(_In_ WDFREQUEST Request, _In_ WDFIOTARGET Target
                                 _In_ PWDF_REQUEST_COMPLETION_PARAMS Params, _In_ WDFCONTEXT Context)
 {
     UNREFERENCED_PARAMETER(Target);
+    UNREFERENCED_PARAMETER(Context);
 
     NTSTATUS status = Params->IoStatus.Status;
-    PDEVICE_CONTEXT devCtx = (PDEVICE_CONTEXT)Context;
 
     if (!NT_SUCCESS(status))
     {
@@ -345,7 +355,6 @@ VOID InputHandler_AclCompletion(_In_ WDFREQUEST Request, _In_ WDFIOTARGET Target
         return;
     }
 
-    UNREFERENCED_PARAMETER(devCtx);
     PUCHAR data = (PUCHAR)bufPtr;
 
     // -----------------------------------------------------------------------
@@ -357,7 +366,7 @@ VOID InputHandler_AclCompletion(_In_ WDFREQUEST Request, _In_ WDFIOTARGET Target
     // having to track SDP channel handles separately.
     //
     // If the pattern is found, we replace the embedded HID descriptor with
-    // g_HidDescriptor[] (113 bytes, 3 TLCs: Mouse with Wheel + Consumer
+    // g_HidDescriptor[] (111 bytes, 3 TLCs: Mouse with Wheel + Consumer
     // AC-Pan + Vendor Battery 0xFF00/0x14). HidBth then caches our descriptor
     // and creates COL01 (mouse with scroll) AND COL02 (vendor battery) child
     // PDOs — both work simultaneously.
@@ -428,8 +437,13 @@ VOID InputHandler_CloseChannelCompletion(_In_ WDFREQUEST Request, _In_ WDFIOTARG
         PVOID brb = (reqCtx != NULL) ? reqCtx->Brb : NULL;
         if (brb != NULL)
         {
-            ULONG_PTR handle = BrbReadHandle(brb, MM_BRB_CLOSE_CHANNEL_HANDLE_OFFSET);
-            ClearChannelHandle(devCtx, handle);
+            // BRB length guard: ChannelHandle is at 0x78; verify BRB covers 0x78+8.
+            ULONG brbLen = BrbReadUlong(brb, MM_BRB_LENGTH_OFFSET);
+            if (brbLen >= MM_BRB_CLOSE_CHANNEL_HANDLE_OFFSET + sizeof(ULONG_PTR))
+            {
+                ULONG_PTR handle = BrbReadHandle(brb, MM_BRB_CLOSE_CHANNEL_HANDLE_OFFSET);
+                ClearChannelHandle(devCtx, handle);
+            }
         }
     }
 
@@ -458,8 +472,13 @@ VOID InputHandler_OpenChannelCompletion(_In_ WDFREQUEST Request, _In_ WDFIOTARGE
 
         if (brb != NULL)
         {
-            ULONG_PTR handle = BrbReadHandle(brb, MM_BRB_OPEN_CHANNEL_HANDLE_OFFSET);
-            StoreChannelHandle(devCtx, handle);
+            // BRB length guard: ChannelHandle is at 0x70; verify BRB covers 0x70+8.
+            ULONG brbLen = BrbReadUlong(brb, MM_BRB_LENGTH_OFFSET);
+            if (brbLen >= MM_BRB_OPEN_CHANNEL_HANDLE_OFFSET + sizeof(ULONG_PTR))
+            {
+                ULONG_PTR handle = BrbReadHandle(brb, MM_BRB_OPEN_CHANNEL_HANDLE_OFFSET);
+                StoreChannelHandle(devCtx, handle);
+            }
         }
     }
 
@@ -492,12 +511,15 @@ VOID InputHandler_HandleBrbSubmit(_In_ WDFDEVICE Device, _In_ WDFREQUEST Request
     case BRB_L2CA_OPEN_CHANNEL_RESPONSE: {
         WDF_OBJECT_ATTRIBUTES reqAttr;
         WDF_OBJECT_ATTRIBUTES_INIT_CONTEXT_TYPE(&reqAttr, MM_REQUEST_CONTEXT);
-        if (NT_SUCCESS(WdfObjectAllocateContext(Request, &reqAttr, NULL)))
+        NTSTATUS allocStatus = WdfObjectAllocateContext(Request, &reqAttr, NULL);
+        if (!NT_SUCCESS(allocStatus))
         {
-            PMM_REQUEST_CONTEXT reqCtx = GetRequestContext(Request);
-            reqCtx->Brb = brb;
-            reqCtx->DevCtx = devCtx;
+            // Cannot track this request — degrade to pure passthrough.
+            DbgPrint("M12: context alloc failed (%x); passthrough\n", allocStatus);
+            goto passthrough;
         }
+        PMM_REQUEST_CONTEXT reqCtx = GetRequestContext(Request);
+        reqCtx->Brb = brb;
         WdfRequestFormatRequestUsingCurrentType(Request);
         WdfRequestSetCompletionRoutine(Request, InputHandler_OpenChannelCompletion, devCtx);
         if (!WdfRequestSend(Request, WdfDeviceGetIoTarget(Device), WDF_NO_SEND_OPTIONS))
@@ -513,12 +535,15 @@ VOID InputHandler_HandleBrbSubmit(_In_ WDFDEVICE Device, _In_ WDFREQUEST Request
     case BRB_L2CA_CLOSE_CHANNEL: {
         WDF_OBJECT_ATTRIBUTES reqAttr;
         WDF_OBJECT_ATTRIBUTES_INIT_CONTEXT_TYPE(&reqAttr, MM_REQUEST_CONTEXT);
-        if (NT_SUCCESS(WdfObjectAllocateContext(Request, &reqAttr, NULL)))
+        NTSTATUS allocStatus = WdfObjectAllocateContext(Request, &reqAttr, NULL);
+        if (!NT_SUCCESS(allocStatus))
         {
-            PMM_REQUEST_CONTEXT reqCtx = GetRequestContext(Request);
-            reqCtx->Brb = brb;
-            reqCtx->DevCtx = devCtx;
+            // Cannot track this request — degrade to pure passthrough.
+            DbgPrint("M12: context alloc failed (%x); passthrough\n", allocStatus);
+            goto passthrough;
         }
+        PMM_REQUEST_CONTEXT reqCtx = GetRequestContext(Request);
+        reqCtx->Brb = brb;
         WdfRequestFormatRequestUsingCurrentType(Request);
         WdfRequestSetCompletionRoutine(Request, InputHandler_CloseChannelCompletion, devCtx);
         if (!WdfRequestSend(Request, WdfDeviceGetIoTarget(Device), WDF_NO_SEND_OPTIONS))
@@ -532,12 +557,15 @@ VOID InputHandler_HandleBrbSubmit(_In_ WDFDEVICE Device, _In_ WDFREQUEST Request
     case BRB_L2CA_ACL_TRANSFER: {
         WDF_OBJECT_ATTRIBUTES reqAttr;
         WDF_OBJECT_ATTRIBUTES_INIT_CONTEXT_TYPE(&reqAttr, MM_REQUEST_CONTEXT);
-        if (NT_SUCCESS(WdfObjectAllocateContext(Request, &reqAttr, NULL)))
+        NTSTATUS allocStatus = WdfObjectAllocateContext(Request, &reqAttr, NULL);
+        if (!NT_SUCCESS(allocStatus))
         {
-            PMM_REQUEST_CONTEXT reqCtx = GetRequestContext(Request);
-            reqCtx->Brb = brb;
-            reqCtx->DevCtx = devCtx;
+            // Cannot track this request — degrade to pure passthrough.
+            DbgPrint("M12: context alloc failed (%x); passthrough\n", allocStatus);
+            goto passthrough;
         }
+        PMM_REQUEST_CONTEXT reqCtx = GetRequestContext(Request);
+        reqCtx->Brb = brb;
         WdfRequestFormatRequestUsingCurrentType(Request);
         WdfRequestSetCompletionRoutine(Request, InputHandler_AclCompletion, devCtx);
         if (!WdfRequestSend(Request, WdfDeviceGetIoTarget(Device), WDF_NO_SEND_OPTIONS))

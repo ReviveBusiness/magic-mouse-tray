@@ -6,7 +6,7 @@
 // Reads BRB_HEADER.Type from the BRB at Parameters.Others.Argument1 and dispatches:
 //   BRB_L2CA_OPEN_CHANNEL / OPEN_CHANNEL_RESPONSE → forward + completion to store handle
 //   BRB_L2CA_CLOSE_CHANNEL → read and clear stored handle, forward
-//   BRB_L2CA_ACL_TRANSFER  → forward + completion to intercept/translate data buffer
+//   BRB_L2CA_ACL_TRANSFER  → forward + completion to intercept/scan+patch SDP data buffer
 //   All others             → pass through (send-and-forget)
 VOID InputHandler_HandleBrbSubmit(_In_ WDFDEVICE Device, _In_ WDFREQUEST Request);
 
