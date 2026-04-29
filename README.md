@@ -115,6 +115,52 @@ Key log lines:
 - `TOAST_SENT` — notification fired
 - `CRITICAL_ALERT_SHOWN` — 1% persistent window shown
 
+## M12 Driver Status
+
+The tray app (Milestones 1-8) ships as a standalone .exe. The M12 KMDF kernel
+driver (Milestone 12) is under active development and will deliver simultaneous
+scroll + battery support without Magic Mouse Utilities.
+
+| Artifact | Status | Notes |
+|----------|--------|-------|
+| Design spec (M12-DESIGN-SPEC.md v1.8) | In PR #14 -- pending approval | BRB-level BTHENUM LowerFilter architecture |
+| PRD-184 v1.33 | In PR #190 -- pending approval | D-S12-01..71 decisions |
+| Phase 2.5 bundle (toolchain) | PR #15 -- CRIT fixes applied | mm-task-runner, PREfast, SDV, style linter |
+| Phase 3 (KMDF driver code) | Not started -- pending PRD approval | DRIVER-1 through DRIVER-5 + DOC-1 + TEST-1 |
+
+**Signing model** (once Phase 3 ships): self-signed cert (CN=M12-Driver)
+installed into LocalMachine\TrustedPublisher via `scripts/install-m12-trust.ps1`
+(admin, one-time). No F7 boot flag required for personal use.
+
+## Quick Install (pending Phase 3)
+
+Phase 3 is not yet merged. When it ships:
+
+```powershell
+# 1. Trust the signing cert (admin, one-time)
+.\scripts\install-m12-trust.ps1
+
+# 2. Install the driver
+.\scripts\install-m12.ps1
+
+# 3. Verify both COL01 + COL02 Status=OK
+Get-PnpDevice | Where-Object { $_.FriendlyName -like "*Apple*" }
+```
+
+Until Phase 3 ships, use the manual scroll fix in "Scroll Not Working?" above.
+
+## Key Documentation
+
+| Document | Purpose |
+|----------|---------|
+| [docs/M12-DESIGN-SPEC.md](docs/M12-DESIGN-SPEC.md) | M12 driver architecture |
+| [docs/M12-MOP.md](docs/M12-MOP.md) | Install/uninstall procedure |
+| [docs/KNOWN-ISSUES.md](docs/KNOWN-ISSUES.md) | Known limitations + workarounds |
+| [docs/PRIVACY-POLICY.md](docs/PRIVACY-POLICY.md) | Data collection policy |
+| [CHANGELOG.md](CHANGELOG.md) | Release history |
+| [NOTICE](NOTICE) | Third-party attributions |
+| [PSN-0001-hid-battery-driver.yaml](PSN-0001-hid-battery-driver.yaml) | HID driver research notes |
+
 ## License
 
 MIT

@@ -1,0 +1,81 @@
+Magic Mouse Battery Tray
+Copyright (c) 2026 Lesley Murfin / Revive Business Solutions
+
+This software is licensed under the MIT License.
+See the LICENSE file for the full license text.
+
+---
+
+THIRD-PARTY ATTRIBUTIONS
+
+The following third-party materials were referenced during development.
+None are included in this distribution. All are cited for attribution only.
+
+---
+
+1. Microsoft KMDF Driver Samples
+   Source: https://github.com/microsoft/Windows-driver-samples
+   License: MIT
+   Used: firefly.c (DriverEntry/EvtDriverDeviceAdd patterns),
+         kbfiltr/moufiltr (lower-filter installation patterns),
+         bthhid sample (BRB completion routine reference).
+   Note: Driver code structure follows Microsoft sample conventions.
+   No Microsoft sample source is copied verbatim; the patterns are
+   referenced as architectural guides.
+
+2. Linux hid-magicmouse.c
+   Source: https://github.com/torvalds/linux
+   Path: drivers/hid/hid-magicmouse.c
+   License: GPL-2.0-only
+   Used: Read-only algorithm reference for Report ID 0x12 (multi-touch
+   report) byte layout and scroll translation logic. The Linux implementation
+   provided the field offsets (X, Y, touch size, tracking ID, touch state)
+   used to design M12's InputHandler.c. No GPL source is copied or linked
+   into this distribution. M12 is an independently-written Windows kernel
+   driver that implements equivalent functionality under MIT license.
+
+3. MagicMouse2DriversWin11x64 (applewirelessmouse.sys)
+   Source: https://github.com/tealtadpole/MagicMouse2DriversWin11x64
+   (also distributed as AppleWirelessMouse64 in Apple Boot Camp packages)
+   Used: Architectural baseline reference. The INF hardware ID list and
+   device topology (BTHENUM HID COL01/COL02 split) were studied as the
+   reference implementation for understanding the Windows HID stack for
+   Apple Magic Mouse. The driver binary is not redistributed.
+   Note: Apple is the original author. The tealtadpole distribution adds
+   PID 0x0323 support to the original Boot Camp INF.
+
+4. applewirelessmouse.sys (original Apple Inc.)
+   The binary at offset 0xa850 (116-byte HID descriptor) was analyzed
+   via Ghidra for byte layout reference. No Apple proprietary code is
+   included in this distribution.
+
+5. MagicUtilities / MagicMouse.sys
+   Source: https://magicutilities.net (Rain9333)
+   Used: Reverse-engineering reference only, under DMCA 17 U.S.C. ss 1201(f)
+   (interoperability exception), Canada Copyright Act ss 30.61, and EU
+   Software Directive 2009/24/EC Article 6. The analysis was conducted to
+   understand KMDF API usage patterns, BRB interception, and HID descriptor
+   mutation techniques for the purpose of building an interoperable
+   independent implementation (M12). The MagicUtilities binary is not
+   redistributed. No MagicUtilities source is copied.
+
+6. WDK / EWDK (Windows Driver Kit / Enterprise WDK)
+   Source: https://learn.microsoft.com/windows-hardware/drivers/
+   License: Microsoft Software License Terms (build tools only)
+   Used: Build environment (EWDK 25H2, Build 26100.6584) for compiling
+   and verifying the M12 kernel driver. The EWDK build toolchain is not
+   redistributed; it is a development-time dependency only.
+
+7. WinMagicBattery
+   Source: https://github.com/hank1101444/WinMagicBattery
+   License: MIT
+   Used: Confirmed the HID Input Report 0x90 battery reading approach
+   (COL02 collection, byte[2] = battery %) as a working pattern on
+   Windows. No code is copied; the project validated the feasibility of
+   the approach used in MagicMouseTray.
+
+---
+
+All trademarks are the property of their respective owners.
+"Apple", "Magic Mouse", and "Boot Camp" are trademarks of Apple Inc.
+"Windows" and "Windows Driver Kit" are trademarks of Microsoft Corporation.
