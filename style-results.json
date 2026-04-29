@@ -1,0 +1,76 @@
+{
+  "timestamp": "2026-04-29 01:14 MDT",
+  "files_checked": 1,
+  "verdict": "FAIL",
+  "counts": {
+    "REJECT": 4,
+    "FLAG": 5,
+    "WARN": 0,
+    "total": 9
+  },
+  "violations": [
+    {
+      "file": "BadSample.c",
+      "check": "comment-density",
+      "severity": "REJECT",
+      "line": "-",
+      "detail": "Comment ratio 45.5% exceeds 25% limit (5 comment lines / 11 total). Microsoft samples run 5-15%."
+    },
+    {
+      "file": "BadSample.c",
+      "check": "todo-fixme",
+      "severity": "REJECT",
+      "line": "1",
+      "detail": "Found marker in code: //,TODO:,finish,this. Open a tracked issue instead."
+    },
+    {
+      "file": "BadSample.c",
+      "check": "todo-fixme",
+      "severity": "REJECT",
+      "line": "2",
+      "detail": "Found marker in code: //,FIXME:,needs,proper,pool,tag. Open a tracked issue instead."
+    },
+    {
+      "file": "BadSample.c",
+      "check": "generic-name",
+      "severity": "FLAG",
+      "line": "3",
+      "detail": "Generic identifier 'helper' detected. Use domain-specific WDF/HID terms (reqContext, devCtx, batteryStatus, etc.)."
+    },
+    {
+      "file": "BadSample.c",
+      "check": "generic-name",
+      "severity": "FLAG",
+      "line": "6",
+      "detail": "Generic identifier 'helper' detected. Use domain-specific WDF/HID terms (reqContext, devCtx, batteryStatus, etc.)."
+    },
+    {
+      "file": "BadSample.c",
+      "check": "generic-name",
+      "severity": "FLAG",
+      "line": "7",
+      "detail": "Generic identifier 'util' detected. Use domain-specific WDF/HID terms (reqContext, devCtx, batteryStatus, etc.)."
+    },
+    {
+      "file": "BadSample.c",
+      "check": "generic-name",
+      "severity": "FLAG",
+      "line": "9",
+      "detail": "Generic identifier 'buffer' detected. Use domain-specific WDF/HID terms (reqContext, devCtx, batteryStatus, etc.)."
+    },
+    {
+      "file": "BadSample.c",
+      "check": "generic-name",
+      "severity": "FLAG",
+      "line": "10",
+      "detail": "Generic identifier 'var' detected. Use domain-specific WDF/HID terms (reqContext, devCtx, batteryStatus, etc.)."
+    },
+    {
+      "file": "BadSample.c",
+      "check": "clang-format",
+      "severity": "REJECT",
+      "line": "-",
+      "detail": "clang-format reports formatting violations. Run: clang-format --style={BasedOnStyle: Microsoft, IndentWidth: 4, ColumnLimit: 100, AllowShortIfStatementsOnASingleLine: false, AllowShortLoopsOnASingleLine: false, DerivePointerAlignment: false, PointerAlignment: Right, SortIncludes: false} -i BadSample.c. Output: No such file or directory; No such file or directory; No such file or directory; No such file or directory; No such file or directory; No such file or directory; No such file or directory; No such file or directory; No such file or directory; No such file or directory; No such file or directory; No such file o"
+    }
+  ]
+}
