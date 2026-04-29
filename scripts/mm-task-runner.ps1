@@ -140,11 +140,11 @@ try {
             $passArgs = if ($pfxPass) { @('/p', $pfxPass) } else { @() }
             try {
                 "=== Sign $sysPath ===" | Set-Content $signLog -Encoding ASCII
-                & $signtool sign /fd sha256 /t $tsUrl /f $pfxPath @passArgs $sysPath 2>&1 | Add-Content $signLog -Encoding ASCII
+                & $signtool sign /fd sha256 /tr $tsUrl /td sha256 /f $pfxPath @passArgs $sysPath 2>&1 | Add-Content $signLog -Encoding ASCII
                 $rc = $LASTEXITCODE
                 if ($null -eq $rc) { $rc = 0 }
                 "=== Sign $catPath ===" | Add-Content $signLog -Encoding ASCII
-                & $signtool sign /fd sha256 /t $tsUrl /f $pfxPath @passArgs $catPath 2>&1 | Add-Content $signLog -Encoding ASCII
+                & $signtool sign /fd sha256 /tr $tsUrl /td sha256 /f $pfxPath @passArgs $catPath 2>&1 | Add-Content $signLog -Encoding ASCII
                 $rc2 = $LASTEXITCODE
                 if ($null -eq $rc2) { $rc2 = 0 }
                 if ($rc -eq 0) { $rc = $rc2 }
