@@ -1,9 +1,9 @@
 # M12 Design Specification
 
-**Status:** v1.5 — DRAFT pending user approval (v1.4 + two supplement briefs folded in)
+**Status:** v1.6 — DRAFT pending user approval (v1.5 + three final additions folded in)
 **License:** MIT (Copyright (c) 2026 Lesley Murfin / Revive Business Solutions)
 **Date:** 2026-04-28
-**Linked PRD:** PRD-184 v1.30
+**Linked PRD:** PRD-184 v1.31
 **Linked PSN:** PSN-0001 v1.9
 **Linked NLM pass-1:** `docs/M12-DESIGN-PEER-REVIEW-NOTEBOOKLM-2026-04-28.md`
 **Linked NLM pass-2:** `docs/M12-DESIGN-PEER-REVIEW-NOTEBOOKLM-PASS2-2026-04-28.md`
@@ -13,6 +13,7 @@
 
 ## Revision history
 
+- **v1.6 (2026-04-28, final additions iteration):** Three final additions folded in. (a) Section 6c: Self-tuning battery offset detection -- on first install (BatteryByteOffset unset or 0xFF), driver enters LEARNING mode, captures up to 100 RID=0x27 frames over 5 minutes, identifies the byte position whose values cluster in [1..65] with low variance, writes result to CRD config, exits LEARNING mode. Removes manual DebugLevel=4 step for typical case. CRD additions: BatteryByteOffset REG_DWORD (0xFFFFFFFF = auto-learn), LearningModeFramesRequired (default 100), LearningModeMaxDurationSec (default 300). LEARNING_STATE struct added to DEVICE_CONTEXT. ~50 LOC additional. Decision D-S12-52. (b) docs/PRIVACY-POLICY.md: M12 collects nothing; all logging local-only; no network; no telemetry. Table of log channels (WPP/ETW + DebugLevel=4 + self-tuning state), all user-controlled or in-memory only. How to disable. Companion tray app noted as separate PRD. MIT license noted. Linked from README and KNOWN-ISSUES. Decision D-S12-53. (c) KNOWN-ISSUES.md: AV/EDR flag entry added -- kernel filter driver flagged by Defender/CrowdStrike/SentinelOne; workaround: whitelist M12.sys + INF in Defender/EDR; verify signature; corporate IT path. Safety rationale (open-source, MIT, no network, no persistence beyond service registry, test-signed). Decision D-S12-54. NLM pass-6 SKIPPED per playbook v1.8 cap (no architectural changes -- documentation additions only).
 - **v1.5 (2026-04-28, supplement fold-in iteration):** Two supplement briefs folded in that v1.4 did not have access to. (a) `M12-V14-SUPPLEMENT-USER-DECISIONS.md` — auto-reinit on wake (Section 5 addition: `EvtDeviceD0Entry` resets shadow staleness flag + optionally re-issues GET_REPORT for RID=0x27 if mouse responsive; IN v1 scope); battery polling fallback (Section 6 addition: if `last_rid27_timestamp > 60s`, issue explicit BTHID GET_REPORT for RID=0x27 before completing Feature 0x47 query; IN v1 scope); PREfast static analyzer GATING for ship (Section 20); Static Driver Verifier GATING for ship (Section 20); power-saver aggressive defaults SuspendOnDisplayOff=1 + SuspendOnACUnplug=1 (Section 17 defaults table updated); click handling explicitly v2 milestone (Section 16); watchdog 30s/120s confirmed documented. MIT license added to metadata. (b) `M12-V14-UPSTREAM-ISSUES-LESSONS.md` — `.gitattributes` CRLF enforcement for driver source tree (Section 20 addition; driver/.gitattributes content in docs/M12-PHASE-3-PREP.md); KNOWN-ISSUES.md with 6 entries created (docs/KNOWN-ISSUES.md); INSTALL.md testsigning section noted (MOP Section 3a already covers this). NLM pass-5 SKIPPED — per playbook v1.8 cap, v1.5 is the final design ship; corpus-gap REJECT-downgrade will not change with another pass. v1.5 changelog table below.
 - **v1.4 (2026-04-28, brief fold-in iteration):** Three briefs folded in that v1.3 did not have access to. (a) `M12-DSM-PNP-CONCERNS-FOR-V1.3.md` — declares INF `DriverVer = 01/01/2027, 1.0.0.0` to win PnP rank against `applewirelessmouse` (04/21/2026, 6.2.0.0) and Magic Utilities (11/05/2024, 3.1.5.3); adds service entry hygiene (`sc.exe delete MagicMouseM12` on uninstall + stale-service detection at install); BTHPORT cache invalidation alternatives (registry delete vs unpair-repair); orphan LowerFilter walk reference; coexistence rank table. (b) `M12-POWER-SAVER-DESIGN.md` — power saver / suspend modes IN v1 scope per user direction 2026-04-28; PoRegisterCallback for display state, AC/DC, sleep, sign-out; vendor suspend command marked as OPEN QUESTION with three resolution paths; passive wake on click; manual suspend custom IOCTL `IOCTL_M12_SUSPEND` METHOD_BUFFERED admin-SDDL; CRD `PowerSaver\` config subkey schema; defaults SuspendOnSignOut=1, SuspendOnSleep=1, SuspendOnShutdown=1, others=0. (c) `M12-PRODUCTION-HYGIENE-FOR-V1.3.md` — WPP/ETW provider declared (levels ERROR/WARNING/INFO/VERBOSE; flags PNP/IO/SHADOW_BUFFER/POWER/IOCTL); per-DEVICE_CONTEXT shadow buffer + spinlock confirmed (multi-mouse safe); F15-F18 disconnect/reconnect failure modes added; Driver Verifier flags expanded to `0x49bb`; IOCTL input validation contract (METHOD_BUFFERED + range checks + admin SDDL); test plan in new `docs/M12-TEST-PLAN.md`; build system = msbuild + EWDK 25H2 (decision documented); compatibility matrix Win11 22H2-25H2 x64 (Win10 + ARM64 deferred); coexistence story; pool tag `'M12 '` + structure signature `'M12-'`; watchdog (30s tick, 120s stall threshold); logging policy DebugLevel 0-4 (default 0; 4 only for empirical-offset workflow). New sections 15-25 added; sections 4 + 11 + 12 + 16 patched. v1.4 changelog table below. NLM pass-4 verdict at `docs/M12-DESIGN-PEER-REVIEW-NOTEBOOKLM-PASS4-2026-04-28.md`.
 - **v1.3 (2026-04-28, post-NLM-pass-3 patches inline):** Pass-3 ran against v1.3 and surfaced two CHANGES-NEEDED items, both documentation-quality fixes (not architectural). Patched in place: (a) `MAX_STALE_MS` default changed from 10000 to **0 (disabled)** — 10-sec default would force NOT_READY whenever mouse is asleep (~2 min idle), severe UX regression. Operator can opt-in to non-zero. (b) BRB TLV parser safety requirements expanded in Section 3b' to mandatory subsections a-g: MDL bounds, TLV walk bounds with abandon-on-failure, no-expansion-beyond-BufferLen, no-length-form-upgrade, recursive-parser, Driver Verifier special-pool catch. Pass-3 verdict at `docs/M12-DESIGN-PEER-REVIEW-NOTEBOOKLM-PASS3-2026-04-28.md`. Per playbook iteration cap, no v1.4 — v1.3 with these inline patches is the final design ship.
@@ -110,6 +111,18 @@ NLM pass-4 verdict: see `docs/M12-DESIGN-PEER-REVIEW-NOTEBOOKLM-PASS4-2026-04-28
 ### v1.5 design ship rationale (NLM pass-5 SKIPPED)
 
 NLM pass-5 is skipped per playbook v1.8 cap. The v1.4 pass-4 verdict already applied the adversarial-downgrade template that converts corpus-gap REJECTs to CHANGES-NEEDED. Running pass-5 against a supplement that contains only scope confirmation, defaults changes, and documentation additions will not produce new architectural findings. v1.5 ships as the final design approval target.
+
+### v1.6 changelog (final additions -> section)
+
+| Addition | Section addressed | Resolution |
+|---|---|---|
+| Self-tuning battery offset detection (~50 LOC) | Sec 6c (new) | LEARNING mode state machine in DEVICE_CONTEXT; captures up to 100 RID=0x27 frames; identifies candidate byte by value-range [1..65] + low variance; writes to CRD BatteryByteOffset; exits LEARNING. Three new CRD REG_DWORD keys. Removes manual DebugLevel=4 step for typical install. D-S12-52. |
+| Privacy policy document | docs/PRIVACY-POLICY.md (new) | M12 collects nothing; all logging local-only; no network; no telemetry. Table: WPP/ETW (opt-in capture), DebugLevel=4 hex dumps (OFF by default), self-tuning state (in-memory only, written once to CRD config). How to disable all logging. D-S12-53. |
+| AV/EDR known-issue entry | docs/KNOWN-ISSUES.md (appended) | Kernel filter flagged by Defender/CrowdStrike/SentinelOne; whitelist path; signature verify; corporate IT path; safety rationale (open-source, MIT, no network, test-signed). D-S12-54. |
+
+### v1.6 design ship rationale (NLM pass-6 SKIPPED)
+
+NLM pass-6 is skipped per playbook v1.8 cap. v1.6 additions are documentation-only (one new code section ~50 LOC, one new doc file, one appended entry) -- no new architectural surfaces, no IRP paths, no kernel-mode mutation. Corpus-gap REJECT-downgrade is permanent at this point per playbook v1.8.
 
 ---
 
@@ -554,6 +567,57 @@ if (!dctx->Shadow.Valid || age_ms > 60000) {
 The `M12_PrimeShadowBufferSync` helper is a synchronous variant with a 500ms timeout. It serialises with the shadow spinlock identically to the normal OnReadComplete completion routine. Estimated ~80 LOC for this path.
 
 `COLD_SHADOW_THRESHOLD_MS` is registry-tunable at `HKLM\SYSTEM\CurrentControlSet\Services\MagicMouseM12\Parameters\ColdShadowThresholdMs` (REG_DWORD, default 60000 = 60s).
+
+### 6c. Self-tuning battery offset detection (v1.6 -- IN v1 scope per user decision D-S12-52)
+
+On `EvtDriverDeviceAdd`, M12 reads `BatteryByteOffset` from CRD config:
+- If unset (key absent), OR set to magic sentinel value `0xFFFFFFFF`: enter LEARNING mode.
+- If set to valid value in [0..45]: enter NORMAL mode (skip learning).
+
+This removes the manual DebugLevel=4 step for the typical case: user installs, M12 self-detects the offset, battery just works. Manual override always available via registry.
+
+#### LEARNING_STATE struct (added to DEVICE_CONTEXT):
+
+```c
+typedef struct _LEARNING_STATE {
+    BOOLEAN  LearningActive;
+    UINT32   FramesCaptured;
+    UINT8    ByteUniqueValues[46][66]; // bitmap: byte_position -> set of values seen
+    UINT8    ByteUniqueCount[46];      // count of unique values per byte position
+    LARGE_INTEGER FirstCaptureTime;    // KeQuerySystemTime at first frame
+} LEARNING_STATE;
+```
+
+#### Learning mode algorithm:
+
+1. `LearningActive = TRUE` at `EvtDriverDeviceAdd` when BatteryByteOffset is absent or 0xFFFFFFFF.
+2. On every RID=0x27 input report received (in the OnReadComplete tap path):
+   - For each byte position `b` in [0..45]:
+     - Set `ByteUniqueValues[b][payload[b]] = 1`.
+     - Recount `ByteUniqueCount[b]` from bitmap popcount.
+   - Increment `FramesCaptured`.
+3. After `LearningModeFramesRequired` captured frames OR `LearningModeMaxDurationSec` elapsed:
+   - Find candidate bytes meeting ALL of:
+     - All values seen so far fall in [1..65] (matches Logical Min/Max declared for battery).
+     - Low variance: `ByteUniqueCount[b] <= 5`.
+     - Position not in the 0x47-area false-positive range (skip bytes that show constant 0x47).
+   - If exactly one candidate: write `BatteryByteOffset` to CRD config; exit LEARNING mode; log via WPP INFO.
+   - If multiple candidates: write best candidate (lowest `ByteUniqueCount`, most plausible position) + flag ambiguous via WPP WARNING; exit LEARNING mode.
+   - If zero candidates: fall back to `BATTERY_OFFSET = 0` (first byte); log WPP WARNING; note user can verify via DebugLevel=4 manual workflow.
+4. Exit LEARNING mode; future Feature 0x47 reads use the detected or default offset.
+
+#### CRD config additions:
+
+```
+HKLM\SYSTEM\CurrentControlSet\Services\MagicMouseM12\Devices\<HardwareKey>\
+    BatteryByteOffset      REG_DWORD  (absent or 0xFFFFFFFF = auto-learn; [0..45] = fixed)
+    LearningModeFramesRequired  REG_DWORD  (default 100; how many frames before deciding)
+    LearningModeMaxDurationSec  REG_DWORD  (default 300; cap learning time in seconds)
+```
+
+`BATTERY_OFFSET` (the existing per-Parameters tunable) continues to function as an explicit override that bypasses learning entirely. Reading order: if `BatteryByteOffset` in CRD is a valid [0..45] value, use it; else use learning (or `BATTERY_OFFSET` parameter if set as a legacy override).
+
+Estimated ~50 LOC for the LEARNING_STATE management path. The bitmap approach (46 * 66 bytes = ~3 KB per device, stack-allocated in DEVICE_CONTEXT) avoids dynamic allocation in the hot path.
 
 ---
 

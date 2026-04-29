@@ -1,10 +1,10 @@
 # M12 Method of Procedure (MOP)
 
-**Status:** v1.5 — DRAFT pending user approval (v1.4 + supplement briefs folded in)
+**Status:** v1.6 — DRAFT pending user approval (v1.5 + three final additions folded in)
 **Date:** 2026-04-28
-**Linked design:** `docs/M12-DESIGN-SPEC.md` v1.5
-**Linked test plan:** `docs/M12-TEST-PLAN.md` v1.0
-**Linked PRD:** PRD-184 v1.30
+**Linked design:** `docs/M12-DESIGN-SPEC.md` v1.6
+**Linked test plan:** `docs/M12-TEST-PLAN.md` v1.1
+**Linked PRD:** PRD-184 v1.31
 **Linked NLM pass-1:** `docs/M12-DESIGN-PEER-REVIEW-NOTEBOOKLM-2026-04-28.md`
 **Linked NLM pass-2:** `docs/M12-DESIGN-PEER-REVIEW-NOTEBOOKLM-PASS2-2026-04-28.md`
 **Linked NLM pass-3:** `docs/M12-DESIGN-PEER-REVIEW-NOTEBOOKLM-PASS3-2026-04-28.md`
@@ -14,6 +14,7 @@
 
 ## Revision history
 
+- **v1.6 (2026-04-28):** Aligned to design spec v1.6. Added: (a) VG-14: self-tuning verification -- install on fresh machine, wait 5 min of mouse usage, check WPP log for "self-tuning detected offset N" entry, verify Feature 0x47 returns plausible battery percentage. (b) Sign-off checklist item PRIVACY-1: Privacy Policy reviewed and current. (c) AV/EDR known-issue documented in docs/KNOWN-ISSUES.md (no MOP gate required; documentation only). Test plan linked version bumped v1.0 -> v1.1.
 - **v1.5 (2026-04-28):** Aligned to design spec v1.5. Added: (a) CRITICAL testsigning prerequisite block at top of BLUF (Section 1) — upstream issue #1 analysis shows this is the most common install blocker. (b) VG-12: auto-reinit-on-wake test — sleep cycle, confirm shadow refresh after wake. (c) VG-13: battery-polling-fallback test — force shadow stale by disconnect, query Feature 0x47, confirm GET_REPORT issued. (d) BUILD-5 (v1.5): PREfast gate — verify build output shows "0 Code Analysis warnings". (e) BUILD-6 (v1.5): SDV gate — verify sdv-report.xml shows "0 defects" before signing. (f) Pre-build line-endings check (git ls-files --eol). PowerSaver defaults updated: SuspendOnDisplayOff=1, SuspendOnACUnplug=1. Sign-off checklist expanded with v1.5 gates.
 - **v1.4 (2026-04-28):** Aligned to design spec v1.4. Service name changed to `MagicMouseM12` (was bare `M12` in v1.3) per DSM Issue 5 (avoid namespace collision). Pre-install Sec 7a expanded: DriverVer rank-loss detection (DSM Issue 1), stale-service detection (Issue 5), DriverStore staged-package cleanup (Issue 6). Post-install Sec 7d expanded: registry-binding verification via `reg query` (Issue 1) + orphan-filter walk (Issue 7). Section 7c-pre Path A documented (registry cache flush, faster than UI unpair). Rollback Sec 8b explicit `sc.exe delete MagicMouseM12` order (Issue 5). NEW gates: VG-8 power-saver functional test (display-off / AC-unplug / sign-out / sleep / shutdown — verify mouse suspends + wakes on click), VG-9 battery-saving 24-hr measurement, VG-10 multi-mouse simultaneous read-out, VG-11 Driver Verifier 0x49bb soak (1000 IOCTL cycles + 100 pair/unpair). NEW failure-mode entries F23-F27 from design spec. Sign-off checklist updated. Bumped to v1.4.
 - **v1.3 (2026-04-28):** Aligned to design spec v1.3 (PID branch restored + BRB descriptor rewriter restored). VG-0 dual-state pass condition added (Descriptor B in cache OR Descriptor A + DescriptorBRewritten flag set). VG-1 v1 baseline now exercises NATIVE Feature 0x47 path, not M12 short-circuit — failure here means M12 broke the pass-through (regression in INF binding or queue forwarding). New optional MAX_STALE_MS registry tunable documented. Soft active-poll noted as future work (OQ-D).
@@ -968,6 +969,46 @@ Reset: `Set-ItemProperty -Path $svcParams -Name DebugLevel -Value 0 -Type DWord`
 
 ---
 
+### VG-14: Self-tuning battery offset detection (NEW v1.6 -- self-tuning feature D-S12-52)
+
+Validates that on a fresh install (BatteryByteOffset absent or 0xFFFFFFFF), the driver enters LEARNING mode, captures frames, selects the offset, writes to CRD config, and logs the result.
+
+```pwsh
+# Step 1: ensure fresh LEARNING mode by removing BatteryByteOffset from CRD config
+$crdPath = "HKLM:\SYSTEM\CurrentControlSet\Services\MagicMouseM12\Devices\<HardwareKey>"
+Remove-ItemProperty -Path $crdPath -Name BatteryByteOffset -ErrorAction SilentlyContinue
+
+# Step 2: set DebugLevel=3 to capture LEARNING events
+Set-ItemProperty -Path $svcParams -Name DebugLevel -Value 3 -Type DWord
+
+# Step 3: PnP cycle to trigger EvtDriverDeviceAdd (reads BatteryByteOffset, enters LEARNING)
+pnputil /disable-device $v3Inst
+Start-Sleep -Seconds 2
+pnputil /enable-device $v3Inst
+
+# Step 4: use the mouse normally for 5 minutes
+# (or use the test harness to inject synthetic RID=0x27 frames if hardware is not available)
+Write-Host "Use the mouse for 5 minutes, then check the log..."
+Start-Sleep -Seconds 300
+
+# Step 5: check WPP log for self-tuning decision
+Get-Content "$env:APPDATA\MagicMouseTray\debug.log" -Tail 30 |
+    Select-String "self-tuning detected|LearningMode|BatteryByteOffset"
+
+# Step 6: verify CRD config was written
+Get-ItemProperty -Path $crdPath -Name BatteryByteOffset
+```
+
+**Gate VG-14:** After 5 minutes of normal mouse use (or 100 RID=0x27 synthetic frames):
+- WPP log shows `self-tuning detected offset N` where N is in [0..45].
+- CRD registry key `BatteryByteOffset` is present at the detected offset value.
+- Subsequent Feature 0x47 query returns plausible battery percentage (not `STATUS_DEVICE_NOT_READY` and not 0% / 100% stuck).
+- If zero candidates detected: WPP shows warning + fallback to offset 0; tray shows N/A until VG-4 manual override applied (acceptable degradation path).
+
+Reset: `Set-ItemProperty -Path $svcParams -Name DebugLevel -Value 0 -Type DWord`
+
+---
+
 ## 10. Health checks
 
 ### 10a. BSOD watch
@@ -1087,6 +1128,8 @@ Should be stable or trending — sustained growth = leak.
 [ ] VG-11 (v1.4): Driver Verifier 0x49bb soak: 1000 IOCTL + 100 pair/unpair = 0 violations
 [ ] VG-12 (v1.5): auto-reinit-on-wake: shadow invalidated + battery read OK within 60s post-wake
 [ ] VG-13 (v1.5): battery-polling-fallback: cold shadow triggers GET_REPORT; no deadlock
+[ ] VG-14 (v1.6): self-tuning offset: WPP log shows "self-tuning detected offset N" within 5 min of use; Feature 0x47 returns plausible percentage
+[ ] PRIVACY-1 (v1.6): docs/PRIVACY-POLICY.md reviewed and current; no network connections added since last review
 [ ] HEALTH-10a:   no BSOD events in System log
 [ ] HEALTH-10d:   service state RUNNING throughout
 

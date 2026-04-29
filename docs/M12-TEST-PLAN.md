@@ -1,10 +1,10 @@
 # M12 Test Plan
 
-**Status:** v1.0 — DRAFT (paired with design spec v1.4)
+**Status:** v1.1 — DRAFT (paired with design spec v1.6)
 **Date:** 2026-04-28
-**Linked design:** `docs/M12-DESIGN-SPEC.md` v1.4
-**Linked MOP:** `docs/M12-MOP.md` v1.4
-**Source brief:** `docs/M12-PRODUCTION-HYGIENE-FOR-V1.3.md` item 6
+**Linked design:** `docs/M12-DESIGN-SPEC.md` v1.6
+**Linked MOP:** `docs/M12-MOP.md` v1.6
+**Source brief:** `docs/M12-PRODUCTION-HYGIENE-FOR-V1.3.md` item 6; v1.6 additions: self-tuning offset detection (MOP VG-14)
 
 ## BLUF
 
@@ -26,6 +26,7 @@ Per-test-class scope, tooling, gating threshold, and frequency for M12 driver va
 | 10 | Soak (24h) | All paths over time on real hardware | Cron-driven Feature 0x47 reads + 3 sleep/wake cycles + AC plug/unplug + sign-in/out cycles | Sustained `OK battery` reads (>= 12 in 24h); zero BSOD; zero `err=` log entries | Pre-release gate |
 | 11 | Soak (72h) | Battery drift accuracy | Capture battery percentage every 30 min for 72h with mouse in normal use | Reported % drops monotonically (modulo charge events) over the window; no >5% jumps without corresponding charge event | Pre-release gate |
 | 12 | Compatibility matrix | Build + smoke-test on each supported OS | EWDK build + `pnputil /add-driver` + VG-0 + VG-1 + VG-2 on each OS in matrix (Sec 21) | Pass all three gates per OS | Per-release |
+| 13 | Self-tuning offset detection (MOP VG-14) | LEARNING mode from fresh install to offset detection; CRD config written correctly | (a) Hardware path: install on machine with no prior BatteryByteOffset, use mouse normally for 5 min, verify WPP log shows "self-tuning detected offset N" and CRD key written. (b) Synthetic path: inject 100 synthetic RID=0x27 frames via `IOCTL_M12_TEST_INJECT` (DBG-build) with known byte N carrying values in [1..65]; assert detected offset == N. | Synthetic: detected offset matches injected byte in all test vectors. Hardware: WPP log entry present; CRD key written; Feature 0x47 returns plausible %. | Pre-release gate |
 
 ## Test ordering
 
@@ -34,7 +35,7 @@ For a release candidate:
 1. **Pre-commit (developer machine)**: tests 1, 2, 4. Block on failure.
 2. **CI (every push)**: tests 1, 2, 3, 4. Block on failure.
 3. **Pre-merge**: tests 5, 6, 7. Block on failure.
-4. **Pre-release**: tests 8, 9, 10, 11, 12 in that order. All must pass for release.
+4. **Pre-release**: tests 8, 9, 10, 11, 12, 13 in that order. All must pass for release.
 
 ## Tooling
 
@@ -44,6 +45,7 @@ For a release candidate:
 | Driver-loaded test mode | DBG-build only; `IOCTL_M12_TEST_*` codes | Race tests 5, 6 |
 | Driver Verifier | Built-in Windows | Tests 7, 8 |
 | Automated install harness | `scripts/test-cycle.ps1` | Test 8 (100x install/test/uninstall) |
+| Frame injection harness | DBG-build `IOCTL_M12_TEST_INJECT` | Test 13 (synthetic self-tuning) |
 | MOP procedure | `docs/M12-MOP.md` | Test 9 |
 | Cron soak harness | `scripts/soak-24h.ps1`, `scripts/soak-72h.ps1` | Tests 10, 11 |
 | Per-OS VM matrix | Hyper-V or VMware images of Win11 22H2/23H2/24H2/25H2 | Test 12 |
@@ -66,6 +68,7 @@ A release ships when:
 - All test classes 1-9 pass.
 - Test class 10 (24h soak) passes.
 - Test class 12 (compatibility matrix) passes for all SUPPORTED rows in Sec 21.
+- Test class 13 (self-tuning offset) passes: synthetic path detects correct offset in all vectors; hardware path WPP log entry present + CRD key written.
 - DV soak (test class 8) reports 0 violations.
 - No `STATUS_*` failures in tray debug.log during soak (other than transient at sleep/wake boundaries).
 
@@ -80,5 +83,5 @@ A release ships when:
 ## References
 
 - `docs/M12-PRODUCTION-HYGIENE-FOR-V1.3.md` item 6 (test plan source brief)
-- `docs/M12-DESIGN-SPEC.md` Sec 13 (DV flags) + Sec 18 (IOCTL contract) + Sec 19 (WPP)
-- `docs/M12-MOP.md` Sec 9 (validation gates VG-0..VG-8)
+- `docs/M12-DESIGN-SPEC.md` Sec 6c (self-tuning algorithm) + Sec 13 (DV flags) + Sec 18 (IOCTL contract) + Sec 19 (WPP)
+- `docs/M12-MOP.md` Sec 9 (validation gates VG-0..VG-14)

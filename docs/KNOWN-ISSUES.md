@@ -96,3 +96,32 @@ Alternative: tools like X-Mouse Button Control or "Apple Magic Mouse Utilities" 
 **M12 v1 install procedure**: enables testsigning automatically as part of MOP pre-flight if not already on; warns user if reboot needed.
 
 **Reference**: Upstream issue #1 (most-commented).
+
+---
+
+## Antivirus / EDR may flag M12 as suspicious
+
+**Symptom**: Windows Defender, CrowdStrike, SentinelOne, or similar EDR flags M12.sys as a "potentially unwanted program" or kernel modification, blocks install or quarantines after install.
+
+**Root cause**: Kernel filter drivers are a category that EDRs aggressively monitor -- by design, since malicious rootkits also live at kernel level. M12 is signed and benign, but cert provenance + signature characteristics may not match an EDR's allowlist.
+
+**Workarounds (priority order)**:
+
+1. **Whitelist M12.sys + INF in Defender / EDR**:
+   - Open Windows Security -> Virus & threat protection -> Manage settings -> Add or remove exclusions
+   - Add `C:\Windows\System32\drivers\M12.sys` (file)
+   - Add `C:\Windows\System32\DriverStore\FileRepository\m12.inf_amd64_*\` (folder)
+   - Restart device
+
+2. **Verify signature**: `signtool verify /v /pa C:\Windows\System32\drivers\M12.sys` -- should show "Successfully verified" with trusted publisher
+
+3. **For corporate-managed EDR**: contact IT to whitelist via central policy. Provide M12 source + cert thumbprint for verification.
+
+**Why M12 is safe**:
+- Open-source under MIT license -- code is auditable at https://github.com/ReviveBusiness/magic-mouse-tray
+- No network code
+- No persistence mechanisms beyond standard service registry
+- Test-signed (v1) or attestation-signed (future v2) -- Microsoft trust chain
+- Source code review encouraged before any organization deploys
+
+**Reference**: General Windows kernel-driver / EDR interaction; not specific to upstream issues.
