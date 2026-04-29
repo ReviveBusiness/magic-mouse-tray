@@ -4,20 +4,16 @@
 #include "InputHandler.h"
 
 NTSTATUS
-DriverEntry(
-    _In_ PDRIVER_OBJECT  DriverObject,
-    _In_ PUNICODE_STRING RegistryPath)
+DriverEntry(_In_ PDRIVER_OBJECT DriverObject, _In_ PUNICODE_STRING RegistryPath)
 {
     WDF_DRIVER_CONFIG config;
     WDF_DRIVER_CONFIG_INIT(&config, EvtDeviceAdd);
-    return WdfDriverCreate(DriverObject, RegistryPath,
-                           WDF_NO_OBJECT_ATTRIBUTES, &config, WDF_NO_HANDLE);
+    return WdfDriverCreate(DriverObject, RegistryPath, WDF_NO_OBJECT_ATTRIBUTES, &config,
+                           WDF_NO_HANDLE);
 }
 
 NTSTATUS
-EvtDeviceAdd(
-    _In_    WDFDRIVER       Driver,
-    _Inout_ PWDFDEVICE_INIT DeviceInit)
+EvtDeviceAdd(_In_ WDFDRIVER Driver, _Inout_ PWDFDEVICE_INIT DeviceInit)
 {
     UNREFERENCED_PARAMETER(Driver);
 
@@ -28,7 +24,20 @@ EvtDeviceAdd(
 
     WDFDEVICE device;
     NTSTATUS status = WdfDeviceCreate(&DeviceInit, &deviceAttributes, &device);
-    if (!NT_SUCCESS(status)) {
+    if (!NT_SUCCESS(status))
+    {
+        return status;
+    }
+
+    // Initialize spinlock to protect DEVICE_CONTEXT channel-handle fields against
+    // concurrent OPEN/CLOSE completion routines on a parallel-dispatch queue.
+    PDEVICE_CONTEXT devCtx = GetDeviceContext(device);
+    WDF_OBJECT_ATTRIBUTES lockAttr;
+    WDF_OBJECT_ATTRIBUTES_INIT(&lockAttr);
+    lockAttr.ParentObject = device;
+    status = WdfSpinLockCreate(&lockAttr, &devCtx->Lock);
+    if (!NT_SUCCESS(status))
+    {
         return status;
     }
 
@@ -43,20 +52,17 @@ EvtDeviceAdd(
     return status;
 }
 
-VOID
-EvtIoInternalDeviceControl(
-    _In_ WDFQUEUE   Queue,
-    _In_ WDFREQUEST Request,
-    _In_ size_t     OutputBufferLength,
-    _In_ size_t     InputBufferLength,
-    _In_ ULONG      IoControlCode)
+VOID EvtIoInternalDeviceControl(_In_ WDFQUEUE Queue, _In_ WDFREQUEST Request,
+                                _In_ size_t OutputBufferLength, _In_ size_t InputBufferLength,
+                                _In_ ULONG IoControlCode)
 {
     UNREFERENCED_PARAMETER(OutputBufferLength);
     UNREFERENCED_PARAMETER(InputBufferLength);
 
     WDFDEVICE device = WdfIoQueueGetDevice(Queue);
 
-    if (IoControlCode == IOCTL_INTERNAL_BTH_SUBMIT_BRB) {
+    if (IoControlCode == IOCTL_INTERNAL_BTH_SUBMIT_BRB)
+    {
         InputHandler_HandleBrbSubmit(device, Request);
         return;
     }
@@ -65,7 +71,8 @@ EvtIoInternalDeviceControl(
     WdfRequestFormatRequestUsingCurrentType(Request);
     WDF_REQUEST_SEND_OPTIONS opts;
     WDF_REQUEST_SEND_OPTIONS_INIT(&opts, WDF_REQUEST_SEND_OPTION_SEND_AND_FORGET);
-    if (!WdfRequestSend(Request, WdfDeviceGetIoTarget(device), &opts)) {
+    if (!WdfRequestSend(Request, WdfDeviceGetIoTarget(device), &opts))
+    {
         WdfRequestComplete(Request, WdfRequestGetStatus(Request));
     }
 }

@@ -20,7 +20,7 @@ Signature   = "$Windows NT$"
 Class       = Bluetooth
 ClassGuid   = {e0cbf06c-cd8b-4647-bb8a-263b43f0f974}
 Provider    = %ManufacturerName%
-DriverVer   = 04/27/2026,1.0.0.0
+DriverVer   = 01/01/2027,2.0.0.0
 CatalogFile = MagicMouseDriver.cat
 PnpLockdown = 1
 
@@ -44,10 +44,13 @@ AddReg = AddReg_LowerFilter
 HKR,,"LowerFilters",0x00010008,"MagicMouseDriver"
 
 [Install.Services]
-; SPSVCINST_ASSOCSERVICE (0x2) tells the WDK validator that this filter
-; service is associated with the hardware, satisfying error 1296.
-; For lower filters this is unusual but required by Universal INF compliance
-; when no other AddService directive exists for the hardware.
+; SPSVCINST_ASSOCSERVICE (0x2) is required here to satisfy Universal INF validator
+; error 1296 ("Hardware does not have an associated service"). For a lower filter with
+; no other AddService directive, this is the correct workaround — confirmed against
+; inf2cat and stampinf behavior. A WHQL advisory warning is expected but does not
+; block test-signed installs.
+; VID&0001004C is correct: VIDSource=0001 (Bluetooth SIG), VID=004C (Apple BT Company ID).
+; USB-style VID&00010005AC would be wrong for BTHENUM enumeration.
 AddService = MagicMouseDriver, 0x00000002, ServiceInstall
 
 [ServiceInstall]

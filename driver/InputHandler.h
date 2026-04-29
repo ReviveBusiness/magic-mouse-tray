@@ -15,8 +15,15 @@ VOID InputHandler_HandleBrbSubmit(_In_ WDFDEVICE Device, _In_ WDFREQUEST Request
 // First open → ControlChannelHandle. Second → InterruptChannelHandle.
 EVT_WDF_REQUEST_COMPLETION_ROUTINE InputHandler_OpenChannelCompletion;
 
+// Completion routine for BRB_L2CA_CLOSE_CHANNEL.
+// Clears the channel handle from DEVICE_CONTEXT only on NT_SUCCESS — avoids a race
+// where a reconnect re-opens before BthEnum finishes tearing down the old channel.
+EVT_WDF_REQUEST_COMPLETION_ROUTINE InputHandler_CloseChannelCompletion;
+
 // Completion routine for BRB_L2CA_ACL_TRANSFER.
-// - Incoming data on ControlChannel:  inject g_HidDescriptor[] (first occurrence only).
-// - Incoming data on InterruptChannel: translate Report 0x12 → Report 0x01 (TLC1 mouse).
-// - All other data: pass through unchanged.
+// Stateless SDP scan + descriptor patch on ACL transfers; no Report 0x12 translation;
+// no per-channel branching. Scans every incoming transfer for the SDP attribute 0x0206
+// (HIDDescriptorList) byte pattern. If found, replaces the embedded descriptor with
+// g_HidDescriptor[] in-place and updates the SDP TLV length fields. All other transfers
+// pass through unchanged.
 EVT_WDF_REQUEST_COMPLETION_ROUTINE InputHandler_AclCompletion;
