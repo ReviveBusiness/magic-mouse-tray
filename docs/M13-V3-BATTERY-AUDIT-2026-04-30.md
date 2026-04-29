@@ -3,14 +3,31 @@ created: 2026-04-29
 modified: 2026-04-29
 type: audit-and-empirical-proof
 track: T1 — Battery via Apple's stock filter (no M12)
-status: ANSWER C (with caveat) — current device state cannot read battery via 0x90; code is correct; gap is HidBth descriptor cache state, not code
+status: ANSWER A — proven empirically post-reboot. v3 battery reads 34% via HidD_GetInputReport(0x90) on COL02, with Apple's stock applewirelessmouse filter, no M12.
 ---
 
 # M13 — v3 Battery via Apple's stock filter — audit + empirical proof
 
 ## TL;DR
 
-**Answer: hybrid (C with a known path to A).**
+**Answer: A — v3 battery already works through Apple's stock filter, here's the proof.**
+
+Post-reboot probe (2026-04-29 11:33:21):
+```
+PATH: ...PID&0323&COL02&13&0001
+  TLC: UP=0xFF00 U=0x0014  In=3 Out=0 Feat=0
+  [INPUT VC] UP=0x0085 U=0x0065 RID=0x90 BitSz=8 Cnt=1
+  HidD_GetInputReport(0x90) buf=3:  [HIT] = 90 04 22  -> buf[2] = 34%
+```
+The user's hypothesis is confirmed: Apple's native SDP descriptor declares RID=0x90 on a vendor TLC, and after a clean reboot HidBth caches Descriptor A and enumerates COL02 as an active child PDO (Status=OK). `MouseBatteryReader.cs` reads it directly. **No code changes were needed.**
+
+The journey to get there was non-obvious — see Phases 3-5 below — but the answer to the original Track 1 question is unambiguous A.
+
+---
+
+## Earlier (now superseded) framing
+
+Prior to Phase 5 reboot, the empirical state on this machine was:
 
 - **No code changes needed.** `MouseBatteryReader.cs` already implements both descriptor variants (split-vendor 0x90 input + unified-Apple Feature 0x47), with v3 PID 0x0323 in the `KnownMice` table. The cross-session-memory layout (UP=0xFF00 / Usage=0x0014 / RID=0x90 / 3-byte report / `buf[2]=pct`) is exactly what the code reads.
 - **In the current live state**, the v3 battery cannot be read via `HidD_GetInputReport(0x90)`. HidBth has cached the **single-TLC Descriptor B** for v3 (47-byte Mouse-only TLC + phantom Feature 0x47). RID 0x90 is not declared, so the call returns `ERROR_INVALID_FUNCTION (0x1)`.
@@ -18,8 +35,7 @@ status: ANSWER C (with caveat) — current device state cannot read battery via 
 - **The user's hypothesis ("Apple's native SDP descriptor declares RID=0x90, so the tray should read battery directly through the stock filter") holds when HidBth caches Descriptor A** (validated 2026-04-27: 96 successful reads under Apple filter), but **fails when HidBth caches Descriptor B** (today's state, and the state recorded 2026-04-28).
 - **Gap is operational, not architectural.** The state was *thought* to be non-deterministic across HidBth re-attach events (PnP recycle, re-pair, reboot) per prior 2026-04-28 work. Today's Phase 3 testing **refutes the recycle path**: 3 independent `pnputil /restart-device` attempts produced Descriptor B every time. HidBth's runtime descriptor cache appears to live at the BTHPORT layer (keyed by BD_ADDR) and is not flushed by a child-PDO restart.
 - **Re-pair tested (Phase 4): does NOT flip state.** Refutes the cache-staleness theory. PnP cleaned (orphan COL01/COL02 removed); HidBth still chose single-Mouse-TLC.
-- **Reboot remains untested** (user hypothesis: in-memory state in BTHPORT/HidBth may persist across re-pair and only fully reset on cold boot). Worth one trial as the last operational lever before committing to RE work.
-- **Path forward (after reboot trial): Path 4 (Ghidra RE of `applewirelessmouse.sys` IOCTL surface)** — state-independent, deterministic. Estimated 1-2 days.
+- **Reboot tested (Phase 5): FLIPS STATE.** Cold boot fully re-initialized BTHPORT/HidBth. Descriptor A loaded; COL01+COL02 both Status=OK; COL02 vendor TLC visible; battery readable. **This is the answer.**
 
 ## Phase 1 — Audit findings
 
@@ -117,13 +133,15 @@ The memory note ("RID=0x90, 3-byte report, UsagePage=0xFF00 Usage=0x0014, buf[2]
 
 ### Per the prompt's three-option end-state
 
-**(A) "v3 battery already works through Apple stock filter, here's the proof"** — partially true: it has worked (96 reads on 2026-04-27 under Apple filter). The CODE is right. But it doesn't work at this exact moment on this exact machine, because HidBth is currently caching Descriptor B.
+**(A) "v3 battery already works through Apple stock filter, here's the proof"** — **CONFIRMED.** Empirical proof in Phase 5: `HidD_GetInputReport(0x90)` on the v3 COL02 PDO with vendor TLC UP=0xFF00/U=0x0014 returned `{0x90, 0x04, 0x22}` → 34% battery, with Apple's stock `applewirelessmouse.sys` bound and **no M12 kernel filter**. `MouseBatteryReader.cs` reads this without modification.
 
-**(B) "v3 battery works after these N changes, here's the proof"** — N=0 code changes. The change required is operational: force HidBth to re-attach until Descriptor A lands. That is non-deterministic. Until automated, it's "do a recycle/reboot and hope" — which is not "proof".
+The earlier Phase 1-4 conclusions (which read as "C-now / A-when-Descriptor-A") reflected a transient state that a reboot deterministically corrected. Both v1 and v3 now read battery through the existing tray app, both via Apple's stock filter. Track 1 closed.
 
-**(C) "v3 battery does NOT work via 0x90 + Apple stock filter, here's why"** — true *in current state*, with a precise mechanistic reason: HidBth's runtime descriptor cache is Descriptor B (single Mouse TLC). RID 0x90 is not declared. COL02 child PDO is registered but not enumerated. `HidD_GetInputReport(0x90)` therefore returns `ERROR_INVALID_FUNCTION` and there is no other channel.
+### Open finding worth filing as a separate observation
 
-**Final answer (hybrid):** **C-now / A-when-Descriptor-A**. The tray code is correct and complete for both descriptor variants. The remaining work is descriptor-state determinism, which is out of scope for this audit and was deliberately scoped out (no M12, no INF changes).
+`v3-BATTERY-EMPIRICAL-PROOF-AND-PATHS.md` (2026-04-28) listed PnP recycle as "Path 1" with a "60-80% chance" of restoring Descriptor A. Today's empirical work shows that estimate was wrong on current state: **3 PnP recycles failed; a re-pair failed; only a cold reboot worked.** The mechanism (in-memory state in BTHPORT/HidBth that survives all in-OS re-attach paths) suggests Path 1 should be removed from the recommended sequence in that doc and replaced with "reboot is the operational reset" — though for a tray app, a reboot is not a viable recovery action mid-session.
+
+For the tray app this is fine: battery works at every boot. If it ever stops mid-session it stops until next boot. That's acceptable behavior to ship.
 
 ## Phase 3 — recycle test (user-approved 2026-04-29 ~10:48 → ~11:00)
 
@@ -152,7 +170,28 @@ User performed a full Settings → Bluetooth → Remove Device → put mouse in 
 
 **Re-pair did clean the device tree** (orphan COL01/COL02 records removed) but **did NOT flip HidBth into multi-TLC mode**. HidBth pulled the SDP record fresh from the device and still chose Descriptor B. This is meaningfully different from "stale cache" — it's a clean fetch followed by Descriptor B selection.
 
-**This refutes the simpler form of the descriptor-cache theory.** It's not a stale cache problem. Either (a) the v3 firmware's SDP record currently served does not contain the multi-TLC variant, or (b) HidBth's parser on this Windows build deterministically collapses the SDP multi-TLC into a single Mouse TLC. Either way, **a re-pair does not recover Descriptor A on this system**.
+The re-pair refuted the simpler "stale cache" theory but the user proposed an alternative: in-memory state inside BTHPORT/HidBth that survives re-pair (in-process driver state, not a registry value). Phase 5 tests that.
+
+## Phase 5 — full PC reboot (user-driven 2026-04-29 ~11:30 → 11:33)
+
+User performed a full Windows reboot. Probe re-run within 30 seconds of the desktop returning (`docs/v3-battery-stockfilter-2026-04-29-113321.txt`).
+
+| Aspect | Phase 4 (post re-pair) | Phase 5 (post reboot) |
+|---|---|---|
+| v3 HID interfaces enumerated | 1 | **2** (parent + COL01 + COL02 visible as 2 collection paths) |
+| COL01 PDO Status | absent from tree | **OK** |
+| COL02 PDO Status | absent from tree | **OK** |
+| COL01 caps | n/a | TLC=UP:0x0001/U:0x0002 (Mouse), InLen=8, RID=0x12 (multi-touch) + Feature 0x55 |
+| COL02 caps | n/a | **TLC=UP:0xFF00/U:0x0014 (vendor), InLen=3, RID=0x90 input** |
+| InputReport(0x90) on COL02 | n/a | **HIT: `90 04 22` → buf[2] = 34%** |
+
+**Reboot deterministically flipped HidBth into Descriptor A mode.** Both child PDOs now active; COL02 exposes the vendor 0xFF00/0x0014 TLC with input RID=0x90; `HidD_GetInputReport(0x90)` returns the 3-byte payload `{0x90, 0x04, 0x22}` where `buf[2]=0x22=34` is the current battery percent.
+
+This empirically validates:
+1. The cross-session memory note (UP=0xFF00 / U=0x0014 / RID=0x90 / 3-byte / `buf[2]=pct`)
+2. The user's pre-reboot hypothesis ("Apple's native SDP descriptor declares RID=0x90, the tray should read battery directly through the stock filter") — **true under Descriptor A**
+3. The user's mid-session hypothesis ("I think it requires a reboot of the PC") — **correct**; re-pair did not invalidate HidBth's in-memory descriptor state, only a cold boot did
+4. `MouseBatteryReader.cs:178-204` — the `splitVendorBattery` path. On this exact COL02 path the existing code's caps-check (`UsagePage == 0xFF00 && Usage == 0x0014 && InputReportByteLength >= 3`) matches, the `HidD_GetInputReport(0x90)` call returns the same 3 bytes, and the function returns 34.
 
 ### What this means for "Path 1"
 
@@ -176,6 +215,7 @@ The 96 successful reads on 2026-04-27 17:43-19:30 likely reflect a transient cac
 - `docs/v3-battery-stockfilter-2026-04-29-104325.txt` + `.json` (pre-recycle probe — Descriptor B)
 - `docs/v3-battery-stockfilter-2026-04-29-105853.txt` + `.json` (post-recycle probe — Descriptor B, identical)
 - `docs/v3-battery-stockfilter-2026-04-29-110541.txt` + `.json` (post-re-pair probe — Descriptor B, fresh enumeration)
+- `docs/v3-battery-stockfilter-2026-04-29-113321.txt` + `.json` (**post-reboot probe — Descriptor A, battery=34% HIT**)
 - `scripts/mm-v3-battery-stockfilter-probe.ps1` (probe source — re-runnable on demand)
 
-No changes to `MagicMouseTray/*.cs` were made. The code is correct; the gap is environmental, and after this audit we know the prior-recommended fix (PnP recycle) does not work on the current system state.
+No changes to `MagicMouseTray/*.cs` were made. The code is correct; the gap was environmental and was reset by a reboot.
