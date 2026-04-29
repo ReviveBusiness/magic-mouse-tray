@@ -1,8 +1,9 @@
 # M12 Design Specification
 
-**Status:** v1.4 — DRAFT pending user approval (DSM/PnP + Power Saver + Production Hygiene briefs folded in)
+**Status:** v1.5 — DRAFT pending user approval (v1.4 + two supplement briefs folded in)
+**License:** MIT (Copyright (c) 2026 Lesley Murfin / Revive Business Solutions)
 **Date:** 2026-04-28
-**Linked PRD:** PRD-184 v1.29
+**Linked PRD:** PRD-184 v1.30
 **Linked PSN:** PSN-0001 v1.9
 **Linked NLM pass-1:** `docs/M12-DESIGN-PEER-REVIEW-NOTEBOOKLM-2026-04-28.md`
 **Linked NLM pass-2:** `docs/M12-DESIGN-PEER-REVIEW-NOTEBOOKLM-PASS2-2026-04-28.md`
@@ -12,6 +13,7 @@
 
 ## Revision history
 
+- **v1.5 (2026-04-28, supplement fold-in iteration):** Two supplement briefs folded in that v1.4 did not have access to. (a) `M12-V14-SUPPLEMENT-USER-DECISIONS.md` — auto-reinit on wake (Section 5 addition: `EvtDeviceD0Entry` resets shadow staleness flag + optionally re-issues GET_REPORT for RID=0x27 if mouse responsive; IN v1 scope); battery polling fallback (Section 6 addition: if `last_rid27_timestamp > 60s`, issue explicit BTHID GET_REPORT for RID=0x27 before completing Feature 0x47 query; IN v1 scope); PREfast static analyzer GATING for ship (Section 20); Static Driver Verifier GATING for ship (Section 20); power-saver aggressive defaults SuspendOnDisplayOff=1 + SuspendOnACUnplug=1 (Section 17 defaults table updated); click handling explicitly v2 milestone (Section 16); watchdog 30s/120s confirmed documented. MIT license added to metadata. (b) `M12-V14-UPSTREAM-ISSUES-LESSONS.md` — `.gitattributes` CRLF enforcement for driver source tree (Section 20 addition; driver/.gitattributes content in docs/M12-PHASE-3-PREP.md); KNOWN-ISSUES.md with 6 entries created (docs/KNOWN-ISSUES.md); INSTALL.md testsigning section noted (MOP Section 3a already covers this). NLM pass-5 SKIPPED — per playbook v1.8 cap, v1.5 is the final design ship; corpus-gap REJECT-downgrade will not change with another pass. v1.5 changelog table below.
 - **v1.4 (2026-04-28, brief fold-in iteration):** Three briefs folded in that v1.3 did not have access to. (a) `M12-DSM-PNP-CONCERNS-FOR-V1.3.md` — declares INF `DriverVer = 01/01/2027, 1.0.0.0` to win PnP rank against `applewirelessmouse` (04/21/2026, 6.2.0.0) and Magic Utilities (11/05/2024, 3.1.5.3); adds service entry hygiene (`sc.exe delete MagicMouseM12` on uninstall + stale-service detection at install); BTHPORT cache invalidation alternatives (registry delete vs unpair-repair); orphan LowerFilter walk reference; coexistence rank table. (b) `M12-POWER-SAVER-DESIGN.md` — power saver / suspend modes IN v1 scope per user direction 2026-04-28; PoRegisterCallback for display state, AC/DC, sleep, sign-out; vendor suspend command marked as OPEN QUESTION with three resolution paths; passive wake on click; manual suspend custom IOCTL `IOCTL_M12_SUSPEND` METHOD_BUFFERED admin-SDDL; CRD `PowerSaver\` config subkey schema; defaults SuspendOnSignOut=1, SuspendOnSleep=1, SuspendOnShutdown=1, others=0. (c) `M12-PRODUCTION-HYGIENE-FOR-V1.3.md` — WPP/ETW provider declared (levels ERROR/WARNING/INFO/VERBOSE; flags PNP/IO/SHADOW_BUFFER/POWER/IOCTL); per-DEVICE_CONTEXT shadow buffer + spinlock confirmed (multi-mouse safe); F15-F18 disconnect/reconnect failure modes added; Driver Verifier flags expanded to `0x49bb`; IOCTL input validation contract (METHOD_BUFFERED + range checks + admin SDDL); test plan in new `docs/M12-TEST-PLAN.md`; build system = msbuild + EWDK 25H2 (decision documented); compatibility matrix Win11 22H2-25H2 x64 (Win10 + ARM64 deferred); coexistence story; pool tag `'M12 '` + structure signature `'M12-'`; watchdog (30s tick, 120s stall threshold); logging policy DebugLevel 0-4 (default 0; 4 only for empirical-offset workflow). New sections 15-25 added; sections 4 + 11 + 12 + 16 patched. v1.4 changelog table below. NLM pass-4 verdict at `docs/M12-DESIGN-PEER-REVIEW-NOTEBOOKLM-PASS4-2026-04-28.md`.
 - **v1.3 (2026-04-28, post-NLM-pass-3 patches inline):** Pass-3 ran against v1.3 and surfaced two CHANGES-NEEDED items, both documentation-quality fixes (not architectural). Patched in place: (a) `MAX_STALE_MS` default changed from 10000 to **0 (disabled)** — 10-sec default would force NOT_READY whenever mouse is asleep (~2 min idle), severe UX regression. Operator can opt-in to non-zero. (b) BRB TLV parser safety requirements expanded in Section 3b' to mandatory subsections a-g: MDL bounds, TLV walk bounds with abandon-on-failure, no-expansion-beyond-BufferLen, no-length-form-upgrade, recursive-parser, Driver Verifier special-pool catch. Pass-3 verdict at `docs/M12-DESIGN-PEER-REVIEW-NOTEBOOKLM-PASS3-2026-04-28.md`. Per playbook iteration cap, no v1.4 — v1.3 with these inline patches is the final design ship.
 - **v1.3 (2026-04-28, original):** Resolved two blocking issues from NLM pass-2: (1) **PID branch restored for Feature 0x47** (Section 7d). v1 (PID 0x030D / 0x0310) Feature 0x47 IRPs pass-through to native firmware unchanged; only v3 (PID 0x0323) gets the shadow-buffer short-circuit. v1's working Feature 0x47 baseline preserved by definition. (2) **BRB-level descriptor mutation restored as fallback** (Section 3b'). When VG-0 detects the cached SDP descriptor is the device's native multi-TLC Descriptor A (no Feature 0x47 declared) — the fresh-pair scenario where no `applewirelessmouse` previously mutated the cache — M12's BRB completion routine intercepts `IOCTL_INTERNAL_BTH_SUBMIT_BRB` and rewrites the SDP HIDDescriptorList TLV to inject the unified Descriptor B (the v1.1 logic, retained as a fresh-pair fallback). Fast-path: when the cache already has Descriptor B (post-applewirelessmouse, the common case), no rewriting occurs and the v1.2 simplification still applies. New advisory: tunable `MAX_STALE_MS` registry default 10000 — if shadow timestamp older, return STATUS_DEVICE_NOT_READY (forces fresh data or explicit N/A in tray).
@@ -86,9 +88,28 @@
 | Production Hygiene 11: Watchdog | Sec 24 (new) | WDF timer started in `EvtDevicePrepareHardware`; fires every 30 sec. Checks `Shadow.Timestamp` — if no input in 120s while D0 active and BT connected, log WARNING (mouse may be in stuck state). Configurable in CRD: `WatchdogIntervalSec`, `StallThresholdSec`. |
 | Production Hygiene 12: Logging policy | Sec 25 (new) | DebugLevel REG_DWORD 0-4 (default 0). 0=Errors only; 1=+Warnings; 2=+Info (PnP, IOCTL success, suspend/wake); 3=+Verbose (every Feature 0x47 read, shadow updates); 4=+Hex dumps (full 46-byte RID=0x27 payloads — required for empirical BATTERY_OFFSET resolution). DebugLevel 4 set ONLY during VG-4 empirical-offset validation; reset to 0 in production. |
 
+### v1.5 changelog (supplement finding -> section)
+
+| Supplement finding | Section addressed | Resolution |
+|---|---|---|
+| User decision: Auto-reinit on wake IN v1 | Sec 5 (new subsection) | `EvtDeviceD0Entry` resets shadow buffer staleness flag; optionally re-issues GET_REPORT for RID=0x27 if mouse responsive. ~50 LOC. |
+| User decision: Battery polling fallback (shadow cold >60s) IN v1 | Sec 6 (new subsection) | If `now() - last_rid27_timestamp > 60s`, issue explicit BTHID GET_REPORT for RID=0x27 to warm the cache before completing Feature 0x47. ~80 LOC. |
+| User decision: PREfast gating for ship | Sec 20 | msbuild always runs PREfast analysis; 0 warnings = gate. |
+| User decision: SDV gating for ship | Sec 20 | Run SDV before sign; 0 violations = gate. |
+| User decision: Power-saver aggressive defaults | Sec 17 defaults table | SuspendOnDisplayOff=1, SuspendOnACUnplug=1 (both changed from 0). All 5 events now default 1. |
+| User decision: MIT license | Metadata | License = MIT added to header. |
+| User decision: Click handling = v2 milestone | Sec 16 | Changed from "out of scope" to "M12 v2 milestone". |
+| Upstream lessons: .gitattributes CRLF enforcement | Sec 20 + docs/M12-PHASE-3-PREP.md | driver/.gitattributes enforces CRLF on .inf/.sys/.cat/.h/.c — prevents line-ending-induced signature failures (upstream issue #1). |
+| Upstream lessons: KNOWN-ISSUES.md 6 entries | docs/KNOWN-ISSUES.md (NEW) | Sensitivity, scroll-inversion, ARM64, smart-zoom, MU residue, signing. |
+| Upstream lessons: INSTALL.md testsigning prominence | MOP Sec 3a (already present) | MOP Section 3a already leads with testsigning check; INSTALL.md will mirror at Phase 3. |
+
 ### v1.4 design ship rationale (NLM pass-4)
 
 NLM pass-4 verdict: see `docs/M12-DESIGN-PEER-REVIEW-NOTEBOOKLM-PASS4-2026-04-28.md`. Per playbook v1.8 iteration cap (v1.5 max if pass-4 surfaces NEW critical issues), v1.4 is the design ship target. Open questions tracked as future work; none blocking.
+
+### v1.5 design ship rationale (NLM pass-5 SKIPPED)
+
+NLM pass-5 is skipped per playbook v1.8 cap. The v1.4 pass-4 verdict already applied the adversarial-downgrade template that converts corpus-gap REJECTs to CHANGES-NEEDED. Running pass-5 against a supplement that contains only scope confirmation, defaults changes, and documentation additions will not produce new architectural findings. v1.5 ships as the final design approval target.
 
 ---
 
@@ -443,6 +464,37 @@ Pre-install: hidparser.exe (EWDK) parses the 116-byte literal and confirms:
 
 Mismatch = halt before signtool.
 
+### 5c. Auto-reinit on wake (v1.5 — IN v1 scope per user decision D-S12-41)
+
+M12 registers `EvtDeviceD0Entry` as part of the KMDF power state machine. On every D0 entry (system resume, Bluetooth reconnect after sleep):
+
+1. Reset shadow buffer staleness flag: `KSPIN_LOCK` acquired; `Shadow.Valid = FALSE`; spinlock released. This ensures the next Feature 0x47 query returns `STATUS_DEVICE_NOT_READY` (or the FirstBootPolicy value) until fresh RID=0x27 data arrives — avoids serving pre-sleep stale data as if it were current.
+2. If mouse appears responsive (BTHPORT connection state indicates link-up), optionally issue one explicit GET_REPORT for RID=0x27 to prime the shadow buffer. This is a best-effort fire-and-forget: if the GET_REPORT fails (mouse still waking up), shadow stays invalid and the next organic RID=0x27 frame from user input populates it naturally.
+
+```c
+EVT_WDF_DEVICE_D0_ENTRY EvtDeviceD0Entry;
+
+NTSTATUS EvtDeviceD0Entry(WDFDEVICE Device, WDF_POWER_DEVICE_STATE PreviousState) {
+    PDEVICE_CONTEXT dctx = DeviceGetContext(Device);
+    KIRQL oldIrql;
+
+    // Reset shadow buffer staleness flag
+    KeAcquireSpinLock(&dctx->ShadowLock, &oldIrql);
+    dctx->Shadow.Valid = FALSE;
+    KeReleaseSpinLock(&dctx->ShadowLock, oldIrql);
+
+    DoTraceMessage(TRACE_POWER, "EvtDeviceD0Entry: shadow invalidated, PreviousState=%d", PreviousState);
+
+    // Optionally prime shadow by issuing GET_REPORT for RID=0x27
+    // Best-effort: failure is silent; organic RID=0x27 from user input populates it
+    M12_TryPrimeShadowBuffer(Device);
+
+    return STATUS_SUCCESS;
+}
+```
+
+The `M12_TryPrimeShadowBuffer` helper issues an async `BTHID_GET_REPORT` on the IoTarget with a short timeout (200ms). If it returns within the timeout, the completion routine populates the shadow buffer. If it times out or fails, shadow remains invalid until the next user-generated RID=0x27 frame. Estimated ~50 LOC for `EvtDeviceD0Entry` + `M12_TryPrimeShadowBuffer`.
+
 ---
 
 ## 6. Translation algorithm: NONE for input flows
@@ -472,6 +524,36 @@ HKLM\SYSTEM\CurrentControlSet\Services\M12\Parameters
 ```
 
 Default of 1 = first byte of the 46-byte payload (i.e., shadow_buffer[1] if RID byte is at offset 0). Operator can update via `reg add` and `pnputil /disable-device + /enable-device` cycle without recompile.
+
+### 6b. Battery polling fallback for cold shadow buffer (v1.5 — IN v1 scope per user decision D-S12-42)
+
+If `now() - last_rid27_timestamp > 60s` when a Feature 0x47 query arrives, the shadow buffer is considered cold. Rather than immediately returning `STATUS_DEVICE_NOT_READY` (which the tray treats as N/A), M12 first issues an explicit BTHID GET_REPORT for RID=0x27 to wake the mouse and prime the shadow buffer.
+
+Rationale:
+- Mitigates first-boot race: on cold start the mouse hasn't sent any RID=0x27 frames yet; polling immediately returns N/A without this fallback.
+- Mitigates extended-disconnect scenario: mouse was off for hours; shadow is stale; first tray poll should produce a real value without waiting for user input.
+- 60s threshold chosen to avoid triggering on normal idle (mouse emits 0x27 ~10/sec during use; a 60s gap means it has genuinely gone inactive or was just powered on).
+
+```c
+// In HandleGetFeature47 (v3 path, after PID branch check):
+LONGLONG now_ms = KeQueryTimeIncrement();  // simplified; actual uses KeQuerySystemTime
+LONGLONG age_ms = (now_ms - dctx->Shadow.Timestamp.QuadPart) / 10000;
+
+if (!dctx->Shadow.Valid || age_ms > 60000) {
+    // Shadow cold -- issue GET_REPORT for RID=0x27 synchronously (short timeout)
+    NTSTATUS primeStatus = M12_PrimeShadowBufferSync(Device, 500 /* ms timeout */);
+    if (!NT_SUCCESS(primeStatus)) {
+        // Mouse unresponsive -- return NOT_READY; tray retries on next poll interval
+        WdfRequestComplete(req, STATUS_DEVICE_NOT_READY);
+        return STATUS_DEVICE_NOT_READY;
+    }
+    // Shadow now valid; fall through to translation
+}
+```
+
+The `M12_PrimeShadowBufferSync` helper is a synchronous variant with a 500ms timeout. It serialises with the shadow spinlock identically to the normal OnReadComplete completion routine. Estimated ~80 LOC for this path.
+
+`COLD_SHADOW_THRESHOLD_MS` is registry-tunable at `HKLM\SYSTEM\CurrentControlSet\Services\MagicMouseM12\Parameters\ColdShadowThresholdMs` (REG_DWORD, default 60000 = 60s).
 
 ---
 
@@ -1030,7 +1112,7 @@ Run after install (MOP Sec 7d post-install) and after rollback (Sec 8e). Removes
 
 ### 16.2 Non-goals (M12 v1)
 
-- Click handling / gesture interpretation — Apple driver suffices for standard 1-finger clicks; precision-touchpad-class logic deferred or out-of-scope.
+- Click handling / gesture interpretation — Apple driver suffices for standard 1-finger clicks. Left/right/middle finger position detection and per-mode click configuration is **M12 v2 milestone** (not "never") — deferred pending v1 ship and v2 planning. A separate `docs/M12-V2-CLICK-HANDLING-PLAN.md` will be created when v2 planning starts.
 - Smooth-scroll auto-reinit on wake — Apple driver does smooth scroll synthesis; M12 doesn't override.
 - Device rename / factory reset — UX layer responsibility.
 - Bluetooth pairing diagnostics — operational documentation, not code.
@@ -1047,8 +1129,7 @@ Run after install (MOP Sec 7d post-install) and after rollback (Sec 8e). Removes
 | Feature | LOC est. | Trigger to add |
 |---|---|---|
 | Keepalive ping every 2 sec (Win10 2004 freeze workaround) | ~30 | If users report freeze symptoms |
-| Auto-reinit on wake (descriptor refresh) | ~50 | If BTHPORT cache stale-state issues recur |
-| Battery polling fallback when shadow buffer cold | ~40 | If first-boot battery shows N/A for >60s (OQ-D triggers this) |
+| Click handling (finger position, per-mode config) | ~500-1000 | v1 ships; v2 planning starts; see docs/M12-V2-CLICK-HANDLING-PLAN.md (TBD) |
 | Win11 ARM64 support | ~50 (mostly build-system) | User requests + ARM64 hardware acquired |
 | Win10 21H2+ support | ~100 | User requests + KMDF 1.15 fallback validated |
 
@@ -1148,17 +1229,17 @@ Power-saver config lives at:
 ```
 HKLM\SYSTEM\CurrentControlSet\Services\MagicMouseM12\Devices\<HardwareKey>\PowerSaver\
     Enabled                  REG_DWORD   (master toggle, default 1)
-    SuspendOnDisplayOff      REG_DWORD   (default 0)
-    SuspendOnACUnplug        REG_DWORD   (default 0)
+    SuspendOnDisplayOff      REG_DWORD   (default 1)  -- v1.5: changed from 0 (aggressive defaults per D-S12-45)
+    SuspendOnACUnplug        REG_DWORD   (default 1)  -- v1.5: changed from 0 (aggressive defaults per D-S12-45)
     SuspendOnSignOut         REG_DWORD   (default 1)
     SuspendOnSleep           REG_DWORD   (default 1)
     SuspendOnShutdown        REG_DWORD   (default 1)
-    SuspendCommandBytes      REG_BINARY  (vendor command payload — empirically determined; empty = F22 fallback)
+    SuspendCommandBytes      REG_BINARY  (vendor command payload -- empirically determined; empty = F22 fallback)
 ```
 
 `<HardwareKey>` is the BTHENUM PID-keyed subkey (e.g., `VID_004C&PID_0323`). Per-device configuration so v1 and v3 can have independent power-saver settings.
 
-Defaults match MU's reasonable out-of-the-box behavior — sleep / hibernate / shutdown / sign-out, NOT display-off (too aggressive for desktop users).
+Defaults reflect aggressive battery-saving stance per user decision D-S12-45 (2026-04-28): all 5 events default to 1. User can dial back via registry if too aggressive in practice (e.g., set SuspendOnDisplayOff=0 for desktop users).
 
 ### 17.5 Manual suspend interface
 
@@ -1350,6 +1431,72 @@ Build artefacts:
 KMDF version pinned in vcxproj to **1.15** (matches `applewirelessmouse.sys` baseline + OS minimum compatibility). Forward-compatible with newer KMDF via standard runtime-loaded WDF binaries.
 
 EWDK provides full toolchain (`msbuild`, `WDK props/targets`, `inf2cat`, `signtool`, `hidparser`, `tracewpp`, WinDbg) without Visual Studio install.
+
+### 20.1 PREfast static analyzer gate (v1.5 — GATING for ship per D-S12-43)
+
+PREfast is NOT aspirational. Every msbuild invocation for a ship candidate MUST run PREfast. Zero warnings is the gate before a test-signed build can be submitted for review.
+
+```pwsh
+# Enable PREfast in the build
+msbuild MagicMouseDriver.vcxproj `
+    /p:Configuration=Release `
+    /p:Platform=x64 `
+    /p:RunCodeAnalysis=true `
+    /p:CodeAnalysisRuleSet=NativeMinimumRules.ruleset `
+    /p:WppEnabled=true `
+    /verbosity:minimal `
+    /m
+
+# Gate: parse output for "warning C6" / "warning C28" lines
+# Exit code != 0 if PREfast warnings present (enabled via /p:CodeAnalysisTreatWarningsAsErrors=true)
+```
+
+PREfast catches at build time: null pointer dereferences, buffer overruns, IRQL violations, use-after-free patterns. These are the same classes of issues that the senior driver-dev review surfaced as CRIT-1 through CRIT-4 in the design iterations — PREfast would have caught them at zero cost before peer review.
+
+### 20.2 Static Driver Verifier gate (v1.5 — GATING for ship per D-S12-44)
+
+SDV is NOT aspirational. Run SDV against `MagicMouseDriver.sys` before any test-signed build is submitted for signing. Zero violations is the gate.
+
+```pwsh
+# Run SDV (from EWDK build environment)
+msbuild MagicMouseDriver.vcxproj `
+    /t:sdv `
+    /p:inputs="/check:default.sdv" `
+    /p:Configuration=Release `
+    /p:Platform=x64
+
+# Check result: sdv-map.h + sdv-report.xml in driver\ directory
+# Gate: sdv-report.xml must contain <DEFECTS count="0" />
+```
+
+SDV catches: deadlock conditions, IRP completion races, KMDF rule violations, use of deprecated APIs. The 4 critical bugs from the senior driver-dev peer review (CRIT-1 through CRIT-4) fall directly in SDV's check coverage — SDV on the v1.0 skeleton would have surfaced all of them in <15 minutes.
+
+### 20.3 .gitattributes CRLF enforcement for driver source (v1.5 — per upstream lessons D-S12-49)
+
+Driver source files MUST use CRLF line endings. The most-commented upstream issue (MagicMouse2DriversWin10x64 #1) was caused by git auto-converting .inf CRLF to LF, breaking signing verification. M12 prevents this via `driver/.gitattributes`.
+
+Content of `driver/.gitattributes` (to be created as the FIRST file committed to driver/ directory in Phase 3):
+
+```
+# Driver source files MUST use CRLF on Windows (signing depends on byte-exact content)
+*.inf  text eol=crlf
+*.cat  binary
+*.sys  binary
+*.tmf  text eol=crlf
+*.h    text eol=crlf
+*.c    text eol=crlf
+*.rc   text eol=crlf
+
+# Build/sign artifacts -- never modify
+build/** binary
+*.cer  binary
+*.pfx  binary
+
+# Documentation -- let git auto-detect (Markdown is platform-agnostic)
+*.md   text
+```
+
+MOP pre-build gate: run `git ls-files --eol -- driver/` and confirm `.inf` files show `crlf` not `lf`. Failure = block build until line endings fixed.
 
 ---
 

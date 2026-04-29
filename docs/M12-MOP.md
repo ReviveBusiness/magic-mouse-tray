@@ -1,10 +1,10 @@
 # M12 Method of Procedure (MOP)
 
-**Status:** v1.4 — DRAFT pending user approval (DSM/PnP + Power Saver + Production Hygiene briefs folded in)
+**Status:** v1.5 — DRAFT pending user approval (v1.4 + supplement briefs folded in)
 **Date:** 2026-04-28
-**Linked design:** `docs/M12-DESIGN-SPEC.md` v1.4
+**Linked design:** `docs/M12-DESIGN-SPEC.md` v1.5
 **Linked test plan:** `docs/M12-TEST-PLAN.md` v1.0
-**Linked PRD:** PRD-184 v1.29
+**Linked PRD:** PRD-184 v1.30
 **Linked NLM pass-1:** `docs/M12-DESIGN-PEER-REVIEW-NOTEBOOKLM-2026-04-28.md`
 **Linked NLM pass-2:** `docs/M12-DESIGN-PEER-REVIEW-NOTEBOOKLM-PASS2-2026-04-28.md`
 **Linked NLM pass-3:** `docs/M12-DESIGN-PEER-REVIEW-NOTEBOOKLM-PASS3-2026-04-28.md`
@@ -14,6 +14,7 @@
 
 ## Revision history
 
+- **v1.5 (2026-04-28):** Aligned to design spec v1.5. Added: (a) CRITICAL testsigning prerequisite block at top of BLUF (Section 1) — upstream issue #1 analysis shows this is the most common install blocker. (b) VG-12: auto-reinit-on-wake test — sleep cycle, confirm shadow refresh after wake. (c) VG-13: battery-polling-fallback test — force shadow stale by disconnect, query Feature 0x47, confirm GET_REPORT issued. (d) BUILD-5 (v1.5): PREfast gate — verify build output shows "0 Code Analysis warnings". (e) BUILD-6 (v1.5): SDV gate — verify sdv-report.xml shows "0 defects" before signing. (f) Pre-build line-endings check (git ls-files --eol). PowerSaver defaults updated: SuspendOnDisplayOff=1, SuspendOnACUnplug=1. Sign-off checklist expanded with v1.5 gates.
 - **v1.4 (2026-04-28):** Aligned to design spec v1.4. Service name changed to `MagicMouseM12` (was bare `M12` in v1.3) per DSM Issue 5 (avoid namespace collision). Pre-install Sec 7a expanded: DriverVer rank-loss detection (DSM Issue 1), stale-service detection (Issue 5), DriverStore staged-package cleanup (Issue 6). Post-install Sec 7d expanded: registry-binding verification via `reg query` (Issue 1) + orphan-filter walk (Issue 7). Section 7c-pre Path A documented (registry cache flush, faster than UI unpair). Rollback Sec 8b explicit `sc.exe delete MagicMouseM12` order (Issue 5). NEW gates: VG-8 power-saver functional test (display-off / AC-unplug / sign-out / sleep / shutdown — verify mouse suspends + wakes on click), VG-9 battery-saving 24-hr measurement, VG-10 multi-mouse simultaneous read-out, VG-11 Driver Verifier 0x49bb soak (1000 IOCTL cycles + 100 pair/unpair). NEW failure-mode entries F23-F27 from design spec. Sign-off checklist updated. Bumped to v1.4.
 - **v1.3 (2026-04-28):** Aligned to design spec v1.3 (PID branch restored + BRB descriptor rewriter restored). VG-0 dual-state pass condition added (Descriptor B in cache OR Descriptor A + DescriptorBRewritten flag set). VG-1 v1 baseline now exercises NATIVE Feature 0x47 path, not M12 short-circuit — failure here means M12 broke the pass-through (regression in INF binding or queue forwarding). New optional MAX_STALE_MS registry tunable documented. Soft active-poll noted as future work (OQ-D).
 - **v1.2 (2026-04-28):** Aligned to design spec v1.2 (applewirelessmouse-baseline reframe). Driver Verifier flags expanded to 0x9bb + IRP completion + IoTarget flags. Pool tag verification step added (`!poolused 4 'M12 '`). EvtIoStop verification step added (forced cancel via Driver Verifier). Empirical battery offset verification step added (LogShadowBuffer debug.log diff at known battery levels). 24-hr soak scope clarified to include BT sleep/wake cycles. VG-0 caps check repurposed: confirms cached SDP descriptor matches applewirelessmouse-baseline (Input=47, Feature=2, LinkColl=2), NOT Mode A — because v1.2 doesn't mutate the descriptor. Section 7c-pre BTHPORT cache wipe demoted to optional (only triggered if VG-0 caps mismatch suggests a stale non-applewirelessmouse cache).
@@ -25,6 +26,28 @@
 ## 1. BLUF
 
 This MOP is the canonical end-to-end procedure for building, signing, installing, validating, and rolling back the M12 KMDF lower filter driver on the Magic Mouse v1 (PID 0x030D) and v3 (PID 0x0323) test machine. Every section maps to a single `bash` / `pwsh` command block; every gate is a Pass/Fail boolean; rollback is a single section the operator can run start-to-finish at any failure point. No section depends on userland Magic Utilities being present.
+
+### CRITICAL prerequisite: Test-signing must be enabled
+
+M12 v1 is test-signed for development distribution. Production WHQL signing is deferred (see docs/KNOWN-ISSUES.md).
+
+**Verify**:
+
+```pwsh
+bcdedit | findstr testsigning
+```
+
+Expected output: `testsigning             Yes`
+
+**If not enabled** (output is `No` or missing):
+
+```pwsh
+bcdedit /set testsigning on
+```
+
+Then **REBOOT**. After reboot, the desktop bottom-right corner shows "Test Mode" watermark -- that is the indicator test-signing is active.
+
+Without test-signing enabled, M12 will fail to install with "Driver is not signed" or "Hash mismatch" errors. This is the most common install blocker (upstream issue #1 in MagicMouse2DriversWin10x64 with 30+ comments).
 
 ---
 
@@ -194,6 +217,77 @@ Test-Path "$BuildOut\MagicMouseDriver.tmf"
 ```
 
 **Gate BUILD-4 (v1.4):** TMF file exists alongside .sys. Required for `tracefmt` decoding of WPP traces during VG-* testing.
+
+### 5g. PREfast static analyzer gate (NEW v1.5 — GATING for ship per D-S12-43)
+
+```pwsh
+# Run PREfast via msbuild (treat PREfast warnings as errors)
+msbuild MagicMouseDriver.vcxproj `
+    /p:Configuration=Release `
+    /p:Platform=x64 `
+    /p:RunCodeAnalysis=true `
+    /p:CodeAnalysisRuleSet=NativeMinimumRules.ruleset `
+    /p:CodeAnalysisTreatWarningsAsErrors=true `
+    /p:WppEnabled=true `
+    /verbosity:minimal `
+    /m
+
+# Check for any residual C6xxx / C28xxx warnings in the build log
+$buildLog = Get-Content ".\MagicMouseDriver.log" -ErrorAction SilentlyContinue
+$prefastWarnings = $buildLog | Select-String -Pattern "warning C6|warning C28"
+if ($prefastWarnings) {
+    Write-Error "PREfast warnings found -- HALT. Fix before proceeding to sign."
+    $prefastWarnings | ForEach-Object { Write-Error $_ }
+} else {
+    Write-Output "BUILD-5 PASS: PREfast 0 warnings"
+}
+```
+
+**Gate BUILD-5 (v1.5):** PREfast reports 0 Code Analysis warnings. This gate is NON-SKIPPABLE for any ship candidate. A dev/debug build without /p:RunCodeAnalysis=true is acceptable for iteration, but the final release build must pass BUILD-5.
+
+### 5h. Verify line endings on driver source (NEW v1.5 — upstream lessons D-S12-49)
+
+```pwsh
+# From the EWDK build environment or WSL
+git ls-files --eol -- driver/ | Tee-Object line-endings.txt
+
+# Check that .inf files show eol=crlf not eol=lf
+$lf_infs = Get-Content line-endings.txt | Where-Object { $_ -match "\.inf" -and $_ -match "eol=lf" }
+if ($lf_infs) {
+    Write-Error "CRLF violation: .inf file(s) have LF line endings -- signing will fail."
+    $lf_infs | ForEach-Object { Write-Error $_ }
+    Write-Error "Fix: ensure driver/.gitattributes exists with '*.inf text eol=crlf' and re-checkout."
+} else {
+    Write-Output "Line endings OK: all .inf files are CRLF"
+}
+```
+
+**Gate BUILD-6 (v1.5):** All `.inf` files in `driver/` report `eol=crlf` in git ls-files output. Failure = DO NOT SIGN -- signing will fail with hash mismatch.
+
+### 5i. SDV gate (NEW v1.5 — GATING for ship per D-S12-44)
+
+Run SDV before signing. SDV catches deadlocks, IRP completion races, KMDF rule violations.
+
+```pwsh
+# Run SDV (from EWDK build environment -- takes 10-30 min)
+msbuild MagicMouseDriver.vcxproj `
+    /t:sdv `
+    /p:inputs="/check:default.sdv" `
+    /p:Configuration=Release `
+    /p:Platform=x64
+
+# Gate: check sdv-report.xml for defects
+[xml]$sdvReport = Get-Content "driver\sdv-report.xml"
+$defectCount = [int]$sdvReport.DEFECTS.count
+if ($defectCount -gt 0) {
+    Write-Error "SDV found $defectCount defects -- HALT. Do not sign until defects resolved."
+    $sdvReport.DEFECTS.DEFECT | ForEach-Object { Write-Error "$($_.RULE) $($_.ENTRYPOINT)" }
+} else {
+    Write-Output "BUILD-7 PASS: SDV 0 defects"
+}
+```
+
+**Gate BUILD-7 (v1.5):** SDV reports 0 defects. This gate is NON-SKIPPABLE for any ship candidate. Note: SDV run time is 10-30 minutes; schedule accordingly.
 
 ---
 
@@ -462,12 +556,13 @@ foreach ($pid in @("VID_004C&PID_030D", "VID_004C&PID_0310", "VID_004C&PID_0323"
     $ps = "$devCfg\PowerSaver"
     if (-not (Test-Path $ps)) { New-Item -Path $ps -Force | Out-Null }
     Set-ItemProperty -Path $ps -Name Enabled -Value 1 -Type DWord
-    Set-ItemProperty -Path $ps -Name SuspendOnDisplayOff -Value 0 -Type DWord
-    Set-ItemProperty -Path $ps -Name SuspendOnACUnplug -Value 0 -Type DWord
+    # v1.5: aggressive defaults per user decision D-S12-45 -- all 5 events default to 1
+    Set-ItemProperty -Path $ps -Name SuspendOnDisplayOff -Value 1 -Type DWord
+    Set-ItemProperty -Path $ps -Name SuspendOnACUnplug -Value 1 -Type DWord
     Set-ItemProperty -Path $ps -Name SuspendOnSignOut -Value 1 -Type DWord
     Set-ItemProperty -Path $ps -Name SuspendOnSleep -Value 1 -Type DWord
     Set-ItemProperty -Path $ps -Name SuspendOnShutdown -Value 1 -Type DWord
-    # SuspendCommandBytes intentionally left empty — F22 fallback (BT disconnect) until OQ-F resolved
+    # SuspendCommandBytes intentionally left empty -- F22 fallback (BT disconnect) until OQ-F resolved
     Set-ItemProperty -Path $ps -Name SuspendCommandBytes -Value ([byte[]]@()) -Type Binary
 }
 ```
@@ -807,6 +902,70 @@ verifier /query
 
 **Gate VG-11:** zero violations across all cycles. Zero BSOD. `verifier /query` reports zero flagged drivers. Disable: `verifier /reset` after pass.
 
+### VG-12: Auto-reinit-on-wake validation (NEW v1.5 — auto-reinit feature D-S12-41)
+
+Validates that shadow buffer is invalidated + re-primed after system sleep/wake cycle.
+
+```pwsh
+# Pre-condition: v3 mouse connected and producing battery reads (VG-2 passed)
+
+# Step 1: confirm shadow valid (WPP log shows shadow.Valid=TRUE)
+logman start M12-wake-test -p {8D3C1A92-B04E-4F18-9A23-7E5D4F892C12} -o wake-test.etl -ets
+
+# Step 2: induce sleep
+Add-Type -AssemblyName System.Windows.Forms
+[System.Windows.Forms.Application]::SetSuspendState('Suspend', $false, $false)
+
+# Step 3: wake (move mouse or press keyboard)
+# Wait 30 seconds for reconnect + re-prime
+Start-Sleep -Seconds 30
+
+# Step 4: query Feature 0x47 from tray
+Get-Content "$env:APPDATA\MagicMouseTray\debug.log" -Tail 20 |
+    Select-String "pid&0323.*battery="
+
+logman stop M12-wake-test -ets
+tracefmt wake-test.etl -p <tmf-dir> -o wake-decoded.txt
+
+# Gate check: WPP log must show EvtDeviceD0Entry event with "shadow invalidated"
+# followed by either a M12_TryPrimeShadowBuffer success or an organic RID=0x27 frame
+Select-String -Path wake-decoded.txt -Pattern "shadow invalidated|PrimeShadowBuffer|RID=0x27"
+```
+
+**Gate VG-12:** WPP log shows `shadow invalidated` on wake. Battery read (tray log `OK battery=N%`) succeeds within 60s of wake. No BSOD during sleep/wake cycle.
+
+### VG-13: Battery polling fallback for cold shadow buffer (NEW v1.5 — fallback feature D-S12-42)
+
+Validates that the `ColdShadowThresholdMs` (60s default) path issues GET_REPORT and populates shadow before completing Feature 0x47.
+
+```pwsh
+# Step 1: verify mouse connected but shadow cold (force it by PnP disable+enable)
+pnputil /disable-device $v3Inst
+Start-Sleep -Seconds 2
+pnputil /enable-device $v3Inst
+# After enable, shadow.Valid=FALSE (EvtDeviceD0Entry invalidates it)
+# Do NOT move the mouse -- avoid organic RID=0x27 frames
+
+# Step 2: set DebugLevel=3 to capture shadow activity
+Set-ItemProperty -Path $svcParams -Name DebugLevel -Value 3 -Type DWord
+
+# Step 3: immediately query Feature 0x47 (before 60s threshold elapses)
+$elapsed = Measure-Command {
+    & scripts\mm-hid-feature-read.ps1 -InstanceId $v3Inst -ReportId 0x47
+}
+
+# Step 4: check WPP log
+Get-Content "$env:APPDATA\MagicMouseTray\debug.log" -Tail 20 |
+    Select-String "PrimeShadowBuffer|ColdShadowThreshold|shadow cold"
+```
+
+**Gate VG-13:** When shadow is cold at the time of Feature 0x47 query:
+- WPP log shows `shadow cold` + `PrimeShadowBufferSync` call.
+- Either: PrimeShadow succeeds within 500ms timeout and tray receives `OK battery=N%` in the same poll; OR: PrimeShadow times out and tray receives `STATUS_DEVICE_NOT_READY` (acceptable -- mouse may not be responsive within 500ms of reconnect).
+- Zero BSOD. No deadlock (5-second watchdog on the sync call).
+
+Reset: `Set-ItemProperty -Path $svcParams -Name DebugLevel -Value 0 -Type DWord`
+
 ---
 
 ## 10. Health checks
@@ -900,6 +1059,9 @@ Should be stable or trending — sustained growth = leak.
 [ ] BUILD-2:      hidparser.exe validates 116-byte reference descriptor
 [ ] BUILD-3:      pool tag 'M12 ' present in binary
 [ ] BUILD-4 (v1.4): TMF file generated alongside .sys (WPP support, Sec 19)
+[ ] BUILD-5 (v1.5): PREfast 0 Code Analysis warnings (gate per D-S12-43)
+[ ] BUILD-6 (v1.5): .inf files confirmed CRLF via git ls-files --eol (gate per D-S12-49)
+[ ] BUILD-7 (v1.5): SDV 0 defects in sdv-report.xml (gate per D-S12-44)
 [ ] SIGN-1:       signtool verify successful (RFC 3161 SHA256)
 [ ] 7a:           applewirelessmouse removed from LowerFilters
 [ ] 7a.1 (v1.4):  no competing INF with DriverVer >= 01/01/2027
@@ -907,6 +1069,7 @@ Should be stable or trending — sustained growth = leak.
 [ ] 7a.3 (v1.4):  no stale MagicMouseDriver INF in DriverStore
 [ ] 7e:           registry tunables BATTERY_OFFSET + FirstBootPolicy + MAX_STALE_MS + DebugLevel set
 [ ] 7e (v1.4):    per-device Watchdog + PowerSaver subkeys created for all 3 PIDs
+[ ] 7e (v1.5):    PowerSaver defaults verified: SuspendOnDisplayOff=1, SuspendOnACUnplug=1
 [ ] INSTALL-1:    MagicMouseM12 LowerFilters bound to v1 + v3, service RUNNING
 [ ] 7d.1 (v1.4):  registry binding cross-check (reg query) confirms M12 wins rank
 [ ] 7d.2 (v1.4):  orphan-filter walk reports clean BTHENUM tree
@@ -922,6 +1085,8 @@ Should be stable or trending — sustained growth = leak.
 [ ] VG-9 (v1.4):  battery-saving 24-hr A/B (treatment <= 50% control drift)
 [ ] VG-10 (v1.4): multi-mouse simultaneous read-out (v1+v3 independent)
 [ ] VG-11 (v1.4): Driver Verifier 0x49bb soak: 1000 IOCTL + 100 pair/unpair = 0 violations
+[ ] VG-12 (v1.5): auto-reinit-on-wake: shadow invalidated + battery read OK within 60s post-wake
+[ ] VG-13 (v1.5): battery-polling-fallback: cold shadow triggers GET_REPORT; no deadlock
 [ ] HEALTH-10a:   no BSOD events in System log
 [ ] HEALTH-10d:   service state RUNNING throughout
 
