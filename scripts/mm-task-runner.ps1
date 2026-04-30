@@ -189,6 +189,102 @@ try {
         }
         Log "DV-CHECK exited $rc; log at $dvLog"
     }
+    # ROLLBACK-M12: uninstall M12 driver + reinstall Apple's INF from backup.
+    # Request format: ROLLBACK-M12|<nonce>
+    elseif ($phase -eq 'ROLLBACK-M12') {
+        $rbLog = Join-Path $QueueDir "rollback-$nonce.log"
+        try {
+            "=== ROLLBACK-M12 start $(Get-Date) ===" | Set-Content $rbLog -Encoding ASCII
+            $enum = & pnputil /enum-drivers 2>&1 | Out-String
+            $rx = [regex]'(?ms)Published Name:\s*(oem\d+\.inf)\s*\nOriginal Name:\s*magicmousedriver\.inf'
+            $m = $rx.Match($enum)
+            if ($m.Success) {
+                $oem = $m.Groups[1].Value
+                "Removing $oem ..." | Add-Content $rbLog -Encoding ASCII
+                & pnputil /delete-driver $oem /uninstall /force 2>&1 | Add-Content $rbLog -Encoding ASCII
+            } else {
+                "M12 not registered (or pnputil format unexpected)" | Add-Content $rbLog -Encoding ASCII
+            }
+            $apple = 'D:\Backups\AppleWirelessMouse-RECOVERY\applewirelessmouse.inf'
+            if (Test-Path $apple) {
+                "Restoring Apple driver from $apple ..." | Add-Content $rbLog -Encoding ASCII
+                & pnputil /add-driver $apple /install 2>&1 | Add-Content $rbLog -Encoding ASCII
+                $rc = 0
+            } else {
+                "ERROR: Apple INF backup not found at $apple" | Add-Content $rbLog -Encoding ASCII
+                $rc = 3
+            }
+            "=== ROLLBACK-M12 end $(Get-Date) ===" | Add-Content $rbLog -Encoding ASCII
+        } catch {
+            "Exception: $_" | Add-Content $rbLog -Encoding ASCII
+            $rc = 99
+        }
+        Log "ROLLBACK-M12 exited $rc; log at $rbLog"
+    }
+    # INSTALL-DRIVER: pnputil /add-driver <inf> /install. Format: INSTALL-DRIVER|<nonce>|<inf-path>
+    elseif ($phase -eq 'INSTALL-DRIVER') {
+        $infPath = if ($parts.Count -gt 2) { $parts[2].Trim() } else { '' }
+        $instLog = Join-Path $QueueDir "install-$nonce.log"
+        if (-not $infPath -or -not (Test-Path $infPath)) {
+            "ERROR: INF path missing or not found: $infPath" | Set-Content $instLog -Encoding ASCII
+            $rc = 2
+        } else {
+            try {
+                "=== pnputil /add-driver $infPath /install ===" | Set-Content $instLog -Encoding ASCII
+                & pnputil /add-driver $infPath /install 2>&1 | Add-Content $instLog -Encoding ASCII
+                $rc = $LASTEXITCODE
+                if ($null -eq $rc) { $rc = 0 }
+            } catch {
+                "Exception: $_" | Add-Content $instLog -Encoding ASCII
+                $rc = 99
+            }
+        }
+        Log "INSTALL-DRIVER exited $rc; log at $instLog"
+    }
+    # UNINSTALL-DRIVER: pnputil /delete-driver <oemNN.inf> /uninstall /force.
+    # Format: UNINSTALL-DRIVER|<nonce>|<oemNN.inf>
+    elseif ($phase -eq 'UNINSTALL-DRIVER') {
+        $oem = if ($parts.Count -gt 2) { $parts[2].Trim() } else { '' }
+        $unLog = Join-Path $QueueDir "uninstall-$nonce.log"
+        if (-not $oem) {
+            "ERROR: oemNN.inf name required" | Set-Content $unLog -Encoding ASCII
+            $rc = 2
+        } else {
+            try {
+                "=== pnputil /delete-driver $oem /uninstall /force ===" | Set-Content $unLog -Encoding ASCII
+                & pnputil /delete-driver $oem /uninstall /force 2>&1 | Add-Content $unLog -Encoding ASCII
+                $rc = $LASTEXITCODE
+                if ($null -eq $rc) { $rc = 0 }
+            } catch {
+                "Exception: $_" | Add-Content $unLog -Encoding ASCII
+                $rc = 99
+            }
+        }
+        Log "UNINSTALL-DRIVER exited $rc; log at $unLog"
+    }
+    # SIGN-FILE: signtool sign /sm /sha1 ... /fd sha256 /tr ... /td sha256 <file>
+    # Format: SIGN-FILE|<nonce>|<file-path>|<thumbprint>
+    elseif ($phase -eq 'SIGN-FILE') {
+        $sf  = if ($parts.Count -gt 2) { $parts[2].Trim() } else { '' }
+        $thb = if ($parts.Count -gt 3) { $parts[3].Trim() } else { 'B902C2864315E2DE359450024768CE7D01715C38' }
+        $sfLog = Join-Path $QueueDir "signfile-$nonce.log"
+        $signtool = 'F:\Program Files\Windows Kits\10\bin\10.0.26100.0\x64\signtool.exe'
+        if (-not (Test-Path $sf)) {
+            "ERROR: file not found: $sf" | Set-Content $sfLog -Encoding ASCII
+            $rc = 2
+        } else {
+            try {
+                "=== sign $sf with $thb ===" | Set-Content $sfLog -Encoding ASCII
+                & $signtool sign /sm /sha1 $thb /fd sha256 /tr 'http://timestamp.digicert.com' /td sha256 /v $sf 2>&1 | Add-Content $sfLog -Encoding ASCII
+                $rc = $LASTEXITCODE
+                if ($null -eq $rc) { $rc = 0 }
+            } catch {
+                "Exception: $_" | Add-Content $sfLog -Encoding ASCII
+                $rc = 99
+            }
+        }
+        Log "SIGN-FILE exited $rc; log at $sfLog"
+    }
     # Special phase prefix "SNAPSHOT:Stack" routes to mm-bt-stack-snapshot.ps1
     elseif ($phase -like 'SNAPSHOT:*') {
         $snapScript = 'D:\mm3-driver\scripts\mm-bt-stack-snapshot.ps1'

@@ -1,22 +1,25 @@
 // SPDX-License-Identifier: MIT
+// SdpRewrite — SDP attribute 0x0206 (HIDDescriptorList) descriptor injection.
+//
+// Public entry point called from OnSdpQueryComplete (Driver.c) after
+// IOCTL_BTH_SDP_SERVICE_SEARCH_ATTRIBUTE completes. Scans the SDP response
+// buffer for attribute 0x0206, replaces the embedded HID descriptor with
+// g_HidDescriptor[] (Descriptor C: RID=0x02 scroll + RID=0x90 battery).
 #pragma once
-#include "Driver.h"
 
-// Handle IRP_MJ_INTERNAL_DEVICE_CONTROL with IOCTL_INTERNAL_BTH_SUBMIT_BRB (0x00410003).
-// Reads BRB_HEADER.Type from the BRB at Parameters.Others.Argument1 and dispatches:
-//   BRB_L2CA_OPEN_CHANNEL / OPEN_CHANNEL_RESPONSE → forward + completion to store handle
-//   BRB_L2CA_CLOSE_CHANNEL → read and clear stored handle, forward
-//   BRB_L2CA_ACL_TRANSFER  → forward + completion to intercept/translate data buffer
-//   All others             → pass through (send-and-forget)
-VOID InputHandler_HandleBrbSubmit(_In_ WDFDEVICE Device, _In_ WDFREQUEST Request);
+#include <ntddk.h>
+#include <wdf.h>
 
-// Completion routine for BRB_L2CA_OPEN_CHANNEL and BRB_L2CA_OPEN_CHANNEL_RESPONSE.
-// Reads the output ChannelHandle from the completed BRB and stores it in DEVICE_CONTEXT.
-// First open → ControlChannelHandle. Second → InterruptChannelHandle.
-EVT_WDF_REQUEST_COMPLETION_ROUTINE InputHandler_OpenChannelCompletion;
-
-// Completion routine for BRB_L2CA_ACL_TRANSFER.
-// - Incoming data on ControlChannel:  inject g_HidDescriptor[] (first occurrence only).
-// - Incoming data on InterruptChannel: translate Report 0x12 → Report 0x01 (TLC1 mouse).
-// - All other data: pass through unchanged.
-EVT_WDF_REQUEST_COMPLETION_ROUTINE InputHandler_AclCompletion;
+// SdpRewrite_Process — scan buf[0..bufSize) for SDP attribute 0x0206 and
+// replace the embedded HID descriptor with g_HidDescriptor[].
+//
+// Returns:
+//   STATUS_SUCCESS                 — patch applied; *newLen = new byte count
+//   STATUS_NOT_FOUND               — attribute 0x0206 not present; passthrough
+//   STATUS_MORE_PROCESSING_REQUIRED — pattern found but patch validation failed
+//   STATUS_INVALID_PARAMETER       — buf NULL or bufSize too small to scan
+NTSTATUS
+SdpRewrite_Process(
+    _Inout_updates_bytes_(bufSize) PUCHAR  buf,
+    _In_  ULONG  bufSize,
+    _Out_ PULONG newLen);

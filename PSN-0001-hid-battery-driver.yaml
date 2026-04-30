@@ -2,14 +2,14 @@
 title: PSN-0001 — Magic Mouse HID Battery Reader Driver Binding
 type: problem-session-note
 psn_id: PSN-0001
-version: 1.9.0
+version: 2.0.0
 status: active
 linked_prd: PRD-184
 linked_repo: ReviveBusiness/magic-mouse-tray
 linked_issues: [2, 3, 4]
 opened: 2026-04-17
-last_updated: 2026-04-28
-sessions_logged: 12
+last_updated: 2026-04-29
+sessions_logged: 13
 close_out_gate: ".ai/playbooks/autonomous-agent-team.md#per-phase-close-out-gate-non-skippable"
 session_protocol: |
   Every session that touches PRD-184 work MUST end by running through the
@@ -68,31 +68,37 @@ Tray code is correct (`splitVendorBattery` + `unifiedAppleBattery` paths both im
 
 ## Next Session Brief
 
-**Current state (2026-04-28 post-Session-11)**:
-- Phase E complete (commit 994c66d). Major narrative correction: the v3 battery problem is **HidBth descriptor cache state (A vs B)**, not filter binding. Filter is bound in BOTH states.
-- ~588 probe attempts across 6 channels confirm: in Descriptor B no documented channel returns v3 battery data. The vendor 0xFF00 TLC (where battery lives) is not enumerated as a child PDO.
-- Tray code is correct — `splitVendorBattery` (Input 0x90 byte[2] on COL02) and `unifiedAppleBattery` (Feature 0x47 on Mouse TLC) paths both exist and switch on runtime caps. The bug is HidBth's cached descriptor variant.
-- Two prior framings ARE WRONG and have been corrected:
-  - "Apple driver traps Feature 0x47" (`MouseBatteryReader.cs` log line, PSN H-008): inferential, not measured. err=87 just means the device doesn't back the phantom 0x47. No trap. (AP-19)
-  - "Filter is inert / unbound on v3" (earlier `bt-stack-snapshot.txt` reading): wrong registry path queried. `DEVPKEY_Device_LowerFilters` confirms filter IS bound on v1+v3 in both A and B states. (AP-18)
-- Magic Utilities was previously bound to v3 (registry from 2026-04-03, `LowerFilters: MagicMouse`). User has ruled out re-purchasing. Preserve-INF plan documented as last resort (`docs/MAGIC-UTILITIES-PRESERVE-PLAN.md` + `scripts/mm-magicutilities-capture.ps1`, 663 lines, syntax-clean) but EULA-questionable.
+**Current state (2026-04-29 post-Session-13)**: DRIVER IMPLEMENTATION COMPLETE. READY TO BUILD + TEST.
 
-**Files to read first**:
-- `docs/PHASE-E-FINDINGS.md` — TL;DR + 16 facts + Descriptor A/B state machine
-- `docs/v3-BATTERY-EMPIRICAL-PROOF-AND-PATHS.md` — 588 attempts / 0 hits + 5 paths forward
-- `docs/DESCRIPTOR-A-vs-B-DIFF.md` — A/B field-by-field comparison
-- `docs/REGISTRY-DIFF-AND-PNP-EVIDENCE.md` — three-era registry diff (Nov-25 / Apr-03 MagicUtil / Apr-27)
-- `docs/research-findings.md` — NotebookLM 150-source synthesis
-- `docs/MAGIC-UTILITIES-PRESERVE-PLAN.md` — last-resort path, do not execute without user decision
-- `.ai/test-runs/2026-04-27-154930-T-V3-AF/E18-pnp-eventlog-narrative.md` — driver/filter timeline 2025-11-24 → 2026-04-28
-- `.ai/test-runs/2026-04-27-154930-T-V3-AF/E6-E7c-findings.md` — source audit + applewirelessmouse.sys static analysis
+- **All driver source complete** (branch `ai/m12-script-tests`): Driver.c, InputHandler.c, HidDescriptor.c, MagicMouseDriver.inf, diagnose-m13.ps1
+- **SDP format empirically confirmed**: 351 bytes, top-level 0x36 (2-byte), inner sequences 0x35 (1-byte), native descriptor 135 bytes. Descriptor C (injected) = 106 bytes. Scanner and patcher verified correct against actual SDP cache blob.
+- **T3 peer review APPROVE** (NLM notebook 91f8a4d2, APEX 7/10). All NLM BLOCK findings = false positives. Two WARNs resolved.
+- **Tray integration**: zero changes needed. Existing `splitVendorBattery` path reads RID=0x90 on COL02 — that's exactly what Descriptor C provides.
+- **Recovery backup at `D:\Backups\AppleWirelessMouse-RECOVERY\`** — must verify present before install (AP-24).
 
-**Do NOT retry** (rejected hypotheses still apply):
-- H-001 ReportDescriptor as binding signal | H-003 `pnputil /restart-device` near active applewirelessmouse | H-004 LowerFilters in driver instance key fixing error 1077 | H-005 filter-binding-unreliable framing (REJECTED — binding survives + filter is bound in BOTH descriptor states) | H-008 "Apple driver traps Feature 0x47" framing (REJECTED Session 11 — device doesn't back phantom 0x47, no trap)
-- Confirmed: H-002 worst-state-wins, H-006 no descriptor augmentation path, H-007 Q7 YES via Phase 4A, H-009 PnP recycle restores State A intermittently, H-010 two HidBth cache variants exist, H-011 DSM-correlates-with-flip (partial)
-- Open: H-012 deterministic-recycle test on v3
+**Files to read first (next session)**:
+- `docs/M13-MOP.md` — THE document. Start here. Section 4 = prerequisites. Section 6 = build. Section 7 = sign. Section 8 = install. Section 10 = validation gates (MVP1/2/3).
+- `driver/InputHandler.c` + `driver/Driver.c` + `driver/HidDescriptor.c` + `driver/MagicMouseDriver.inf` — complete source
+- `diagnose-m13.ps1` — run after install to verify SdpPatchSuccess>0
 
-**Next step (FINAL, Session 12)**: **Phase M12 KMDF filter driver** is the production target. Path 5b (preserve-INF) is REFRAMED as reverse-engineering reference capture only — MU install on host → `mm-magicutilities-capture.ps1` → Ghidra analysis → write M12 clean-room → uninstall MU → test. See `docs/M12-MAGIC-UTILITIES-REFERENCE-PLAN.md`. Option Z eliminated (AP-21). Path 4 deprioritized (M12 is the cleaner path). Status quo rejected (battery N/A on v3 is not acceptable for PRD-184 success criteria). Estimated: 4-8 hr agentic once Ghidra analysis complete.
+**Next step (Session 14)**: BUILD AND INSTALL
+1. Mount EWDK (`F:\BuildEnv.cmd` or `D:\ewdk25h2\BuildEnv.cmd`)
+2. Run BUILD-1 through BUILD-7 (Section 6 of MOP)
+3. Run SIGN-1 through SIGN-3 (Section 7)
+4. Verify recovery backup present (PRE-1)
+5. Run install (Section 8): remove Apple driver, install M13, force v3 re-bind
+6. Run `.\diagnose-m13.ps1` — MVP1 gate: SdpPatchSuccess>0
+7. Test scroll (MVP2), test battery in tray (MVP3)
+8. Run VG-3 (v1 regression) + VG-4 (Dell USB unaffected)
+
+**Do NOT retry** (all rejected hypotheses from prior sessions still apply):
+- H-001 ReportDescriptor as binding signal | H-003 pnputil /restart-device | H-004 LowerFilters in driver instance key | H-005 filter-binding-unreliable | H-008 Apple driver traps Feature 0x47
+- The A/B flip problem is SOLVED by architecture: M13 replaces Apple's filter, so there is no filter left to cause the flip.
+
+**Key facts for MVP1 triage** (if SdpPatchSuccess=0):
+- `IoctlInterceptCount=0`: M13 not in device stack → check v3 LowerFilters (should be MagicMouseDriver, not applewirelessmouse)
+- `IoctlInterceptCount>0, SdpScanHits=0`: wrong IOCTL or cache stale → run Section 8f (SDP cache wipe) + unpair/repair
+- `SdpScanHits>0, SdpPatchSuccess=0`: patch failed → check LastPatchStatusHex
 
 **Anti-patterns added this session**:
 - AP-22 — Do not ship a third-party trial driver binary as the production solution. MU's `MagicMouse.sys` is a reference artifact for M12 RE, not a component to redistribute. Shipping it would create EULA risk, trial-expiry dependency, and no maintainable upgrade path.
@@ -120,3 +126,4 @@ Tray code is correct (`splitVendorBattery` + `unifiedAppleBattery` paths both im
 | 2026-04-28 | Session 11 | Phase E + research-driven empirical findings (commit 994c66d). MAJOR narrative corrections: (1) Two-state descriptor model — H-010 confirmed: HidBth serves either Descriptor A (vendor 0xFF00 TLC enumerated as COL02, battery readable, 96 OK reads on 04-27) or Descriptor B (single Mouse TLC + phantom Feature 0x47, battery err=87, 295 FEATURE_BLOCKED). Registry byte-identical between states; cache lives in kernel pool. (2) Filter binding is NOT the axis — `DEVPKEY_Device_LowerFilters` confirms `applewirelessmouse` is bound to v1+v3 in BOTH states. Earlier `bt-stack-snapshot.txt` reading the wrong registry path was the bug, not filter binding (AP-18). (3) "Apple driver traps Feature 0x47" framing (H-008, MouseBatteryReader.cs log line, PRD narrative) is INFERENTIAL not measured — REJECTED. err=87 just means the device doesn't back the phantom 0x47 (AP-19). (4) ~588 probe attempts across 6 channels (PnP DEVPKEY × 24, WMI battery × 5, AppleBluetoothMultitouch IOCTL 0x800-0x830 × 49, HidD_Get* every ReportID × 508, orphan COL02 direct open, Get-PnpDevice -Class Battery) → 0 hits in Descriptor B. (5) DSM property-write event at 04-27 19:50:53 correlates with the only observed A→B flip (H-011 partial). (6) Magic Utilities WAS bound to v3 from 2026-03-18 → 2026-04-17 with `LowerFilters: MagicMouse` per registry from 2026-04-03 backup; user has ruled out re-purchasing. Preserve-INF plan + capture script (663 lines) documented as last resort but EULA-questionable. (7) NotebookLM 150-source deep research synthesis (notebook bd78726f-…) — three-channel battery taxonomy (BLE Manuf Data / GATT 0x180F / HID), MagicUtilities-polls-15-min cadence guidance, OSS reference repos (WinMagicBattery / martinsoft / Magic-Warnings / mac-precision-touchpad). Anti-patterns added to playbook v1.6: AP-18 wrong registry path, AP-19 single-error-code causal inference, AP-20 screenshot layout described not data extracted. Path-forward decision pending: Option Z (detect B + recycle, 1-2 days tray code) vs Phase M12 KMDF filter (2-4 weeks) vs Path 4 IOCTL RE on `/tmp/applewirelessmouse.sys` (1-2 days RE) vs Path 5b preserve-INF (last resort). Recycle test on v3 NOT YET RUN. |
 | 2026-04-28 | Session 12 (early) | PRD-184 plan corrected. **Decision D-S12-01** (D-S12 = Session 12 decision): Use Magic Utilities as **reverse-engineering reference only, NOT production install**. (D-S12-02) Build clean-room **M12 KMDF filter driver** from captured material. (D-S12-03) **Uninstall MU after capture** phase. (D-S12-04) Adopt **v1-as-control strategy** for validation. Rationale: cleaner IP, no EULA shipping risk, no trial-expiry dependency, no userland maintenance debt (MU trial now expired, app unmaintained). OLD plan (install MU, capture INF, ship MU driver as production) reframed as reference-only; new plan is custom clean-room implementation. Two anti-patterns captured: AP-22 (don't ship third-party trial driver as production) + AP-23 (don't manipulate trial registry to extend expiry). Playbook bumped to v1.8. Pending: Windows 11 Home → no Sandbox → install on host; setup.exe run; capture script execution; Ghidra analysis of extracted .sys; M12 implementation starting from captured material; regression validation (v1 as control baseline). |
 | 2026-04-28 | Session 12 (continued) | **Kernel-only MU test executed and conclusive (H-013 CONFIRMED FAIL).** Empirically confirmed that MU's kernel filter `MagicMouse.sys` does descriptor mutation only — scroll translation and battery queries are gated by userland service `MagicUtilitiesService.exe`. With trial-expired userland (service dead), scroll broken on both v1 and v3 and battery hidden. **M12 architecture finalized (D-016)**: pure kernel filter, ~300-500 LOC, replicates MU's Mode A descriptor + does in-IRP translation derived from Linux `hid-magicmouse.c` + Ghidra on `MagicMouse.sys`. No userland split. **Captures created**: `D:\Backups\MagicUtilities-Capture-2026-04-28-1937\` (41 files, 78.6 MB) including driver-package, driver-binary, program-files (userland), registry exports, PnP topology, sc qc text dumps. HID descriptor dumps in `.ai/test-runs/2026-04-27-154930-T-V3-AF/hid-descriptor-full-{kbd-col01,v1-col01,v3-col01}.txt`. **Incident — destructive command without backup**: `pnputil /delete-driver oem0.inf /force` (Apple's INF) executed to make MU's INF win the PnP rank battle without prior backup; Apple Wireless Mouse driver lost. Recovery via prior session snapshots (`.ai/snapshots/mm-state-*/oem0-applewirelessmouse.inf`) and user's downloaded zip (`D:\Users\Lesley\Downloads\MagicMouse2DriversWin11x64-master.zip`). Permanent recovery backup staged at `D:\Backups\AppleWirelessMouse-RECOVERY\`. Incident doc: `docs/INCIDENT-2026-04-28-APPLE-INF-DELETION.md`. Recovery procedure: `docs/APPLE-DRIVER-RECOVERY-PROCEDURE.md`. **New permanent feedback rule**: AP-24 + `~/.claude/projects/-home-lesley-projects/memory/feedback_backup_before_destructive_commands.md`. PSN-0001 v1.8.0 → v1.9.0. |
+| 2026-04-29 | Session 13 | **M12 SDP injection driver — full implementation complete. T3 peer review APPROVE. Comprehensive MOP written.** (1) SDP format empirically confirmed from `tests/2026-04-27-154930-T-V3-AF/bthport-discovery-d0c050cc8c4d.txt`: 351 bytes, `36 01 5C` top-level, inner sequences 0x35 (1-byte), native descriptor 135 bytes. After patch: 106 bytes Descriptor C, top-level `36 01 3F` (319 bytes), all 4 length fields patched correctly. (2) Driver implementation complete (Driver.c, InputHandler.c, HidDescriptor.c, MagicMouseDriver.inf, diagnose-m13.ps1). (3) T3 peer review (NLM notebook 91f8a4d2, APEX 7/10): 3 NLM BLOCK findings verified as false positives from incomplete source; 2 real WARNs resolved (0x35 inner confirmed empirically, unreachable descOffset<8 guard replaced with ASSERT). Verdict: APPROVE. (4) M13-MOP.md: 16 sections, 3 MVPs (VG-0 SdpPatchSuccess>0 / VG-1 scroll / VG-2 battery split), 21 failure modes, complete empirical appendix. (5) Tray integration: no code changes needed — existing splitVendorBattery path handles RID=0x90 on COL02. (6) M13 eliminates A/B flip source by replacing Apple's filter entirely. PSN-0001 v1.9.0 → v2.0.0. |
