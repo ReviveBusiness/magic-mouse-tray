@@ -395,17 +395,23 @@ function Install-Driver {
     }
     Write-Log "Device: $devId"
 
-    # Set LowerFilters (replaces INF [Install.HW] AddReg 0x00010008 = MULTI_SZ | APPEND).
+    # Set LowerFilters — explicit order: applewirelessmouse(0) below MagicMouseDriver(1).
+    # applewirelessmouse at index 0 (closest to hardware) sees HID read completions first,
+    # giving it access to raw touch data for gesture processing.
+    # MagicMouseDriver at index 1 handles SDP completion patching above it.
     $regPath = "HKLM:\SYSTEM\CurrentControlSet\Enum\$devId"
+    $targetLf = @('applewirelessmouse', 'MagicMouseDriver')
     try {
         $existing = (Get-ItemProperty $regPath -ErrorAction Stop).LowerFilters
-        if (-not $existing) { $existing = @() }
-        if ($existing -notcontains 'MagicMouseDriver') {
-            $newVal = @('MagicMouseDriver') + @($existing | Where-Object { $_ -ne '' })
-            Set-ItemProperty $regPath -Name LowerFilters -Value $newVal -Type MultiString
-            Write-Log "LowerFilters set: $($newVal -join ',')" 'OK'
+        $needsUpdate = ($null -eq $existing) -or
+                       ($existing.Count -ne $targetLf.Count) -or
+                       ($existing[0] -ne $targetLf[0]) -or
+                       ($existing[1] -ne $targetLf[1])
+        if ($needsUpdate) {
+            Set-ItemProperty $regPath -Name LowerFilters -Value $targetLf -Type MultiString
+            Write-Log "LowerFilters set: $($targetLf -join ',')" 'OK'
         } else {
-            Write-Log "LowerFilters already contains MagicMouseDriver" 'OK'
+            Write-Log "LowerFilters already correct: $($existing -join ',')" 'OK'
         }
     } catch {
         Write-Log "Cannot set LowerFilters at $regPath : $_" 'ERROR'
@@ -433,11 +439,13 @@ function Install-Driver {
     # reboot) also loads MagicMouseDriver.
     try {
         $postLf = (Get-ItemProperty $regPath -ErrorAction Stop).LowerFilters
-        if (-not $postLf) { $postLf = @() }
-        if ($postLf -notcontains 'MagicMouseDriver') {
-            $newVal = @('MagicMouseDriver') + @($postLf | Where-Object { $_ -ne '' })
-            Set-ItemProperty $regPath -Name LowerFilters -Value $newVal -Type MultiString
-            Write-Log "LowerFilters re-applied post-restart (oem0.inf reset guard): $($newVal -join ',')" 'OK'
+        $postNeedsUpdate = ($null -eq $postLf) -or
+                           ($postLf.Count -ne $targetLf.Count) -or
+                           ($postLf[0] -ne $targetLf[0]) -or
+                           ($postLf[1] -ne $targetLf[1])
+        if ($postNeedsUpdate) {
+            Set-ItemProperty $regPath -Name LowerFilters -Value $targetLf -Type MultiString
+            Write-Log "LowerFilters re-applied post-restart (oem0.inf reset guard): $($targetLf -join ',')" 'OK'
         } else {
             Write-Log "LowerFilters intact post-restart: $($postLf -join ',')" 'OK'
         }
@@ -561,16 +569,19 @@ function Restore-LowerFilters {
     }
     Write-Log "Device: $devId"
 
-    $regPath = "HKLM:\SYSTEM\CurrentControlSet\Enum\$devId"
+    $regPath  = "HKLM:\SYSTEM\CurrentControlSet\Enum\$devId"
+    $targetLf = @('applewirelessmouse', 'MagicMouseDriver')
     try {
         $existing = (Get-ItemProperty $regPath -ErrorAction Stop).LowerFilters
-        if (-not $existing) { $existing = @() }
-        if ($existing -contains 'MagicMouseDriver') {
+        $needsUpdate = ($null -eq $existing) -or
+                       ($existing.Count -ne $targetLf.Count) -or
+                       ($existing[0] -ne $targetLf[0]) -or
+                       ($existing[1] -ne $targetLf[1])
+        if (-not $needsUpdate) {
             Write-Log "LowerFilters already correct: $($existing -join ',')" 'OK'
         } else {
-            $newVal = @('MagicMouseDriver') + @($existing | Where-Object { $_ -ne '' })
-            Set-ItemProperty $regPath -Name LowerFilters -Value $newVal -Type MultiString
-            Write-Log "LowerFilters restored: $($newVal -join ',')" 'OK'
+            Set-ItemProperty $regPath -Name LowerFilters -Value $targetLf -Type MultiString
+            Write-Log "LowerFilters restored: $($targetLf -join ',')" 'OK'
 
             # Start service if not running
             $svc = Get-Service MagicMouseDriver -ErrorAction SilentlyContinue
@@ -585,12 +596,12 @@ function Restore-LowerFilters {
             pnputil /restart-device $devId 2>&1 | ForEach-Object { Add-Content -Path $SessionLog -Value $_ -Encoding UTF8 }
             Start-Sleep -Seconds 4
 
-            # Re-apply post-restart (guard against oem0.inf reset, same as Install-Driver Step 5)
+            # Re-apply post-restart guard
             $postLf = (Get-ItemProperty $regPath -ErrorAction SilentlyContinue).LowerFilters
-            if ($postLf -notcontains 'MagicMouseDriver') {
-                $newVal2 = @('MagicMouseDriver') + @($postLf | Where-Object { $_ -ne '' })
-                Set-ItemProperty $regPath -Name LowerFilters -Value $newVal2 -Type MultiString
-                Write-Log "LowerFilters re-applied post-restart: $($newVal2 -join ',')" 'OK'
+            $postNeedsUpdate = ($null -eq $postLf) -or ($postLf[0] -ne $targetLf[0]) -or ($postLf[1] -ne $targetLf[1])
+            if ($postNeedsUpdate) {
+                Set-ItemProperty $regPath -Name LowerFilters -Value $targetLf -Type MultiString
+                Write-Log "LowerFilters re-applied post-restart: $($targetLf -join ',')" 'OK'
             }
         }
     } catch {
