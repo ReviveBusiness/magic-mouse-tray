@@ -262,6 +262,55 @@ try {
         }
         Log "UNINSTALL-DRIVER exited $rc; log at $unLog"
     }
+    # CLEAR-BT-SDP-CACHE: delete CachedServices/DynamicCachedServices for a BT MAC.
+    # Format: CLEAR-BT-SDP-CACHE|<nonce>|<MAC-12-hex-no-colons>
+    elseif ($phase -eq 'CLEAR-BT-SDP-CACHE') {
+        $mac = if ($parts.Count -gt 2) { $parts[2].Trim() } else { '' }
+        $cbLog = Join-Path $QueueDir "bthcache-$nonce.log"
+        if (-not $mac) {
+            "ERROR: MAC required" | Set-Content $cbLog -Encoding ASCII
+            $rc = 2
+        } else {
+            try {
+                $base = "HKLM:\SYSTEM\CurrentControlSet\Services\BTHPORT\Parameters\Devices\$mac"
+                "=== clearing $base CachedServices + DynamicCachedServices ===" | Set-Content $cbLog -Encoding ASCII
+                foreach ($sub in 'CachedServices','DynamicCachedServices') {
+                    $p = "$base\$sub"
+                    if (Test-Path $p) {
+                        Remove-Item -Path $p -Recurse -Force -ErrorAction Stop
+                        "removed $p" | Add-Content $cbLog -Encoding ASCII
+                    } else {
+                        "$p not present" | Add-Content $cbLog -Encoding ASCII
+                    }
+                }
+                $rc = 0
+            } catch {
+                "Exception: $_" | Add-Content $cbLog -Encoding ASCII
+                $rc = 99
+            }
+        }
+        Log "CLEAR-BT-SDP-CACHE exited $rc; log at $cbLog"
+    }
+    # RESTART-DEVICE: pnputil /restart-device <instanceId> (requires SYSTEM/admin)
+    elseif ($phase -eq 'RESTART-DEVICE') {
+        $iid = if ($parts.Count -gt 2) { $parts[2..($parts.Count-1)] -join '|' } else { '' }
+        $rdLog = Join-Path $QueueDir "restart-$nonce.log"
+        if (-not $iid) {
+            "ERROR: instance ID required" | Set-Content $rdLog -Encoding ASCII
+            $rc = 2
+        } else {
+            try {
+                "=== pnputil /restart-device $iid ===" | Set-Content $rdLog -Encoding ASCII
+                & pnputil /restart-device $iid 2>&1 | Add-Content $rdLog -Encoding ASCII
+                $rc = $LASTEXITCODE
+                if ($null -eq $rc) { $rc = 0 }
+            } catch {
+                "Exception: $_" | Add-Content $rdLog -Encoding ASCII
+                $rc = 99
+            }
+        }
+        Log "RESTART-DEVICE exited $rc; log at $rdLog"
+    }
     # SIGN-FILE: signtool sign /sm /sha1 ... /fd sha256 /tr ... /td sha256 <file>
     # Format: SIGN-FILE|<nonce>|<file-path>|<thumbprint>
     elseif ($phase -eq 'SIGN-FILE') {
@@ -284,6 +333,68 @@ try {
             }
         }
         Log "SIGN-FILE exited $rc; log at $sfLog"
+    }
+    # PATCH-APPLE-SYS: stop service, copy patched .sys to System32\drivers, restart device.
+    # Format: PATCH-APPLE-SYS|<nonce>|<patched-sys-path>
+    elseif ($phase -eq 'PATCH-APPLE-SYS') {
+        $src   = if ($parts.Count -gt 2) { $parts[2].Trim() } else { '' }
+        $dest  = 'C:\Windows\System32\drivers\applewirelessmouse.sys'
+        $btId  = 'BTHENUM\{00001124-0000-1000-8000-00805F9B34FB}_VID&0001004C_PID&0323'
+        $paLog = Join-Path $QueueDir "patch-apple-$nonce.log"
+
+        if (-not $src -or -not (Test-Path $src)) {
+            "ERROR: patched sys not found: $src" | Set-Content $paLog -Encoding ASCII
+            $rc = 2
+        } else {
+            try {
+                "=== PATCH-APPLE-SYS $src -> $dest ===" | Set-Content $paLog -Encoding ASCII
+
+                # Find the BTHENUM 00001124 (HID) device instance ID for the Magic Mouse
+                $devEnum = & pnputil /enum-devices 2>&1 | Out-String
+                $rxId = [regex]'(?i)Instance ID:\s+(BTHENUM\\{00001124[^\r\n]*004c[^\r\n]*0323[^\r\n]*)'
+                $mId = $rxId.Match($devEnum)
+                $devId = if ($mId.Success) { $mId.Groups[1].Value.Trim() } else { '' }
+                "Device instance: '$devId'" | Add-Content $paLog -Encoding ASCII
+
+                # Re-enable device if it was previously disabled (in case a prior attempt disabled it)
+                if ($devId) {
+                    "Re-enabling device (precautionary)..." | Add-Content $paLog -Encoding ASCII
+                    & pnputil /enable-device "$devId" 2>&1 | Add-Content $paLog -Encoding ASCII
+                }
+
+                # Stage patched sys under a temp name in System32\drivers (no file lock on .new)
+                $staged = $dest + '.new'
+                "Staging to $staged ..." | Add-Content $paLog -Encoding ASCII
+                Copy-Item -Path $src -Destination $staged -Force -ErrorAction Stop
+                "Stage copy: OK" | Add-Content $paLog -Encoding ASCII
+
+                # Queue PendingFileRenameOperations: on next boot, rename .new -> .sys (atomic replace)
+                # Format: REG_MULTI_SZ, pairs of [src, dest] (NtMoveFile semantics at boot)
+                # Pair 1: delete/rename original -> to nothing is not needed; MoveFileEx replaces
+                # Use [System.IO.Path] NT prefix: \??\<path>
+                $ntNew  = '\??\' + $staged
+                $ntDest = '\??\' + $dest
+                $regKey = 'HKLM:\SYSTEM\CurrentControlSet\Control\Session Manager'
+                $existing = (Get-ItemProperty $regKey -Name PendingFileRenameOperations -ErrorAction SilentlyContinue).PendingFileRenameOperations
+                $newEntry = @($ntNew, $ntDest)
+                if ($existing) {
+                    # Remove any previous entry for this file to avoid duplicates
+                    $cleaned = $existing | Where-Object { $_ -notlike "*applewirelessmouse*" }
+                    $merged = [string[]]($cleaned + $newEntry)
+                } else {
+                    $merged = [string[]]$newEntry
+                }
+                Set-ItemProperty -Path $regKey -Name PendingFileRenameOperations -Value $merged -Type MultiString
+                "PendingFileRenameOperations queued: $ntNew -> $ntDest" | Add-Content $paLog -Encoding ASCII
+                "REBOOT REQUIRED to apply patch." | Add-Content $paLog -Encoding ASCII
+                $rc = 0
+            } catch {
+                "Exception: $_" | Add-Content $paLog -Encoding ASCII
+                Log "Exception in PATCH-APPLE-SYS: $_"
+                $rc = 99
+            }
+        }
+        Log "PATCH-APPLE-SYS exited $rc; log at $paLog"
     }
     # Special phase prefix "SNAPSHOT:Stack" routes to mm-bt-stack-snapshot.ps1
     elseif ($phase -like 'SNAPSHOT:*') {
