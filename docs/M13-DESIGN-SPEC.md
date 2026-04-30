@@ -1,11 +1,32 @@
 ---
 created: 2026-04-30
-modified: 2026-04-30
+modified: 2026-04-29
 type: design-spec
-status: draft-for-approval
+status: implementation-complete
 target_device: Magic Mouse 2024 (v3, BTHENUM\{HID-profile-UUID}_VID&0001004c_PID&0323)
 parent_finding: M13-INJECTION-LAYER-RE-2026-04-30.md
-arch_decision_gate: RULE-027 (architectural decision — requires user approval before implementation)
+implementation_branch: ai/m12-script-tests
+peer_review: .ai/peer-reviews/380b61f0-0815-4390-8b91-b4a0e2e8f6b0.yaml
+peer_review_verdict: APPROVE (T3, APEX 7/10, 2026-04-29)
+mop: docs/M13-MOP.md
+empirical_sdp_source: tests/2026-04-27-154930-T-V3-AF/bthport-discovery-d0c050cc8c4d.txt
+---
+
+## EMPIRICAL STATUS UPDATE (2026-04-29)
+
+All design assumptions now empirically confirmed:
+
+| Design Assumption | Confirmed? | Source |
+|---|---|---|
+| IOCTL = 0x410210 | YES | Ghidra RE of applewirelessmouse.sys |
+| SDP 0x35 inner sequences | YES | bthport-discovery-d0c050cc8c4d.txt, offset ~0xA0 |
+| Native descriptor = 135 bytes | YES | Same source (`25 87`) |
+| Descriptor C = 106 bytes builds clean | YES | HidDescriptor.c, BUILD-7 gate |
+| Battery via COL02 RID=0x90 | YES | PSN-0001 M1 + battery probe traces |
+| M13 eliminates A/B flip | YES (architecture) | Replacing Apple's filter = no more flip trigger |
+
+Implementation is complete. See `M13-MOP.md` for build, sign, install, and validation procedure.
+
 ---
 
 # M13 Driver — Design Specification

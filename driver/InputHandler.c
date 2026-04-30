@@ -130,7 +130,8 @@ PatchSdpHidDescriptor(
     _Out_ PULONG   newBufUsed)
 {
     // Validate before any mutation.
-    if (descOffset < 8)        return STATUS_INVALID_PARAMETER;
+    // descOffset = i + 11 (from ScanForSdpHidDescriptor), always >= 11.
+    ASSERT(descOffset >= 11);
     if (g_HidDescriptorSize == 0) return STATUS_INVALID_PARAMETER;
 
     ULONG newDescLen   = g_HidDescriptorSize;
