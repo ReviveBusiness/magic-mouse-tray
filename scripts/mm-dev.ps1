@@ -366,9 +366,20 @@ function Install-Driver {
 
     # Step 2: Register kernel service (replaces INF [Install.Services] AddService).
     # sc.exe requires spaces after '=' - this is intentional PowerShell sc.exe syntax.
+    # Retry once on exit 1072 (marked for deletion): the previous service object may still
+    # be draining references when we arrive here, cleared within ~2s of device restart.
     Write-Log "Creating kernel service MagicMouseDriver"
-    $scOut = sc.exe create MagicMouseDriver type= kernel start= demand binPath= "system32\drivers\MagicMouseDriver.sys" DisplayName= "Magic Mouse Driver" 2>&1
+    $scCreateArgs = @('create','MagicMouseDriver','type=','kernel','start=','demand',
+                      'binPath=','system32\drivers\MagicMouseDriver.sys',
+                      'DisplayName=','Magic Mouse Driver')
+    $scOut = sc.exe @scCreateArgs 2>&1
     $scOut | ForEach-Object { Add-Content -Path $SessionLog -Value $_ -Encoding UTF8 }
+    if ($LASTEXITCODE -eq 1072) {
+        Write-Log "sc.exe create returned 1072 (service marked for deletion) - waiting 3s and retrying" 'WARN'
+        Start-Sleep -Seconds 3
+        $scOut = sc.exe @scCreateArgs 2>&1
+        $scOut | ForEach-Object { Add-Content -Path $SessionLog -Value $_ -Encoding UTF8 }
+    }
     if ($LASTEXITCODE -eq 0) {
         Write-Log "Service created." 'OK'
     } else {
