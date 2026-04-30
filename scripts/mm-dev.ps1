@@ -23,13 +23,14 @@
     Install  - Remove old driver, install new, restart device
     Verify   - Post-install health check (LowerFilters, COL01 status, oem package)
     Rollback - Remove our filter driver entirely (recovery path)
+    Restore  - Re-apply LowerFilters without rebuild (use after BT reconnect)
     Capture  - (Re)start DebugView capturing to $DebugLog
     Full     - State -> Build -> Sign -> Install -> Verify -> State
     Log      - Tail last 40 lines of session log
     Debug    - Tail last 40 MagicMouse lines from debug log
 #>
 param(
-    [ValidateSet('State','Build','Sign','Install','Verify','Rollback','Capture','Full','Log','Debug')]
+    [ValidateSet('State','Build','Sign','Install','Verify','Rollback','Restore','Capture','Full','Log','Debug')]
     [string]$Phase = 'Full',
 
     [string]$EwdkRoot   = 'F:\',
@@ -422,6 +423,28 @@ function Install-Driver {
     }
 
     Start-Sleep -Seconds 4
+
+    # Step 5: Re-apply LowerFilters after restart.
+    # pnputil /restart-device triggers a full BTHENUM re-enumeration. PnP re-runs the selected
+    # driver INF (oem0.inf / applewirelessmouse.inf) which has a replace-flag AddReg:
+    #   HKR,,"LowerFilters",0x00010000,"applewirelessmouse"   <- overwrites our entry
+    # The current stack survives the restart with our driver loaded, but the registry is reset.
+    # Re-applying here ensures the registry matches reality so the NEXT restart (BT reconnect,
+    # reboot) also loads MagicMouseDriver.
+    try {
+        $postLf = (Get-ItemProperty $regPath -ErrorAction Stop).LowerFilters
+        if (-not $postLf) { $postLf = @() }
+        if ($postLf -notcontains 'MagicMouseDriver') {
+            $newVal = @('MagicMouseDriver') + @($postLf | Where-Object { $_ -ne '' })
+            Set-ItemProperty $regPath -Name LowerFilters -Value $newVal -Type MultiString
+            Write-Log "LowerFilters re-applied post-restart (oem0.inf reset guard): $($newVal -join ',')" 'OK'
+        } else {
+            Write-Log "LowerFilters intact post-restart: $($postLf -join ',')" 'OK'
+        }
+    } catch {
+        Write-Log "Cannot re-apply LowerFilters post-restart: $_" 'WARN'
+    }
+
     Write-Log "Install complete." 'OK'
     return $true
 }
@@ -526,6 +549,60 @@ function Rollback-Driver {
 }
 
 # ---------------------------------------------------------------------------
+# RESTORE - re-apply LowerFilters without rebuild (recovery after BT reconnect)
+# ---------------------------------------------------------------------------
+function Restore-LowerFilters {
+    Write-Section "RESTORE LOWERFILTERS - $(Get-Date -Format 'HH:mm:ss')"
+
+    $devId = Resolve-DeviceId
+    if (-not $devId) {
+        Write-Log "Device not connected - cannot restore LowerFilters" 'WARN'
+        return $false
+    }
+    Write-Log "Device: $devId"
+
+    $regPath = "HKLM:\SYSTEM\CurrentControlSet\Enum\$devId"
+    try {
+        $existing = (Get-ItemProperty $regPath -ErrorAction Stop).LowerFilters
+        if (-not $existing) { $existing = @() }
+        if ($existing -contains 'MagicMouseDriver') {
+            Write-Log "LowerFilters already correct: $($existing -join ',')" 'OK'
+        } else {
+            $newVal = @('MagicMouseDriver') + @($existing | Where-Object { $_ -ne '' })
+            Set-ItemProperty $regPath -Name LowerFilters -Value $newVal -Type MultiString
+            Write-Log "LowerFilters restored: $($newVal -join ',')" 'OK'
+
+            # Start service if not running
+            $svc = Get-Service MagicMouseDriver -ErrorAction SilentlyContinue
+            if ($svc -and $svc.Status -ne 'Running') {
+                sc.exe start MagicMouseDriver 2>&1 | ForEach-Object { Add-Content -Path $SessionLog -Value $_ -Encoding UTF8 }
+                Start-Sleep -Seconds 2
+                Write-Log "Service start requested." 'OK'
+            }
+
+            # Restart device so stack rebuilds with the filter.
+            Write-Log "Restarting device to apply restored LowerFilters..."
+            pnputil /restart-device $devId 2>&1 | ForEach-Object { Add-Content -Path $SessionLog -Value $_ -Encoding UTF8 }
+            Start-Sleep -Seconds 4
+
+            # Re-apply post-restart (guard against oem0.inf reset, same as Install-Driver Step 5)
+            $postLf = (Get-ItemProperty $regPath -ErrorAction SilentlyContinue).LowerFilters
+            if ($postLf -notcontains 'MagicMouseDriver') {
+                $newVal2 = @('MagicMouseDriver') + @($postLf | Where-Object { $_ -ne '' })
+                Set-ItemProperty $regPath -Name LowerFilters -Value $newVal2 -Type MultiString
+                Write-Log "LowerFilters re-applied post-restart: $($newVal2 -join ',')" 'OK'
+            }
+        }
+    } catch {
+        Write-Log "Cannot restore LowerFilters at $regPath : $_" 'ERROR'
+        return $false
+    }
+
+    Write-Log "Restore complete." 'OK'
+    return $true
+}
+
+# ---------------------------------------------------------------------------
 # DEBUG CAPTURE
 # ---------------------------------------------------------------------------
 function Start-DebugCapture {
@@ -603,6 +680,7 @@ switch ($Phase) {
     'Install'  { if (-not (Install-Driver)) { $exitCode = 1 } }
     'Verify'   { if (-not (Verify-Install)) { $exitCode = 1 } }
     'Rollback' { if (-not (Rollback-Driver)){ $exitCode = 1 } }
+    'Restore'  { if (-not (Restore-LowerFilters)) { $exitCode = 1 } }
     'Capture'  { if (-not (Start-DebugCapture)) { $exitCode = 1 } }
     'Log'      { Show-SessionLog }
     'Debug'    { Show-DebugLog }
