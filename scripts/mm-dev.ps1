@@ -395,12 +395,13 @@ function Install-Driver {
     }
     Write-Log "Device: $devId"
 
-    # Set LowerFilters — explicit order: applewirelessmouse(0) below MagicMouseDriver(1).
-    # applewirelessmouse at index 0 (closest to hardware) sees HID read completions first,
-    # giving it access to raw touch data for gesture processing.
-    # MagicMouseDriver at index 1 handles SDP completion patching above it.
+    # Set LowerFilters — MagicMouseDriver(0) below applewirelessmouse(1).
+    # Our driver at index 0 patches SDP completion first; applewirelessmouse sees our
+    # combined descriptor and does not re-patch. Swapping (test ee18af4) confirmed
+    # applewirelessmouse DOES gesture processing but conflicts with our combined descriptor
+    # (produces spurious clicks). Gesture processing is deferred to M14 in our own driver.
     $regPath = "HKLM:\SYSTEM\CurrentControlSet\Enum\$devId"
-    $targetLf = @('applewirelessmouse', 'MagicMouseDriver')
+    $targetLf = @('MagicMouseDriver', 'applewirelessmouse')
     try {
         $existing = (Get-ItemProperty $regPath -ErrorAction Stop).LowerFilters
         $needsUpdate = ($null -eq $existing) -or
