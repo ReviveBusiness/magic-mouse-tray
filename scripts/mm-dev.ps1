@@ -98,8 +98,9 @@ function Resolve-DeviceId {
     return $null
 }
 
-# Derive driver source root from script location (scripts\ -> repo root)
-$DriverRoot = Split-Path -Parent $PSScriptRoot
+# Derive driver source root from script location (scripts\ -> repo root).
+# Guard against $PSScriptRoot being null when called from a scheduled task context.
+$DriverRoot = if ($PSScriptRoot) { Split-Path -Parent $PSScriptRoot } else { 'D:\mm3-driver' }
 $BuildOut   = Join-Path $DriverRoot 'x64\Debug'
 $VcxProj    = Join-Path $DriverRoot 'MagicMouseDriver.vcxproj'
 
@@ -211,16 +212,41 @@ function Build-Driver {
     # NOT LaunchBuildEnv.cmd: that wraps SetupBuildEnv in `cmd /k` which spawns
     # an interactive shell that never exits, hanging the entire pipeline.
     $ewdkSetup = Join-Path $EwdkRoot 'BuildEnv\SetupBuildEnv.cmd'
+
+    # If not found at $EwdkRoot, scan all ready drives (handles ISO mounted to any letter).
     if (-not (Test-Path $ewdkSetup)) {
-        Write-Log "EWDK SetupBuildEnv.cmd not found at $ewdkSetup" 'ERROR'
+        Write-Log "EWDK not at $ewdkSetup - scanning drives..." 'WARN'
+        foreach ($drv in [System.IO.DriveInfo]::GetDrives() | Where-Object { $_.IsReady }) {
+            $candidate = Join-Path $drv.RootDirectory.FullName 'BuildEnv\SetupBuildEnv.cmd'
+            if (Test-Path $candidate) {
+                $ewdkSetup = $candidate
+                Write-Log "Found EWDK at $ewdkSetup" 'OK'
+                break
+            }
+        }
+    }
+
+    if (-not (Test-Path $ewdkSetup)) {
+        Write-Log "EWDK SetupBuildEnv.cmd not found on any drive. Mount the ISO first." 'ERROR'
         return $false
     }
 
-    Write-Log "Running EWDK msbuild (Rebuild) via SetupBuildEnv..."
-    # 'call' is critical: ensures cmd.exe returns from SetupBuildEnv.cmd before
-    # executing msbuild. Without 'call', batch chaining behaves unpredictably.
-    $buildCmd = "call `"$ewdkSetup`" >NUL && msbuild `"$VcxProj`" /p:Configuration=Debug /p:Platform=x64 /t:Rebuild /nologo /v:minimal /p:SignFiles=false /p:EnableCodeSigning=false"
-    $output = cmd /c $buildCmd 2>&1
+    Write-Log "Running EWDK msbuild (Rebuild) via temp batch file..."
+    # Write a temp .bat to avoid PowerShell→cmd double-quote mangling.
+    # cmd /c with embedded quotes produces '""' is not recognized errors.
+    $tempBat = [System.IO.Path]::GetTempFileName() -replace '\.tmp$','.bat'
+    @"
+@echo off
+call "$ewdkSetup" >NUL 2>&1
+if errorlevel 1 (
+    echo [BUILD] EWDK SetupBuildEnv.cmd failed >&2
+    exit /b 1
+)
+msbuild "$VcxProj" /p:Configuration=Debug /p:Platform=x64 /t:Rebuild /nologo /v:minimal /p:SignFiles=false /p:EnableCodeSigning=false
+"@ | Out-File -FilePath $tempBat -Encoding ASCII
+    Write-Log "Batch file: $tempBat"
+    $output = cmd /c $tempBat 2>&1
+    Remove-Item $tempBat -Force -ErrorAction SilentlyContinue
     $output | ForEach-Object { Add-Content -Path $SessionLog -Value $_ -Encoding UTF8 }
 
     $sys     = Join-Path $BuildOut 'MagicMouseDriver.sys'
@@ -617,43 +643,69 @@ function Restore-LowerFilters {
 # ---------------------------------------------------------------------------
 # DEBUG CAPTURE
 # ---------------------------------------------------------------------------
-function Start-DebugCapture {
-    Write-Section "CAPTURE - $(Get-Date -Format 'HH:mm:ss')"
+function Read-Rid27Captures {
+    # M14: read RID=0x27 ring buffer from registry (no DebugView required).
+    # The driver's 1Hz DiagWorkItem writes:
+    #   Diag\HidReadCount   DWORD   total IRP_MJ_READ completions
+    #   Diag\Rid27Count     DWORD   how many had buf[0]==0x27
+    #   Diag\Rid27SlotsFilled DWORD  slots written (capped at 8)
+    #   Diag\Rid27RingBuf   REG_BINARY  8 x 48 bytes of raw reports
+    Write-Section "CAPTURE (RID=0x27 ring buffer) - $(Get-Date -Format 'HH:mm:ss')"
 
-    # Ensure kernel debug filter is set (force-replace if existing key is wrong type)
-    $regKey = 'HKLM:\SYSTEM\CurrentControlSet\Control\Session Manager\Debug Print Filter'
-    if (-not (Test-Path $regKey)) { New-Item -Path $regKey -Force | Out-Null }
-    try {
-        Remove-ItemProperty -Path $regKey -Name 'DEFAULT' -ErrorAction SilentlyContinue
-    } catch { }
-    New-ItemProperty -Path $regKey -Name 'DEFAULT' -PropertyType DWord -Value 8 -Force | Out-Null
-    Write-Log "Debug print filter set (DEFAULT=8 DWord)" 'OK'
-
-    # Kill existing DebugView
-    Get-Process -Name Dbgview -ErrorAction SilentlyContinue | Stop-Process -Force
-    Start-Sleep -Milliseconds 500
-
-    # Clear old log
-    if (Test-Path $DebugLog) { Remove-Item $DebugLog -Force }
-    Write-Log "Old debug log cleared." 'OK'
-
-    # Start DebugView
-    if (-not (Test-Path $DbgViewExe)) {
-        Write-Log "DebugView not found at $DbgViewExe - download Sysinternals Suite" 'ERROR'
+    $diagKey = 'HKLM:\SYSTEM\CurrentControlSet\Services\MagicMouseDriver\Diag'
+    if (-not (Test-Path $diagKey)) {
+        Write-Log "Diag registry key not found - driver not loaded or not M14 build" 'ERROR'
         return $false
     }
 
-    Start-Process $DbgViewExe -ArgumentList "/accepteula /t /k /l `"$DebugLog`"" -WindowStyle Minimized
-    Start-Sleep -Milliseconds 800
+    $props        = Get-ItemProperty $diagKey -ErrorAction SilentlyContinue
+    $hidReads     = $props.HidReadCount
+    $rid27Count   = $props.Rid27Count
+    $slotsFilled  = $props.Rid27SlotsFilled
+    $ringBuf      = $props.Rid27RingBuf   # byte[] or $null
 
-    $proc = Get-Process -Name Dbgview -ErrorAction SilentlyContinue
-    if ($proc) {
-        Write-Log "DebugView started (PID $($proc.Id)) -> logging to $DebugLog" 'OK'
-        return $true
-    } else {
-        Write-Log "DebugView did not start" 'ERROR'
+    Write-Log "HidReadCount=$hidReads  Rid27Count=$rid27Count  SlotsFilled=$slotsFilled" 'OK'
+
+    if (-not $slotsFilled -or $slotsFilled -eq 0) {
+        Write-Log "No RID=0x27 captures yet - touch the mouse surface and re-run Capture" 'WARN'
         return $false
     }
+
+    if (-not $ringBuf -or $ringBuf.Length -eq 0) {
+        Write-Log "Rid27RingBuf key empty despite SlotsFilled=$slotsFilled" 'WARN'
+        return $false
+    }
+
+    # Dump each filled slot
+    $nSlots = [Math]::Min($slotsFilled, 8)
+    Write-Log "--- RID=0x27 ring buffer: $nSlots slot(s) ---"
+    for ($i = 0; $i -lt $nSlots; $i++) {
+        $offset = $i * 48
+        $slot   = $ringBuf[$offset..($offset + 47)]
+        $hex    = ($slot | ForEach-Object { '{0:X2}' -f $_ }) -join ' '
+        Write-Log "Slot[$i]: $hex"
+
+        # Layout analysis (Linux hid-magicmouse.c reference)
+        $rid     = $slot[0]
+        $flags   = $slot[1]
+        $ts      = [uint16]($slot[2] + ($slot[3] -shl 8))
+        $nFinger = $slot[4]
+        Write-Log "  RID=0x{0:X2}  flags=0x{1:X2}  ts={2}  nFingers={3}" -f $rid,$flags,$ts,$nFinger
+        # Bytes 5..end: per-finger data (7 bytes each in hid-magicmouse v2/v3)
+        if ($nFinger -gt 0) {
+            for ($f = 0; $f -lt $nFinger; $f++) {
+                $foff = 5 + ($f * 9)
+                if ($foff + 8 -ge 48) { break }
+                $absX = [int16]($slot[$foff] + ($slot[$foff+1] -shl 8))
+                $absY = [int16]($slot[$foff+2] + ($slot[$foff+3] -shl 8))
+                Write-Log ("  Finger[$f]: x={0} y={1} raw=[{2}]" -f $absX, $absY,
+                    (($slot[$foff..($foff+8)]) | ForEach-Object { '{0:X2}' -f $_ }) -join ' ')
+            }
+        }
+    }
+
+    Write-Log "Capture complete." 'OK'
+    return $true
 }
 
 # ---------------------------------------------------------------------------
@@ -693,7 +745,7 @@ switch ($Phase) {
     'Verify'   { if (-not (Verify-Install)) { $exitCode = 1 } }
     'Rollback' { if (-not (Rollback-Driver)){ $exitCode = 1 } }
     'Restore'  { if (-not (Restore-LowerFilters)) { $exitCode = 1 } }
-    'Capture'  { if (-not (Start-DebugCapture)) { $exitCode = 1 } }
+    'Capture'  { if (-not (Read-Rid27Captures)) { $exitCode = 1 } }
     'Log'      { Show-SessionLog }
     'Debug'    { Show-DebugLog }
     'Full' {
@@ -704,7 +756,8 @@ switch ($Phase) {
         if ($ok) { $ok = Verify-Install }
         Get-DriverState
         if ($ok) {
-            Write-Log "Full cycle complete - run Capture phase to start DebugView, then test." 'OK'
+            Read-Rid27Captures | Out-Null
+            Write-Log "Full cycle complete - touch mouse surface then run Capture to read ring buffer." 'OK'
         } else {
             Write-Log "Full cycle FAILED - check session log: $SessionLog" 'ERROR'
             $exitCode = 1

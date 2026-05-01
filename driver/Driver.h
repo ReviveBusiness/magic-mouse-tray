@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MIT
 //
-// M13 — Magic Mouse 2024 KMDF lower filter, SDP descriptor injection.
+// M14 — RID=0x27 raw byte capture layer (on top of M13 SDP injection).
 //
 // Stack position (lower filter between BTHENUM and HidBth):
 //   HidClass → HidBth → [M13 (this)] → BTHENUM
@@ -52,6 +52,19 @@ typedef struct _DEVICE_CONTEXT
     ULONG   LastPatchStatus;       // NTSTATUS of most recent PatchSdpHidDescriptor
     UCHAR   LastSdpBytes[64];      // first 64 raw bytes of most recent SDP buffer
 
+    // M14: HID READ intercept counters + ring buffer (flushed to registry by DiagWorkItem)
+    ULONG   HidReadCount;          // total IRP_MJ_READ completions seen
+    ULONG   Rid27Count;            // completions where buf[0] == 0x27
+    ULONG   Rid27LoggedCount;      // how many RID=0x27 reports were DbgPrinted
+
+    // Ring buffer: last 8 RID=0x27 raw reports (48 bytes each).
+    // Work item flushes as Rid27RingBuf REG_BINARY (8×48=384 bytes).
+    // PowerShell reads without needing DebugView.
+#define RID27_RING_SLOTS 8
+#define RID27_BYTES_PER_SLOT 48
+    UCHAR   Rid27Ring[RID27_RING_SLOTS][RID27_BYTES_PER_SLOT];
+    ULONG   Rid27RingNext;         // next write slot (0..7, wraps mod 8)
+
     WDFTIMER    DiagTimer;         // 1 Hz periodic
     WDFWORKITEM DiagWorkItem;      // PASSIVE_LEVEL flush to registry
 
@@ -68,6 +81,8 @@ EVT_WDF_DRIVER_DEVICE_ADD               EvtDeviceAdd;
 EVT_WDF_IO_QUEUE_IO_INTERNAL_DEVICE_CONTROL EvtIoInternalDeviceControl;
 EVT_WDF_IO_QUEUE_IO_DEVICE_CONTROL      EvtIoDeviceControl;
 EVT_WDF_IO_QUEUE_IO_DEFAULT             EvtIoDefault;
+EVT_WDF_IO_QUEUE_IO_READ                EvtIoRead;
 EVT_WDF_REQUEST_COMPLETION_ROUTINE      OnSdpQueryComplete;
+EVT_WDF_REQUEST_COMPLETION_ROUTINE      OnHidReadComplete;
 EVT_WDF_TIMER                           M13_DiagTimerFunc;
 EVT_WDF_WORKITEM                        M13_DiagWorkItemFunc;

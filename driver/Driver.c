@@ -95,6 +95,7 @@ EvtDeviceAdd(_In_ WDFDRIVER Driver, _Inout_ PWDFDEVICE_INIT DeviceInit)
     WDF_IO_QUEUE_CONFIG_INIT_DEFAULT_QUEUE(&qCfg, WdfIoQueueDispatchParallel);
     qCfg.EvtIoDeviceControl         = EvtIoDeviceControl;
     qCfg.EvtIoInternalDeviceControl = EvtIoInternalDeviceControl;
+    qCfg.EvtIoRead                  = EvtIoRead;   // M14: intercept READ completions for RID=0x27 logging
     qCfg.EvtIoDefault               = EvtIoDefault;
     WDFQUEUE queue;
     return WdfIoQueueCreate(device, &qCfg, WDF_NO_OBJECT_ATTRIBUTES, &queue);
@@ -215,6 +216,117 @@ EvtIoDefault(_In_ WDFQUEUE Queue, _In_ WDFREQUEST Request)
 }
 
 // --------------------------------------------------------------------------
+// EvtIoRead — M14: intercept IRP_MJ_READ completions
+//
+// Forwards the READ request with OnHidReadComplete so we can inspect the
+// returned buffer. HidBth fills the buffer with a HID input report on
+// completion; byte[0] is the Report ID.
+// --------------------------------------------------------------------------
+
+VOID
+EvtIoRead(_In_ WDFQUEUE Queue, _In_ WDFREQUEST Request, _In_ size_t Length)
+{
+    UNREFERENCED_PARAMETER(Length);
+
+    WDFDEVICE   device = WdfIoQueueGetDevice(Queue);
+    PDEVICE_CONTEXT ctx = GetDeviceContext(device);
+    WDFIOTARGET target = WdfDeviceGetIoTarget(device);
+
+    WdfSpinLockAcquire(ctx->Lock);
+    ctx->HidReadCount++;
+    WdfSpinLockRelease(ctx->Lock);
+
+    WdfRequestFormatRequestUsingCurrentType(Request);
+    WdfRequestSetCompletionRoutine(Request, OnHidReadComplete, ctx);
+    if (!WdfRequestSend(Request, target, WDF_NO_SEND_OPTIONS))
+    {
+        WdfRequestComplete(Request, WdfRequestGetStatus(Request));
+    }
+}
+
+// --------------------------------------------------------------------------
+// OnHidReadComplete — M14: log RID=0x27 raw bytes via DbgPrint
+//
+// Log policy: log every report for the first 20 RID=0x27 completions,
+// then every 64th thereafter (shows it's still running without flooding).
+// Counters flushed to registry by DiagWorkItem so PowerShell can verify.
+// --------------------------------------------------------------------------
+
+VOID
+OnHidReadComplete(_In_ WDFREQUEST Request, _In_ WDFIOTARGET Target,
+                  _In_ PWDF_REQUEST_COMPLETION_PARAMS Params, _In_ WDFCONTEXT Context)
+{
+    UNREFERENCED_PARAMETER(Target);
+
+    PDEVICE_CONTEXT ctx    = (PDEVICE_CONTEXT)Context;
+    NTSTATUS        status = Params->IoStatus.Status;
+
+    if (!NT_SUCCESS(status) || ctx == NULL)
+    {
+        WdfRequestComplete(Request, status);
+        return;
+    }
+
+    PVOID  buf    = NULL;
+    size_t bufLen = 0;
+    NTSTATUS rs = WdfRequestRetrieveOutputBuffer(Request, 1, &buf, &bufLen);
+    if (NT_SUCCESS(rs) && buf != NULL)
+    {
+        size_t bytesRead = Params->IoStatus.Information;
+        PUCHAR p = (PUCHAR)buf;
+
+        if (bytesRead > 0 && p[0] == 0x27)
+        {
+            WdfSpinLockAcquire(ctx->Lock);
+            ULONG cnt = ++ctx->Rid27Count;
+
+            // Ring buffer: store up to RID27_BYTES_PER_SLOT bytes of this report.
+            ULONG slot = ctx->Rid27RingNext % RID27_RING_SLOTS;
+            ctx->Rid27RingNext++;
+            ULONG copyLen = (ULONG)((bytesRead < RID27_BYTES_PER_SLOT)
+                                    ? bytesRead : RID27_BYTES_PER_SLOT);
+            RtlCopyMemory(ctx->Rid27Ring[slot], p, copyLen);
+            if (copyLen < RID27_BYTES_PER_SLOT)
+                RtlZeroMemory(ctx->Rid27Ring[slot] + copyLen,
+                              RID27_BYTES_PER_SLOT - copyLen);
+
+            WdfSpinLockRelease(ctx->Lock);
+
+            // Log first 20 reports, then every 64th.
+            BOOLEAN doLog = (cnt <= 20) || ((cnt & 63) == 0);
+            if (doLog)
+            {
+                WdfSpinLockAcquire(ctx->Lock);
+                ctx->Rid27LoggedCount++;
+                WdfSpinLockRelease(ctx->Lock);
+
+                // Safe zero-extend for bytes beyond actual report length.
+#define B(i) ((ULONG)((bytesRead > (i)) ? p[(i)] : 0))
+                DbgPrint("M14[RID27.%lu] len=%lu "
+                         "b[0..15]:  %02X %02X %02X %02X %02X %02X %02X %02X "
+                         "%02X %02X %02X %02X %02X %02X %02X %02X\n",
+                         cnt, (ULONG)bytesRead,
+                         B(0),B(1),B(2),B(3),B(4),B(5),B(6),B(7),
+                         B(8),B(9),B(10),B(11),B(12),B(13),B(14),B(15));
+                DbgPrint("M14[RID27.%lu] b[16..31]: %02X %02X %02X %02X %02X %02X %02X %02X "
+                         "%02X %02X %02X %02X %02X %02X %02X %02X\n",
+                         cnt,
+                         B(16),B(17),B(18),B(19),B(20),B(21),B(22),B(23),
+                         B(24),B(25),B(26),B(27),B(28),B(29),B(30),B(31));
+                DbgPrint("M14[RID27.%lu] b[32..47]: %02X %02X %02X %02X %02X %02X %02X %02X "
+                         "%02X %02X %02X %02X %02X %02X %02X %02X\n",
+                         cnt,
+                         B(32),B(33),B(34),B(35),B(36),B(37),B(38),B(39),
+                         B(40),B(41),B(42),B(43),B(44),B(45),B(46),B(47));
+#undef B
+            }
+        }
+    }
+
+    WdfRequestComplete(Request, status);
+}
+
+// --------------------------------------------------------------------------
 // OnSdpQueryComplete — completion routine for IOCTL 0x410210
 //
 // Retrieves the SDP attribute response buffer, calls SdpRewrite_Process to
@@ -305,6 +417,9 @@ OnSdpQueryComplete(_In_ WDFREQUEST Request, _In_ WDFIOTARGET Target,
 //   LastSdpBufSize       REG_DWORD  — size of last SDP buffer
 //   LastPatchStatusHex   REG_DWORD  — NTSTATUS of last patch attempt
 //   LastSdpBytes         REG_BINARY — first 64 bytes of last SDP buffer
+//   HidReadCount         REG_DWORD  — M14: total IRP_MJ_READ completions
+//   Rid27Count           REG_DWORD  — M14: completions where buf[0]==0x27
+//   Rid27LoggedCount     REG_DWORD  — M14: RID=0x27 reports sent to DbgPrint
 // --------------------------------------------------------------------------
 
 VOID M13_DiagTimerFunc(_In_ WDFTIMER Timer)
@@ -323,14 +438,22 @@ VOID M13_DiagWorkItemFunc(_In_ WDFWORKITEM WorkItem)
 
     // Snapshot under lock, then write registry at PASSIVE_LEVEL unlocked.
     ULONG ictlCount, scanHits, patchOk, lastSize, lastStatus;
+    ULONG hidReads, rid27Count, rid27Logged, rid27SlotsFilled;
     UCHAR lastBytes[64];
+    UCHAR rid27Snapshot[RID27_RING_SLOTS * RID27_BYTES_PER_SLOT];
     WdfSpinLockAcquire(ctx->Lock);
-    ictlCount  = ctx->IoctlInterceptCount;
-    scanHits   = ctx->SdpScanHits;
-    patchOk    = ctx->SdpPatchSuccess;
-    lastSize   = ctx->LastSdpBufSize;
-    lastStatus = ctx->LastPatchStatus;
+    ictlCount     = ctx->IoctlInterceptCount;
+    scanHits      = ctx->SdpScanHits;
+    patchOk       = ctx->SdpPatchSuccess;
+    lastSize      = ctx->LastSdpBufSize;
+    lastStatus    = ctx->LastPatchStatus;
+    hidReads      = ctx->HidReadCount;
+    rid27Count    = ctx->Rid27Count;
+    rid27Logged   = ctx->Rid27LoggedCount;
+    rid27SlotsFilled = (rid27Count < RID27_RING_SLOTS) ? rid27Count : RID27_RING_SLOTS;
     RtlCopyMemory(lastBytes, ctx->LastSdpBytes, 64);
+    RtlCopyMemory(rid27Snapshot, ctx->Rid27Ring,
+                  RID27_RING_SLOTS * RID27_BYTES_PER_SLOT);
     WdfSpinLockRelease(ctx->Lock);
 
     UNICODE_STRING keyPath;
@@ -355,11 +478,22 @@ VOID M13_DiagWorkItemFunc(_In_ WDFWORKITEM WorkItem)
     SET_DWORD(L"SdpPatchSuccess",     patchOk);
     SET_DWORD(L"LastSdpBufSize",      lastSize);
     SET_DWORD(L"LastPatchStatusHex",  lastStatus);
+    SET_DWORD(L"HidReadCount",        hidReads);
+    SET_DWORD(L"Rid27Count",          rid27Count);
+    SET_DWORD(L"Rid27LoggedCount",    rid27Logged);
+    SET_DWORD(L"Rid27SlotsFilled",    rid27SlotsFilled);
 
 #undef SET_DWORD
 
     RtlInitUnicodeString(&n, L"LastSdpBytes");
     ZwSetValueKey(key, &n, 0, REG_BINARY, lastBytes, 64);
+
+    // Flush RID=0x27 ring buffer so PowerShell can read raw bytes directly
+    // from registry (no DebugView required).
+    // Each slot is RID27_BYTES_PER_SLOT bytes; only rid27SlotsFilled slots valid.
+    RtlInitUnicodeString(&n, L"Rid27RingBuf");
+    ZwSetValueKey(key, &n, 0, REG_BINARY, rid27Snapshot,
+                  RID27_RING_SLOTS * RID27_BYTES_PER_SLOT);
 
     ZwClose(key);
 }

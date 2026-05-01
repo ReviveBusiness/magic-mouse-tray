@@ -80,47 +80,80 @@ try {
 
     $rc = 0
 
-    # BUILD route: invoke EWDK msbuild against M12.sln (or any .sln on WSL path)
-    # Request format: BUILD|<nonce>|<config>|<platform>[|<sln-path>]
+    # BUILD route: ensure EWDK ISO is mounted, then delegate to mm-dev.ps1 -Phase Build.
+    # mm-dev.ps1 uses a temp .bat to avoid PowerShell→cmd quoting bugs and writes
+    # to the session log. Task runner handles mount so mm-dev.ps1 stays simple.
     if ($phase -eq 'BUILD') {
-        $config   = if ($parts.Count -gt 2) { $parts[2].Trim() } else { 'Release' }
-        $platform = if ($parts.Count -gt 3) { $parts[3].Trim() } else { 'x64' }
-        $defaultSln = '\\wsl.localhost\Ubuntu\home\lesley\projects\Personal\magic-mouse-tray\driver\M12.sln'
-        $solution = if ($parts.Count -gt 4 -and $parts[4].Trim()) { $parts[4].Trim() } else { $defaultSln }
-        $buildLog = Join-Path $QueueDir "build-$nonce.log"
-        # Use SetupBuildEnv.cmd (one-shot env setup), NOT LaunchBuildEnv.cmd (cmd /k interactive)
-        # Senior-dev review CRIT-1: LaunchBuildEnv hangs the queue indefinitely.
-        $ewdk     = 'F:\BuildEnv\SetupBuildEnv.cmd'
-
-        Log "BUILD config=$config platform=$platform solution=$solution"
-
-        if (-not (Test-Path $ewdk)) {
-            $msg = "ERROR: EWDK SetupBuildEnv not found at $ewdk - is the ISO mounted?"
-            Log $msg
-            $msg | Set-Content $buildLog -Encoding ASCII
-            $rc = 1
-        } else {
-            $cmdLine = "call `"$ewdk`" >NUL 2>&1 && msbuild `"$solution`" /p:Configuration=$config /p:Platform=$platform /v:minimal"
-            Log "Invoking: cmd /c $cmdLine"
+        $isoPath  = 'D:\Users\Lesley\Downloads\EWDK_ge_release_svc_prod1_26100_250904-1728.iso'
+        $ewdkSetup = $null
+        foreach ($drv in [System.IO.DriveInfo]::GetDrives() | Where-Object { $_.IsReady }) {
+            $c = Join-Path $drv.RootDirectory.FullName 'BuildEnv\SetupBuildEnv.cmd'
+            if (Test-Path $c) { $ewdkSetup = $c; break }
+        }
+        if (-not $ewdkSetup) {
+            Log "EWDK not on any drive - mounting ISO $isoPath"
             try {
-                cmd /c $cmdLine > $buildLog 2>&1
-                $rc = $LASTEXITCODE
-                if ($null -eq $rc) { $rc = 0 }
+                $disk = Mount-DiskImage -ImagePath $isoPath -PassThru -ErrorAction Stop
+                Start-Sleep -Milliseconds 1500  # let Windows assign the drive letter
+                foreach ($drv in [System.IO.DriveInfo]::GetDrives() | Where-Object { $_.IsReady }) {
+                    $c = Join-Path $drv.RootDirectory.FullName 'BuildEnv\SetupBuildEnv.cmd'
+                    if (Test-Path $c) { $ewdkSetup = $c; break }
+                }
+                if ($ewdkSetup) { Log "EWDK mounted, found at $ewdkSetup" }
+                else { Log "ERROR: mounted ISO but SetupBuildEnv.cmd not found"; $rc = 1 }
             } catch {
-                "Exception: $_" | Add-Content $buildLog -Encoding ASCII
-                Log "Exception in BUILD: $_"
-                $rc = 99
+                Log "Mount-DiskImage failed: $_"
+                $rc = 1
+            }
+        } else {
+            Log "EWDK already mounted at $ewdkSetup"
+        }
+
+        if ($rc -eq 0) {
+            $candidates = @('D:\mm3-driver\scripts\mm-dev.ps1', 'C:\mm3-pkg\scripts\mm-dev.ps1')
+            $devScript  = $candidates | Where-Object { Test-Path $_ } | Select-Object -First 1
+            Log "BUILD → delegating to $devScript"
+            if (-not $devScript) {
+                Log "ERROR: mm-dev.ps1 not found"
+                $rc = 127
+            } else {
+                try {
+                    & $devScript -Phase Build -NoElevate
+                    $rc = $LASTEXITCODE
+                    if ($null -eq $rc) { $rc = 0 }
+                } catch {
+                    Log "Exception in BUILD delegate: $_"
+                    $rc = 99
+                }
             }
         }
-        Log "BUILD exited $rc; log at $buildLog"
+        Log "BUILD exited $rc"
     }
-    # SIGN route: signtool sign .sys + .cat with a PFX cert
-    # Request format: SIGN|<nonce>|<sys-path>|<cat-path>|<pfx-path>|<pfx-pass-env-var>
+    # SIGN route: signtool sign .sys + .cat with a PFX cert, OR delegate to mm-dev.ps1.
+    # With no args → delegates to mm-dev.ps1 -Phase Sign (uses thumbprint cert).
+    # With args → SIGN|<nonce>|<sys-path>|<cat-path>|<pfx-path>|<pfx-pass-env-var>
     elseif ($phase -eq 'SIGN') {
         $sysPath    = if ($parts.Count -gt 2) { $parts[2].Trim() } else { '' }
         $catPath    = if ($parts.Count -gt 3) { $parts[3].Trim() } else { '' }
         $pfxPath    = if ($parts.Count -gt 4) { $parts[4].Trim() } else { '' }
         $pfxPassVar = if ($parts.Count -gt 5) { $parts[5].Trim() } else { '' }
+
+        if (-not $sysPath) {
+            # No args: delegate to mm-dev.ps1 Sign phase (thumbprint-based signing)
+            $candidates = @('D:\mm3-driver\scripts\mm-dev.ps1', 'C:\mm3-pkg\scripts\mm-dev.ps1')
+            $devScript  = $candidates | Where-Object { Test-Path $_ } | Select-Object -First 1
+            Log "SIGN (no args) → delegating to $devScript"
+            if (-not $devScript) { Log "ERROR: mm-dev.ps1 not found"; $rc = 127 }
+            else {
+                try {
+                    & $devScript -Phase Sign -NoElevate
+                    $rc = $LASTEXITCODE
+                    if ($null -eq $rc) { $rc = 0 }
+                } catch { Log "Exception in SIGN delegate: $_"; $rc = 99 }
+            }
+            Log "SIGN exited $rc"
+        } else {
+
         $signLog    = Join-Path $QueueDir "sign-$nonce.log"
         $signtool   = 'F:\Program Files\Windows Kits\10\bin\10.0.26100.0\x64\signtool.exe'
         $tsUrl      = 'http://timestamp.digicert.com'
@@ -157,6 +190,7 @@ try {
             }
         }
         Log "SIGN exited $rc; log at $signLog"
+        }  # end else (has args)
     }
     # DV-CHECK route: configure Driver Verifier for a named driver
     # Request format: DV-CHECK|<nonce>|<driver-name>
