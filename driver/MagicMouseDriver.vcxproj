@@ -48,9 +48,13 @@
     <UseDebugLibraries>true</UseDebugLibraries>
     <PlatformToolset>WindowsKernelModeDriver10.0</PlatformToolset>
     <TargetVersion>Windows10</TargetVersion>
-    <DriverTargetPlatform>Desktop</DriverTargetPlatform>
-    <EnableInf2cat>false</EnableInf2cat>
-    <SignMode>Off</SignMode>
+    <DriverTargetPlatform>Universal</DriverTargetPlatform>
+    <!-- NOTE: SIGNTASK (WDK inline C# task) calls signtool without /fd sha256.
+         Newer signtool requires /fd sha256 as mandatory and exits non-zero, so
+         SIGNTASK fails and the .sys is deleted. The BackupPreSign target below
+         hooks AfterTargets="Link" to copy the .sys to C:\mm3-presign\ before any
+         signing target runs. mm-dev.ps1 Build phase restores from C:\mm3-presign\
+         if the .sys is missing after msbuild exits. -->
   </PropertyGroup>
 
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'" Label="Configuration">
@@ -58,9 +62,7 @@
     <UseDebugLibraries>false</UseDebugLibraries>
     <PlatformToolset>WindowsKernelModeDriver10.0</PlatformToolset>
     <TargetVersion>Windows10</TargetVersion>
-    <DriverTargetPlatform>Desktop</DriverTargetPlatform>
-    <EnableInf2cat>false</EnableInf2cat>
-    <SignMode>Off</SignMode>
+    <DriverTargetPlatform>Universal</DriverTargetPlatform>
   </PropertyGroup>
 
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.props" />
@@ -97,5 +99,16 @@
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
   <Import Project="$(WDKContentRoot)\build\WindowsDriver.targets"
           Condition="Exists('$(WDKContentRoot)\build\WindowsDriver.targets')" />
+
+  <!-- Back up the linked .sys right after Link completes, before any WDK signing
+       target deletes it on failure (SIGNTASK /fd sha256 issue on newer signtool).
+       mm-dev.ps1 Build phase restores from C:\mm3-presign\ if .sys is missing. -->
+  <Target Name="BackupPreSign" AfterTargets="Link">
+    <MakeDir Directories="C:\mm3-presign" />
+    <Copy SourceFiles="$(OutDir)$(TargetFileName)"
+          DestinationFiles="C:\mm3-presign\$(TargetFileName)"
+          Condition="Exists('$(OutDir)$(TargetFileName)')" />
+    <Message Text="*** BackupPreSign: $(TargetFileName) → C:\mm3-presign\ ***" Importance="High" />
+  </Target>
 
 </Project>

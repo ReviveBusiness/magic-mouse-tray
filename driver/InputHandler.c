@@ -116,9 +116,10 @@ ScanForSdpHidDescriptor(
 //   buf[descOffset - 7]  outer SEQUENCE length byte
 //   buf[0..1] or [0..2]  top-level AttributeLists sequence length
 //
-// Fails with STATUS_BUFFER_TOO_SMALL if the new descriptor is larger than
-// the old one and the buffer can't accommodate. (Native = 135 B, ours = 106 B,
-// so we always shrink — this check is a safety rail.)
+// With Apple's 135-byte descriptor (116 bytes + 19-byte zero padding), delta=0
+// and this function performs an in-place byte swap — no tail shifting, no SDP
+// length field updates needed. STATUS_BUFFER_TOO_SMALL is a safety rail for
+// any future descriptor larger than the native one.
 // --------------------------------------------------------------------------
 
 static NTSTATUS

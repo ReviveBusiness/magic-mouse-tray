@@ -84,10 +84,18 @@ EvtDeviceAdd(_In_ WDFDRIVER Driver, _Inout_ PWDFDEVICE_INIT DeviceInit)
 
     WdfTimerStart(ctx->DiagTimer, WDF_REL_TIMEOUT_IN_MS(1000));
 
-    // IRP_MJ_INTERNAL_DEVICE_CONTROL queue — parallel dispatch
+    // Default I/O queue — parallel dispatch.
+    // EvtIoDeviceControl: intercept IOCTL_BTH_SDP_SERVICE_SEARCH_ATTRIBUTE (0x410210)
+    //   sent as IRP_MJ_DEVICE_CONTROL by applewirelessmouse.sys/HidBth.sys.
+    // EvtIoInternalDeviceControl: same intercept via IRP_MJ_INTERNAL_DEVICE_CONTROL
+    //   (covers both dispatch types; only one fires per request).
+    // EvtIoDefault: passthrough for all other IRP types (READ, WRITE, etc.)
+    //   so we don't break the device stack for non-SDP traffic.
     WDF_IO_QUEUE_CONFIG qCfg;
     WDF_IO_QUEUE_CONFIG_INIT_DEFAULT_QUEUE(&qCfg, WdfIoQueueDispatchParallel);
+    qCfg.EvtIoDeviceControl         = EvtIoDeviceControl;
     qCfg.EvtIoInternalDeviceControl = EvtIoInternalDeviceControl;
+    qCfg.EvtIoDefault               = EvtIoDefault;
     WDFQUEUE queue;
     return WdfIoQueueCreate(device, &qCfg, WDF_NO_OBJECT_ATTRIBUTES, &queue);
 }
@@ -130,6 +138,73 @@ EvtIoInternalDeviceControl(_In_ WDFQUEUE Queue, _In_ WDFREQUEST Request,
     }
 
     // Passthrough — send-and-forget.
+    WdfRequestFormatRequestUsingCurrentType(Request);
+    WDF_REQUEST_SEND_OPTIONS opts;
+    WDF_REQUEST_SEND_OPTIONS_INIT(&opts, WDF_REQUEST_SEND_OPTION_SEND_AND_FORGET);
+    if (!WdfRequestSend(Request, target, &opts))
+    {
+        WdfRequestComplete(Request, WdfRequestGetStatus(Request));
+    }
+}
+
+// --------------------------------------------------------------------------
+// EvtIoDeviceControl — IRP_MJ_DEVICE_CONTROL intercept
+//
+// IOCTL_BTH_SDP_SERVICE_SEARCH_ATTRIBUTE is sent by applewirelessmouse.sys
+// via IRP_MJ_DEVICE_CONTROL. Same logic as EvtIoInternalDeviceControl.
+// --------------------------------------------------------------------------
+
+VOID
+EvtIoDeviceControl(_In_ WDFQUEUE Queue, _In_ WDFREQUEST Request,
+                   _In_ size_t OutputBufferLength, _In_ size_t InputBufferLength,
+                   _In_ ULONG IoControlCode)
+{
+    UNREFERENCED_PARAMETER(OutputBufferLength);
+    UNREFERENCED_PARAMETER(InputBufferLength);
+
+    WDFDEVICE    device = WdfIoQueueGetDevice(Queue);
+    PDEVICE_CONTEXT ctx = GetDeviceContext(device);
+    WDFIOTARGET  target = WdfDeviceGetIoTarget(device);
+
+    if (IoControlCode == IOCTL_BTH_SDP_SERVICE_SEARCH_ATTRIBUTE &&
+        ctx != NULL && ctx->EnableInjection)
+    {
+        WdfSpinLockAcquire(ctx->Lock);
+        ctx->IoctlInterceptCount++;
+        WdfSpinLockRelease(ctx->Lock);
+
+        WdfRequestFormatRequestUsingCurrentType(Request);
+        WdfRequestSetCompletionRoutine(Request, OnSdpQueryComplete, ctx);
+        if (!WdfRequestSend(Request, target, WDF_NO_SEND_OPTIONS))
+        {
+            WdfRequestComplete(Request, WdfRequestGetStatus(Request));
+        }
+        return;
+    }
+
+    WdfRequestFormatRequestUsingCurrentType(Request);
+    WDF_REQUEST_SEND_OPTIONS opts;
+    WDF_REQUEST_SEND_OPTIONS_INIT(&opts, WDF_REQUEST_SEND_OPTION_SEND_AND_FORGET);
+    if (!WdfRequestSend(Request, target, &opts))
+    {
+        WdfRequestComplete(Request, WdfRequestGetStatus(Request));
+    }
+}
+
+// --------------------------------------------------------------------------
+// EvtIoDefault — passthrough for all non-IOCTL I/O requests
+//
+// WDF filter drivers with a default queue must explicitly forward any IRP
+// types not otherwise handled (READ, WRITE, etc.) or WDF completes them
+// with STATUS_INVALID_DEVICE_REQUEST, breaking the device.
+// --------------------------------------------------------------------------
+
+VOID
+EvtIoDefault(_In_ WDFQUEUE Queue, _In_ WDFREQUEST Request)
+{
+    WDFDEVICE   device = WdfIoQueueGetDevice(Queue);
+    WDFIOTARGET target = WdfDeviceGetIoTarget(device);
+
     WdfRequestFormatRequestUsingCurrentType(Request);
     WDF_REQUEST_SEND_OPTIONS opts;
     WDF_REQUEST_SEND_OPTIONS_INIT(&opts, WDF_REQUEST_SEND_OPTION_SEND_AND_FORGET);

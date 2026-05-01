@@ -66,6 +66,8 @@ WDF_DECLARE_CONTEXT_TYPE_WITH_NAME(DEVICE_CONTEXT, GetDeviceContext)
 DRIVER_INITIALIZE DriverEntry;
 EVT_WDF_DRIVER_DEVICE_ADD               EvtDeviceAdd;
 EVT_WDF_IO_QUEUE_IO_INTERNAL_DEVICE_CONTROL EvtIoInternalDeviceControl;
+EVT_WDF_IO_QUEUE_IO_DEVICE_CONTROL      EvtIoDeviceControl;
+EVT_WDF_IO_QUEUE_IO_DEFAULT             EvtIoDefault;
 EVT_WDF_REQUEST_COMPLETION_ROUTINE      OnSdpQueryComplete;
 EVT_WDF_TIMER                           M13_DiagTimerFunc;
 EVT_WDF_WORKITEM                        M13_DiagWorkItemFunc;

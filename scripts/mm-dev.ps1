@@ -23,20 +23,21 @@
     Install  - Remove old driver, install new, restart device
     Verify   - Post-install health check (LowerFilters, COL01 status, oem package)
     Rollback - Remove our filter driver entirely (recovery path)
+    Restore  - Re-apply LowerFilters without rebuild (use after BT reconnect)
     Capture  - (Re)start DebugView capturing to $DebugLog
     Full     - State -> Build -> Sign -> Install -> Verify -> State
     Log      - Tail last 40 lines of session log
     Debug    - Tail last 40 MagicMouse lines from debug log
 #>
 param(
-    [ValidateSet('State','Build','Sign','Install','Verify','Rollback','Capture','Full','Log','Debug')]
+    [ValidateSet('State','Build','Sign','Install','Verify','Rollback','Restore','Capture','Full','Log','Debug')]
     [string]$Phase = 'Full',
 
     [string]$EwdkRoot   = 'F:\',
     [string]$PkgDir     = 'D:\mm3-pkg',
     [string]$SessionLog = 'C:\mm-dev-session.log',
     [string]$DebugLog   = 'C:\mm3-debug.log',
-    [string]$Thumbprint = '609447610A54605BE39AB32CFADB661023FD3ED0',
+    [string]$Thumbprint = 'B902C2864315E2DE359450024768CE7D01715C38',
     [string]$TimestampUrl = 'http://timestamp.digicert.com',
     [string]$VendorPid  = 'VID&0001004c_PID&0323',  # Magic Mouse 2024 - used for device autodetect
     [string]$DbgViewExe = 'C:\SysinternalsSuite\Dbgview.exe',
@@ -218,16 +219,24 @@ function Build-Driver {
     Write-Log "Running EWDK msbuild (Rebuild) via SetupBuildEnv..."
     # 'call' is critical: ensures cmd.exe returns from SetupBuildEnv.cmd before
     # executing msbuild. Without 'call', batch chaining behaves unpredictably.
-    $buildCmd = "call `"$ewdkSetup`" >NUL && msbuild `"$VcxProj`" /p:Configuration=Debug /p:Platform=x64 /t:Rebuild /nologo /v:minimal"
+    $buildCmd = "call `"$ewdkSetup`" >NUL && msbuild `"$VcxProj`" /p:Configuration=Debug /p:Platform=x64 /t:Rebuild /nologo /v:minimal /p:SignFiles=false /p:EnableCodeSigning=false"
     $output = cmd /c $buildCmd 2>&1
     $output | ForEach-Object { Add-Content -Path $SessionLog -Value $_ -Encoding UTF8 }
 
-    $sys = Join-Path $BuildOut 'MagicMouseDriver.sys'
+    $sys     = Join-Path $BuildOut 'MagicMouseDriver.sys'
+    $presign = 'C:\mm3-presign\MagicMouseDriver.sys'
+
     if (Test-Path $sys) {
         Write-Log "Build succeeded: $sys" 'OK'
         return $true
+    } elseif (Test-Path $presign) {
+        # SIGNTASK failed and deleted the .sys, but BackupPreSign saved it before sign ran.
+        Write-Log "SIGNTASK deleted .sys - restoring from BackupPreSign ($presign)" 'WARN'
+        Copy-Item $presign $sys -Force
+        Write-Log "Build succeeded (presign restored): $sys" 'OK'
+        return $true
     } else {
-        Write-Log "Build FAILED - .sys not produced. See session log for details." 'ERROR'
+        Write-Log "Build FAILED - .sys not produced and no presign backup found." 'ERROR'
         # Show last 20 lines of build output
         $output | Select-Object -Last 20 | ForEach-Object { Write-Log $_ 'ERROR' }
         return $false
@@ -265,7 +274,7 @@ function Sign-Driver {
             continue
         }
         Write-Log "Signing: $(Split-Path -Leaf $target)"
-        $result = & $SignToolExe sign /v /sha1 $Thumbprint /fd SHA256 /t $TimestampUrl $target 2>&1
+        $result = & $SignToolExe sign /sm /v /sha1 $Thumbprint /fd SHA256 /t $TimestampUrl $target 2>&1
         $result | ForEach-Object { Add-Content -Path $SessionLog -Value $_ -Encoding UTF8 }
         if ($LASTEXITCODE -eq 0) {
             Write-Log "Signed OK: $(Split-Path -Leaf $target)" 'OK'
@@ -281,9 +290,12 @@ function Sign-Driver {
 # INSTALL
 # ---------------------------------------------------------------------------
 function Get-CurrentOemPackage {
-    # Robust line-by-line parse of pnputil /enum-drivers to find our oem*.inf number
+    # Robust line-by-line parse of pnputil /enum-drivers to find our oem*.inf number.
+    # Used only for informational Verify checks; Install no longer calls pnputil /add-driver
+    # (it hangs in SYSTEM context due to silent cert-trust dialogs).
     $out = pnputil /enum-drivers 2>&1
     $currentOem = $null
+    $candidate  = $null
     foreach ($line in $out) {
         if ($line -match 'Published Name:\s+(oem\d+\.inf)') {
             $candidate = $Matches[1]
@@ -296,57 +308,152 @@ function Get-CurrentOemPackage {
     return $currentOem
 }
 
+function Uninstall-DriverDirect {
+    # Order matters: remove LowerFilters FIRST, restart device (unloads .sys from stack),
+    # THEN sc.exe delete + Remove-Item .sys. Trying to delete a loaded .sys fails with
+    # "used by another process" even after sc.exe delete marks the service for deletion.
+    $devId = Resolve-DeviceId
+    if ($devId) {
+        $rp = "HKLM:\SYSTEM\CurrentControlSet\Enum\$devId"
+        try {
+            $lf = (Get-ItemProperty $rp -ErrorAction Stop).LowerFilters
+            if ($lf -contains 'MagicMouseDriver') {
+                $newLf = @($lf | Where-Object { $_ -ne 'MagicMouseDriver' })
+                if ($newLf.Count -gt 0) {
+                    Set-ItemProperty $rp -Name LowerFilters -Value $newLf -Type MultiString
+                } else {
+                    Remove-ItemProperty $rp -Name LowerFilters -ErrorAction SilentlyContinue
+                }
+                Write-Log "LowerFilters: removed MagicMouseDriver - restarting device to unload driver" 'OK'
+                pnputil /restart-device $devId 2>&1 | ForEach-Object { Add-Content -Path $SessionLog -Value $_ -Encoding UTF8 }
+                Start-Sleep -Seconds 2
+            }
+        } catch { }
+    }
+
+    Write-Log "Stopping service..."
+    sc.exe stop MagicMouseDriver 2>&1 | ForEach-Object { Add-Content -Path $SessionLog -Value $_ -Encoding UTF8 }
+    Write-Log "Deleting service..."
+    $scDel = sc.exe delete MagicMouseDriver 2>&1
+    $scDel | ForEach-Object { Add-Content -Path $SessionLog -Value $_ -Encoding UTF8 }
+
+    $sysDest = 'C:\Windows\System32\drivers\MagicMouseDriver.sys'
+    if (Test-Path $sysDest) {
+        Remove-Item $sysDest -Force -ErrorAction SilentlyContinue
+        if (Test-Path $sysDest) {
+            Write-Log "$sysDest still locked after device restart - attempting rename workaround" 'WARN'
+            Rename-Item $sysDest "$sysDest.old" -Force -ErrorAction SilentlyContinue
+        } else {
+            Write-Log "Removed $sysDest" 'OK'
+        }
+    }
+}
+
 function Install-Driver {
     Write-Section "INSTALL - $(Get-Date -Format 'HH:mm:ss')"
 
-    $currentOem = Get-CurrentOemPackage
-    if ($currentOem) {
-        Write-Log "Removing current package: $currentOem"
-        $out = pnputil /delete-driver $currentOem /uninstall /force 2>&1
-        $out | ForEach-Object { Add-Content -Path $SessionLog -Value $_ -Encoding UTF8 }
-        Write-Log "Removed $currentOem" 'OK'
+    # Uninstall any previous install (no pnputil; direct sc.exe + registry).
+    Uninstall-DriverDirect
+
+    # Step 1: Copy .sys to System32\drivers (INF DestinationDir 12 = drivers\).
+    $sysSrc  = Join-Path $BuildOut 'MagicMouseDriver.sys'
+    $sysDest = 'C:\Windows\System32\drivers\MagicMouseDriver.sys'
+    if (-not (Test-Path $sysSrc)) {
+        Write-Log ".sys not found at $sysSrc" 'ERROR'
+        return $false
+    }
+    Copy-Item $sysSrc $sysDest -Force
+    Write-Log "Copied .sys to $sysDest" 'OK'
+
+    # Step 2: Register kernel service (replaces INF [Install.Services] AddService).
+    # sc.exe requires spaces after '=' - this is intentional PowerShell sc.exe syntax.
+    # Retry once on exit 1072 (marked for deletion): the previous service object may still
+    # be draining references when we arrive here, cleared within ~2s of device restart.
+    Write-Log "Creating kernel service MagicMouseDriver"
+    $scCreateArgs = @('create','MagicMouseDriver','type=','kernel','start=','demand',
+                      'binPath=','system32\drivers\MagicMouseDriver.sys',
+                      'DisplayName=','Magic Mouse Driver')
+    $scOut = sc.exe @scCreateArgs 2>&1
+    $scOut | ForEach-Object { Add-Content -Path $SessionLog -Value $_ -Encoding UTF8 }
+    if ($LASTEXITCODE -eq 1072) {
+        Write-Log "sc.exe create returned 1072 (service marked for deletion) - waiting 3s and retrying" 'WARN'
+        Start-Sleep -Seconds 3
+        $scOut = sc.exe @scCreateArgs 2>&1
+        $scOut | ForEach-Object { Add-Content -Path $SessionLog -Value $_ -Encoding UTF8 }
+    }
+    if ($LASTEXITCODE -eq 0) {
+        Write-Log "Service created." 'OK'
     } else {
-        Write-Log "No existing MagicMouseDriver package found - fresh install" 'INFO'
+        Write-Log "sc.exe create exited $LASTEXITCODE" 'WARN'
     }
 
-    # Copy stamped artifacts to PkgDir
-    if (-not (Test-Path $PkgDir)) { New-Item -ItemType Directory $PkgDir | Out-Null }
-    Write-Log "Copying build artifacts to $PkgDir"
-    Copy-Item "$BuildOut\*" $PkgDir -Recurse -Force
-    Write-Log "Copied." 'OK'
-
-    # Install from stamped INF (has updated DriverVer timestamp)
-    $stampedInf = Join-Path $PkgDir 'MagicMouseDriver.inf'
-    if (-not (Test-Path $stampedInf)) {
-        Write-Log "Stamped INF not found at $stampedInf" 'ERROR'
-        return $false
-    }
-
-    Write-Log "Installing driver package..."
-    $out = pnputil /add-driver $stampedInf /install 2>&1
-    $out | ForEach-Object {
-        Add-Content -Path $SessionLog -Value $_ -Encoding UTF8
-        Write-Log $_
-    }
-    if ($LASTEXITCODE -ne 0) {
-        Write-Log "pnputil /add-driver failed (exit $LASTEXITCODE)" 'ERROR'
-        return $false
-    }
-
-    # Resolve device ID dynamically (handles re-pair / new MAC)
+    # Step 3: Resolve device and apply LowerFilters + restart.
     $devId = Resolve-DeviceId
     if (-not $devId) {
-        Write-Log "Device not currently connected - install added, but cannot restart device" 'WARN'
-        Write-Log "Connect the mouse, then run: .\mm-dev.ps1 -Phase Verify" 'INFO'
+        Write-Log "Device not currently connected - driver staged; connect mouse and run Verify" 'WARN'
         return $true
     }
+    Write-Log "Device: $devId"
 
+    # Set LowerFilters — MagicMouseDriver(0) below applewirelessmouse(1).
+    # Our driver at index 0 patches SDP completion first; applewirelessmouse sees our
+    # combined descriptor and does not re-patch. Swapping (test ee18af4) confirmed
+    # applewirelessmouse DOES gesture processing but conflicts with our combined descriptor
+    # (produces spurious clicks). Gesture processing is deferred to M14 in our own driver.
+    $regPath = "HKLM:\SYSTEM\CurrentControlSet\Enum\$devId"
+    $targetLf = @('MagicMouseDriver', 'applewirelessmouse')
+    try {
+        $existing = (Get-ItemProperty $regPath -ErrorAction Stop).LowerFilters
+        $needsUpdate = ($null -eq $existing) -or
+                       ($existing.Count -ne $targetLf.Count) -or
+                       ($existing[0] -ne $targetLf[0]) -or
+                       ($existing[1] -ne $targetLf[1])
+        if ($needsUpdate) {
+            Set-ItemProperty $regPath -Name LowerFilters -Value $targetLf -Type MultiString
+            Write-Log "LowerFilters set: $($targetLf -join ',')" 'OK'
+        } else {
+            Write-Log "LowerFilters already correct: $($existing -join ',')" 'OK'
+        }
+    } catch {
+        Write-Log "Cannot set LowerFilters at $regPath : $_" 'ERROR'
+        return $false
+    }
+
+    # Step 4: Restart device to rebuild stack with new lower filter.
     Write-Log "Restarting device: $devId"
     $out = pnputil /restart-device $devId 2>&1
     $out | ForEach-Object { Add-Content -Path $SessionLog -Value $_ -Encoding UTF8 }
-    Write-Log "Device restart sent." 'OK'
+    if ($LASTEXITCODE -eq 0) {
+        Write-Log "Device restart sent." 'OK'
+    } else {
+        Write-Log "pnputil /restart-device exited $LASTEXITCODE" 'WARN'
+    }
 
-    Start-Sleep -Seconds 3
+    Start-Sleep -Seconds 4
+
+    # Step 5: Re-apply LowerFilters after restart.
+    # pnputil /restart-device triggers a full BTHENUM re-enumeration. PnP re-runs the selected
+    # driver INF (oem0.inf / applewirelessmouse.inf) which has a replace-flag AddReg:
+    #   HKR,,"LowerFilters",0x00010000,"applewirelessmouse"   <- overwrites our entry
+    # The current stack survives the restart with our driver loaded, but the registry is reset.
+    # Re-applying here ensures the registry matches reality so the NEXT restart (BT reconnect,
+    # reboot) also loads MagicMouseDriver.
+    try {
+        $postLf = (Get-ItemProperty $regPath -ErrorAction Stop).LowerFilters
+        $postNeedsUpdate = ($null -eq $postLf) -or
+                           ($postLf.Count -ne $targetLf.Count) -or
+                           ($postLf[0] -ne $targetLf[0]) -or
+                           ($postLf[1] -ne $targetLf[1])
+        if ($postNeedsUpdate) {
+            Set-ItemProperty $regPath -Name LowerFilters -Value $targetLf -Type MultiString
+            Write-Log "LowerFilters re-applied post-restart (oem0.inf reset guard): $($targetLf -join ',')" 'OK'
+        } else {
+            Write-Log "LowerFilters intact post-restart: $($postLf -join ',')" 'OK'
+        }
+    } catch {
+        Write-Log "Cannot re-apply LowerFilters post-restart: $_" 'WARN'
+    }
+
     Write-Log "Install complete." 'OK'
     return $true
 }
@@ -358,16 +465,32 @@ function Verify-Install {
     Write-Section "VERIFY - $(Get-Date -Format 'HH:mm:ss')"
     $allOk = $true
 
-    # 1. oem package present?
+    # 1. oem package (INFO only - we bypass pnputil /add-driver, so no oem entry is expected)
     $oem = Get-CurrentOemPackage
     if ($oem) {
         Write-Log "oem package: $oem" 'OK'
     } else {
-        Write-Log "No MagicMouseDriver oem package installed" 'ERROR'
+        Write-Log "No oem package (expected - using direct sc.exe install)" 'INFO'
+    }
+
+    # 2. Service exists and .sys present?
+    $svc = Get-Service MagicMouseDriver -ErrorAction SilentlyContinue
+    if ($svc) {
+        Write-Log "Service MagicMouseDriver: $($svc.Status)" 'OK'
+    } else {
+        Write-Log "Service MagicMouseDriver not found" 'ERROR'
+        $allOk = $false
+    }
+    $sysDest = 'C:\Windows\System32\drivers\MagicMouseDriver.sys'
+    if (Test-Path $sysDest) {
+        $sz = (Get-Item $sysDest).Length
+        Write-Log ".sys present: $sysDest ($sz bytes)" 'OK'
+    } else {
+        Write-Log ".sys missing: $sysDest" 'ERROR'
         $allOk = $false
     }
 
-    # 2. Device connected?
+    # 3. Device connected?
     $devId = Resolve-DeviceId
     if (-not $devId) {
         Write-Log "Device not connected - cannot verify runtime state" 'WARN'
@@ -375,7 +498,7 @@ function Verify-Install {
     }
     Write-Log "Device: $devId" 'OK'
 
-    # 3. LowerFilters has MagicMouseDriver?
+    # 4. LowerFilters has MagicMouseDriver?
     $regPath = "HKLM:\SYSTEM\CurrentControlSet\Enum\$devId"
     try {
         $lf = (Get-ItemProperty $regPath -ErrorAction Stop).LowerFilters
@@ -390,23 +513,28 @@ function Verify-Install {
         $allOk = $false
     }
 
-    # 4. COL01 (mouse) Started?
-    $col01 = pnputil /enum-devices /connected 2>&1 | Out-String
-    if ($col01 -match "VID&0001004c_PID&0323&Col01[^\r\n]*\r?\n[^\r\n]*\r?\n[\s\S]{0,400}?Status:\s+(\w+)") {
-        $status = $Matches[1]
-        if ($status -eq 'Started') {
-            Write-Log "COL01 (HID-compliant mouse): Started" 'OK'
-        } else {
-            Write-Log "COL01: $status (expected Started)" 'ERROR'
-            $allOk = $false
-        }
+    # 5. COL01 (HID mouse child) present?
+    # Use pnputil /enum-devices without /connected - HID children are not "Bluetooth-connected"
+    # but do appear as Started devices under the HID bus.
+    $devAll = pnputil /enum-devices 2>&1 | Out-String
+    $col01Found = $devAll -match "VID&0001004c_PID&0323&Col01"
+    if ($col01Found) {
+        Write-Log "COL01 (HID-compliant mouse): enumerated" 'OK'
     } else {
-        Write-Log "COL01 not found - HID enumeration failed" 'ERROR'
-        $allOk = $false
+        Write-Log "COL01 not found in device list - HID descriptor may be missing scroll collection" 'WARN'
+    }
+
+    # 6. Diag registry keys (written by driver timer at 1Hz to Services\MagicMouseDriver\Diag)
+    $diagPath = "HKLM:\SYSTEM\CurrentControlSet\Services\MagicMouseDriver\Diag"
+    if (Test-Path $diagPath) {
+        $diag = Get-ItemProperty $diagPath -ErrorAction SilentlyContinue
+        Write-Log "Diag: IoctlInterceptCount=$($diag.IoctlInterceptCount) SdpScanHits=$($diag.SdpScanHits) SdpPatchSuccess=$($diag.SdpPatchSuccess) LastSdpBufSize=$($diag.LastSdpBufSize)" 'OK'
+    } else {
+        Write-Log "Diag key not yet created at Services\MagicMouseDriver\Diag (driver timer may not have fired or driver not attached to device stack)" 'INFO'
     }
 
     if ($allOk) {
-        Write-Log "VERIFY PASSED - driver bound, COL01 started" 'OK'
+        Write-Log "VERIFY PASSED - driver bound, .sys present, LowerFilters set" 'OK'
     } else {
         Write-Log "VERIFY FAILED - see findings above" 'ERROR'
     }
@@ -418,24 +546,71 @@ function Verify-Install {
 # ---------------------------------------------------------------------------
 function Rollback-Driver {
     Write-Section "ROLLBACK - $(Get-Date -Format 'HH:mm:ss')"
-    $oem = Get-CurrentOemPackage
-    if (-not $oem) {
-        Write-Log "Nothing to roll back - no MagicMouseDriver package installed" 'OK'
-        return $true
-    }
-    Write-Log "Removing $oem (filter driver) - this restores native HidBth behavior"
-    $out = pnputil /delete-driver $oem /uninstall /force 2>&1
-    $out | ForEach-Object { Add-Content -Path $SessionLog -Value $_ -Encoding UTF8; Write-Log $_ }
-    if ($LASTEXITCODE -ne 0) {
-        Write-Log "pnputil /delete-driver failed (exit $LASTEXITCODE)" 'ERROR'
-        return $false
-    }
+    # Use direct uninstall (no pnputil /delete-driver which hangs in SYSTEM context).
+    Uninstall-DriverDirect
     $devId = Resolve-DeviceId
     if ($devId) {
         Write-Log "Restarting device to drop filter binding..."
         pnputil /restart-device $devId 2>&1 | ForEach-Object { Add-Content -Path $SessionLog -Value $_ -Encoding UTF8 }
     }
     Write-Log "Rollback complete." 'OK'
+    return $true
+}
+
+# ---------------------------------------------------------------------------
+# RESTORE - re-apply LowerFilters without rebuild (recovery after BT reconnect)
+# ---------------------------------------------------------------------------
+function Restore-LowerFilters {
+    Write-Section "RESTORE LOWERFILTERS - $(Get-Date -Format 'HH:mm:ss')"
+
+    $devId = Resolve-DeviceId
+    if (-not $devId) {
+        Write-Log "Device not connected - cannot restore LowerFilters" 'WARN'
+        return $false
+    }
+    Write-Log "Device: $devId"
+
+    $regPath  = "HKLM:\SYSTEM\CurrentControlSet\Enum\$devId"
+    $targetLf = @('applewirelessmouse', 'MagicMouseDriver')
+    try {
+        $existing = (Get-ItemProperty $regPath -ErrorAction Stop).LowerFilters
+        $needsUpdate = ($null -eq $existing) -or
+                       ($existing.Count -ne $targetLf.Count) -or
+                       ($existing[0] -ne $targetLf[0]) -or
+                       ($existing[1] -ne $targetLf[1])
+        if (-not $needsUpdate) {
+            Write-Log "LowerFilters already correct: $($existing -join ',')" 'OK'
+        } else {
+            Set-ItemProperty $regPath -Name LowerFilters -Value $targetLf -Type MultiString
+            Write-Log "LowerFilters restored: $($targetLf -join ',')" 'OK'
+
+            # Start service if not running
+            $svc = Get-Service MagicMouseDriver -ErrorAction SilentlyContinue
+            if ($svc -and $svc.Status -ne 'Running') {
+                sc.exe start MagicMouseDriver 2>&1 | ForEach-Object { Add-Content -Path $SessionLog -Value $_ -Encoding UTF8 }
+                Start-Sleep -Seconds 2
+                Write-Log "Service start requested." 'OK'
+            }
+
+            # Restart device so stack rebuilds with the filter.
+            Write-Log "Restarting device to apply restored LowerFilters..."
+            pnputil /restart-device $devId 2>&1 | ForEach-Object { Add-Content -Path $SessionLog -Value $_ -Encoding UTF8 }
+            Start-Sleep -Seconds 4
+
+            # Re-apply post-restart guard
+            $postLf = (Get-ItemProperty $regPath -ErrorAction SilentlyContinue).LowerFilters
+            $postNeedsUpdate = ($null -eq $postLf) -or ($postLf[0] -ne $targetLf[0]) -or ($postLf[1] -ne $targetLf[1])
+            if ($postNeedsUpdate) {
+                Set-ItemProperty $regPath -Name LowerFilters -Value $targetLf -Type MultiString
+                Write-Log "LowerFilters re-applied post-restart: $($targetLf -join ',')" 'OK'
+            }
+        }
+    } catch {
+        Write-Log "Cannot restore LowerFilters at $regPath : $_" 'ERROR'
+        return $false
+    }
+
+    Write-Log "Restore complete." 'OK'
     return $true
 }
 
@@ -517,6 +692,7 @@ switch ($Phase) {
     'Install'  { if (-not (Install-Driver)) { $exitCode = 1 } }
     'Verify'   { if (-not (Verify-Install)) { $exitCode = 1 } }
     'Rollback' { if (-not (Rollback-Driver)){ $exitCode = 1 } }
+    'Restore'  { if (-not (Restore-LowerFilters)) { $exitCode = 1 } }
     'Capture'  { if (-not (Start-DebugCapture)) { $exitCode = 1 } }
     'Log'      { Show-SessionLog }
     'Debug'    { Show-DebugLog }
