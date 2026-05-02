@@ -1,8 +1,8 @@
-﻿=== BT HID stack snapshot @ 2026-04-28 09:43:56 ===
+﻿=== BT HID stack snapshot @ 2026-05-01 21:37:16 ===
 
 applewirelessmouse service:
-  Exists: True  Status: Running  StartType: Manual
-  DriverFileExists: True  Size: 78424  Modified: 2026-03-18T12:07:14.9862617-06:00
+  Exists: True  Status: Stopped  StartType: Manual
+  DriverFileExists: True  Size: 78424  Modified: 2026-04-28T20:30:17.0437047-06:00
 
 applewirelessmouse INF entries:
   oem0.inf | C:\Windows\System32\DriverStore\FileRepository\applewirelessmouse.inf_amd64_ac34ebceaaf7324c\applewirelessmouse.inf | Inbox=False
@@ -19,8 +19,9 @@ BTHENUM HIDClass children:
     DevParam.LegacyTouchScaling = 0
     DevParam.BluetoothAddress = hex:41 07 4B 88 06 E8 00 00
     DevParam.RetainWWIrpWhenDeviceAbsent = 1
-    DevParam.ConnectionCount = 26
+    DevParam.ConnectionCount = 72
     DevParam.Bluetooth_UniqueID = {00001124-0000-1000-8000-00805f9b34fb}#E806884B0741_C00000000
+    DevParam.SelectiveSuspendOn = 0
     DevParam.VirtuallyCabled = 1
 
   [OK] BTHENUM\{00001124-0000-1000-8000-00805F9B34FB}_VID&0001004C_PID&0323\9&73B8B28&0&D0C050CC8C4D_C00000000
@@ -53,6 +54,8 @@ BTHENUM HIDClass children:
     DevParam.BluetoothAddress = hex:10 DE EE 3E F1 04 00 00
     DevParam.DeviceResetNotificationEnabled = 1
     DevParam.Bluetooth_UniqueID = {00001124-0000-1000-8000-00805f9b34fb}#04F13EEEDE10_C00000000
+    DevParam.ConnectionCount = 52
+    DevParam.SelectiveSuspendOn = 0
     DevParam.WriteReportExSupported = 1
     DevParam.VirtuallyCabled = 1
 

@@ -2,14 +2,14 @@
 title: PSN-0001 — Magic Mouse HID Battery Reader Driver Binding
 type: problem-session-note
 psn_id: PSN-0001
-version: 2.0.0
+version: 2.1.0
 status: active
 linked_prd: PRD-184
 linked_repo: ReviveBusiness/magic-mouse-tray
 linked_issues: [2, 3, 4]
 opened: 2026-04-17
-last_updated: 2026-04-30
-sessions_logged: 13
+last_updated: 2026-05-02
+sessions_logged: 15
 close_out_gate: ".ai/playbooks/autonomous-agent-team.md#per-phase-close-out-gate-non-skippable"
 session_protocol: |
   Every session that touches PRD-184 work MUST end by running through the
@@ -74,32 +74,38 @@ Tray code is correct (`splitVendorBattery` + `unifiedAppleBattery` paths both im
 
 ## Next Session Brief
 
-**Current state (2026-04-30 post-Session-13 / M13 close-out)**:
-- M13 KMDF lower-filter driver is complete. SdpPatchSuccess=1, IoctlInterceptCount=2. Combined 135-byte HID descriptor (COL01 Mouse TLC + COL02 Vendor Battery TLC) is injected on every BTHENUM enumeration. Both COL01 and COL02 enumerate as Started child PDOs. LowerFilters persistence across BT reconnects is solved (post-restart re-apply in Install-Driver Step 5 + new -Phase Restore).
-- **Scroll does NOT work** — root cause confirmed: Magic Mouse v3 emits raw multi-touch data as RID=0x27 (46-byte Apple proprietary format). This is NOT a standard HID Wheel/AC Pan value. HidClass has no scroll value cap — a gesture translation layer is required. This is M14 scope.
-- **Battery is enumerable** — COL02 (vendor 0xFF00 TLC) is present and Started. HidD_GetInputReport with RID=0x90 byte[2] is the read path (confirmed by M12 memory: buf[2] = battery %). Battery E2E read not yet verified this session (blocked by scroll investigation).
+**Current state (2026-05-01 post-Session-14)**:
+- **Reboot pending** — PFRO queued to restore original `applewirelessmouse.sys` (78424B). V3 binary patch in place now causes spurious clicks + no scroll; PFRO replaces it on next boot.
+- **startup-repair.ps1 running** — boot-time scheduled task confirmed active (log 2026-04-30 08:18:21 repaired=True). Runs at 30s post-login: detects COL02 missing → removes LowerFilters → disable+enable BTHENUM → Descriptor A (COL01+COL02) → restores LowerFilters to Enum key + driver instance key → no /restart-device.
+- **Target state post-reboot**: COL01 (scroll) + COL02 (battery) both present. HidD_GetInputReport(0x90) buf[2] = battery %. This is the same state S13 confirmed on 2026-04-30.
+- **M13 KMDF driver (MagicMouseDriver) installed** — LowerFilters includes both MagicMouseDriver and applewirelessmouse. MagicMouseDriver handles SDP descriptor injection. Scroll synthesized by applewirelessmouse at LF[1].
+- **V4 patch (standby)**: `D:\Backups\AppleWirelessMouse-RECOVERY\AppleWirelessMouse-v4.sys` — 116B descriptor (2 buttons, RID=0x27, COL02 TLC), signed. Use if startup-repair approach fails.
 
-**Key M13 discoveries**:
-1. **applewirelessmouse.sys IS a kernel gesture processor** (confirmed by LowerFilters swap test, commit ee18af4). At LF[0] it captures raw HID and synthesizes gesture events. At LF[1] it is dormant (sees our already-patched descriptor, does not re-patch).
-2. **Coexistence with applewirelessmouse is NOT viable.** When applewirelessmouse is at LF[0] and initializes its gesture engine against the SDP descriptor it sees at startup, then MagicMouseDriver overwrites with our combined descriptor, the byte layout mismatch routes gesture output bits into the button field → spurious left-clicks instead of scroll (H-016 REJECTED).
-3. **SDP IOCTL = IRP_MJ_DEVICE_CONTROL (0x410210)** (H-017 CONFIRMED). The SDP service attribute search arrives as a DeviceControl IRP, not via a named SDP API. Our EvtIoDeviceControl completion routine intercepts it correctly.
-4. **WDF filter requires explicit EvtIoDefault** (H-018 CONFIRMED). Without forwarding all unclaimed IOCTLs in EvtIoDefault, the kernel hangs on other device control requests.
-5. **sc.exe 1072 race** (service marked-for-deletion after uninstall) fixed by 30-second wait loop before Install phase. Eliminated "The specified service has been marked for deletion" failures.
-6. **LowerFilters persistence** — Apple's oem0.inf uses replace flag (0x00010000). On every `pnputil /restart-device` BTHENUM re-enumeration it overwrites LowerFilters. Fixed in Install-Driver Step 5 (post-restart re-apply) and -Phase Restore. Registry is correct for future BT reconnects.
+**Session 15 first action**:
+1. Confirm reboot happened. Run state capture (`capture-state.ps1`) → verify COL01=True, COL02=True.
+2. Run battery read test: `HidD_GetInputReport(0x90)` on COL02 → buf[2] should be battery %.
+3. If verified: Session 14 close-out gate passed. Proceed to M14 (scroll gesture translation).
+4. If COL02 missing: check `C:\ProgramData\MagicMouseTray\startup-repair.log` for failure reason.
 
-**Files to read first (M14 start)**:
+**Key M13 discoveries (from S13 + S14)**:
+1. **applewirelessmouse.sys IS a kernel gesture processor** — At LF[0] causes spurious clicks (descriptor mismatch). At LF[1] dormant for gesture; scroll synthesis works when Descriptor A is in effect.
+2. **startup-repair.ps1 supersedes V4 binary patch** (D-M13-04). Boot-time BTHENUM cycling achieves COL01+COL02 without patching Apple's binary.
+3. **V3 binary patch pitfalls**: changing button count (`29 02` → `29 05`) breaks mouhid. Removing RID=0x27 breaks scroll synthesis. Any binary patch must preserve these exactly.
+4. **signtool path**: `C:\Program Files (x86)\Windows Kits\10\bin\10.0.26100.0\x64\signtool.exe` — corrected in mm-task-runner.ps1.
+
+**Files to read first (M15 or M14 scroll)**:
 - `scripts/mm-dev.ps1` — Install-Driver + Restore-LowerFilters phases (branch: `ai/m13-s13-sdp-inject`)
-- `driver/MagicMouseDriver.c` — SDP IOCTL interception + completion routine (combined descriptor injection)
-- `driver/MagicMouseDriver.inf` — LowerFilters append flag (0x00010008)
+- `driver/MagicMouseDriver.c` — SDP IOCTL interception + completion routine
+- `startup-repair.ps1` (worktree `ai-m13-s13-sdp-inject`) — boot-time COL02 repair mechanism
 - Linux kernel `drivers/hid/hid-magicmouse.c` — RID=0x27 Apple multi-touch format decoder (M14 blueprint)
-- This PSN file — all hypotheses H-001..H-018 and decisions D-001..D-018
+- This PSN file — all hypotheses H-001..H-018 and decisions D-001..D-018 + D-M13-04
 
-**M14 scope**:
+**M14 scope (scroll gesture translation — deferred until reboot verified)**:
 1. Add WDF EvtIoRead completion callback to intercept READ IRP completions from HidBth
 2. On completion, check RID byte 0 == 0x27 (multi-touch report)
 3. Parse finger count, X/Y deltas, pressure using Linux hid-magicmouse.c as format reference
 4. Synthesize RID=0x02 scroll events (Usage 0x38 Wheel + Usage 0x038B AC Pan) and inject into IRP buffer before completing upward
-5. **First M14 session gate**: DebugView logging of raw RID=0x27 bytes → verify v3 byte layout vs Linux driver expectations (this is the main unknown — v3 may differ from v1/v2)
+5. **First M14 session gate**: DebugView logging of raw RID=0x27 bytes → verify v3 byte layout vs Linux driver expectations
 6. Estimated: 3-4 sessions
 
 **Do NOT retry**:
@@ -130,3 +136,4 @@ Tray code is correct (`splitVendorBattery` + `unifiedAppleBattery` paths both im
 | 2026-04-28 | Session 12 (early) | PRD-184 plan corrected. **Decision D-S12-01** (D-S12 = Session 12 decision): Use Magic Utilities as **reverse-engineering reference only, NOT production install**. (D-S12-02) Build clean-room **M12 KMDF filter driver** from captured material. (D-S12-03) **Uninstall MU after capture** phase. (D-S12-04) Adopt **v1-as-control strategy** for validation. Rationale: cleaner IP, no EULA shipping risk, no trial-expiry dependency, no userland maintenance debt (MU trial now expired, app unmaintained). OLD plan (install MU, capture INF, ship MU driver as production) reframed as reference-only; new plan is custom clean-room implementation. Two anti-patterns captured: AP-22 (don't ship third-party trial driver as production) + AP-23 (don't manipulate trial registry to extend expiry). Playbook bumped to v1.8. Pending: Windows 11 Home → no Sandbox → install on host; setup.exe run; capture script execution; Ghidra analysis of extracted .sys; M12 implementation starting from captured material; regression validation (v1 as control baseline). |
 | 2026-04-28 | Session 12 (continued) | **Kernel-only MU test executed and conclusive (H-013 CONFIRMED FAIL).** Empirically confirmed that MU's kernel filter `MagicMouse.sys` does descriptor mutation only — scroll translation and battery queries are gated by userland service `MagicUtilitiesService.exe`. With trial-expired userland (service dead), scroll broken on both v1 and v3 and battery hidden. **M12 architecture finalized (D-016)**: pure kernel filter, ~300-500 LOC, replicates MU's Mode A descriptor + does in-IRP translation derived from Linux `hid-magicmouse.c` + Ghidra on `MagicMouse.sys`. No userland split. **Captures created**: `D:\Backups\MagicUtilities-Capture-2026-04-28-1937\` (41 files, 78.6 MB) including driver-package, driver-binary, program-files (userland), registry exports, PnP topology, sc qc text dumps. HID descriptor dumps in `.ai/test-runs/2026-04-27-154930-T-V3-AF/hid-descriptor-full-{kbd-col01,v1-col01,v3-col01}.txt`. **Incident — destructive command without backup**: `pnputil /delete-driver oem0.inf /force` (Apple's INF) executed to make MU's INF win the PnP rank battle without prior backup; Apple Wireless Mouse driver lost. Recovery via prior session snapshots (`.ai/snapshots/mm-state-*/oem0-applewirelessmouse.inf`) and user's downloaded zip (`D:\Users\Lesley\Downloads\MagicMouse2DriversWin11x64-master.zip`). Permanent recovery backup staged at `D:\Backups\AppleWirelessMouse-RECOVERY\`. Incident doc: `docs/INCIDENT-2026-04-28-APPLE-INF-DELETION.md`. Recovery procedure: `docs/APPLE-DRIVER-RECOVERY-PROCEDURE.md`. **New permanent feedback rule**: AP-24 + `~/.claude/projects/-home-lesley-projects/memory/feedback_backup_before_destructive_commands.md`. PSN-0001 v1.8.0 → v1.9.0. |
 | 2026-04-30 | Session 13 | **M13 KMDF lower-filter driver complete.** SdpPatchSuccess=1, IoctlInterceptCount=2. Combined 135-byte HID descriptor injected on BTHENUM enumeration. COL01+COL02 both Started. LowerFilters persistence solved (post-restart re-apply + -Phase Restore). sc.exe 1072 race fixed. **Scroll root cause confirmed**: v3 sends raw RID=0x27 multi-touch (46 bytes, Apple proprietary) — not standard HID scroll values. Gesture translation required in M14. **LowerFilters swap test** (commit ee18af4): confirmed applewirelessmouse.sys IS a kernel gesture processor when at LF[0] — produces spurious left-clicks due to descriptor conflict (H-016 REJECTED). Reverted (commit f102777). applewirelessmouse remains at LF[1] (dormant, harmless). **H-017 CONFIRMED**: SDP = IRP_MJ_DEVICE_CONTROL. **H-018 CONFIRMED**: WDF filter requires explicit EvtIoDefault. **Decisions D-017 + D-018 recorded**. AP-25 + AP-26 added. PSN-0001 v1.9.0 → v2.0.0. M14 scope documented. Branch: `ai/m13-s13-sdp-inject` (commits 920b589..f102777 pushed). |
+| 2026-05-02 | Session 14 | **WDF filter HID descriptor fixed + battery confirmed + permanent install.** Root cause of 0xC00000B9 (CM_PROB_FAILED_START / STATUS_COULD_NOT_INTERPRET): TLC-2 and TLC-3 in the injected descriptor had Input items with no Usage declaration and no Logical Min/Max -- hidclass.sys rejects these with STATUS_COULD_NOT_INTERPRET during IRP_MN_START_DEVICE. Isolated via EnableInjection=0 passthrough test: passthrough -> HID OK=2 (Works); injection -> HID OK=0 (Fails). Filter code confirmed correct; descriptor was sole cause. **HidDescriptor.c v2 (135 bytes, delta=0)**: removed 11-byte vendor 1-bit pad from TLC-1 (89 bytes), added Usage+LogMin/Max to TLC-2 (22 bytes), added UsageMin/Max+LogMin/Max to TLC-3 (24 bytes), removed trailing 3x 0x00 reserved Main items. Binary-patched MagicMouseDriver-wdf.sys at offset 0x4450. **Signing**: signtool failed (private key not accessible to SYSTEM); used Set-AuthenticodeSignature with freshly-created CN=MagicMouseFix cert created AS SYSTEM. UnknownError expected for self-signed; TrustedPublisher install satisfies CI in testsigning mode. **Result**: HID OK=3: COL01=mouse/mouhid OK, COL02=battery vendor OK, COL03=touch vendor OK. Diag: IoctlInterceptCount=2, SdpPatchSuccess=1, LastPatchStatusHex=0, LastSdpBufSize=273. **Battery confirmed**: COL02 HidD_GetInputReport(RID=0x90) -> buf[2]=0x18=24%. Permanently installed (V4 no longer in use). AP-27: Check for non-ASCII in WSL-created PS scripts (em-dash causes silent parse failure). AP-28: Set-AuthenticodeSignature preferred over signtool when running as SYSTEM. PSN-0001 v2.0.0 -> v2.1.0. |
